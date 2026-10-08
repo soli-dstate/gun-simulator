@@ -13,6 +13,13 @@ air all round it, behind the muzzle too so a brake's jets can turn back.
   pointing back at the muzzle), and a front cap. The gas has to fill the
   chambers and work its way out through the holes, cooling on the steel, so it
   leaves later, slower and colder.
+* Flash hider: a collar on the muzzle, then a bore that opens at flare_angle
+  between prongs to an open front. The slots between the prongs open
+  vent_fraction of the circumference (perforated faces through the wall, as a
+  brake's vents). It lets the jet expand before it meets the air and bleeds
+  some of it out sideways early, which weakens the shock the under-expanded
+  jet would otherwise end in; whether that dims the flash is left to the plume
+  solution (plume.py).
 
 Coupling. During the bore's blowdown (fluid.py), the gas in the bore's last
 cell is fed into the device's inlet cells, and the pressure the device builds
@@ -53,6 +60,7 @@ from .axisym import Axisymmetric
 
 STEEL_DENSITY = 7850.0
 SNAPSHOTS = 10
+FLASH_COLLAR = 0.3   # share of a flash hider's length that is solid collar before the slots
 
 
 def _shut(solid, open_x, open_r):
@@ -72,14 +80,21 @@ def dimensions(gun) -> dict:
     """The device's dimensions, filled in from the bore where the config leaves them out."""
     d = gun.muzzle_device
     bore = gun.barrel.bore_diameter
-    brake = d.type == "brake"
-    length = d.length or (8 if brake else 23) * bore
-    od = d.outer_diameter or max(gun.barrel.muzzle_diameter + 4 * d.wall, (2.8 if brake else 5.1) * bore)
-    baffles = d.baffles or (3 if brake else 8)
+    # Bores long, bores across and baffles (prongs) of each kind, when the config leaves them out.
+    length, across, count = {"brake": (8, 2.8, 3), "flash_hider": (6, 2.4, 4)}.get(d.type, (23, 5.1, 8))
+    length = d.length or length * bore
+    od = d.outer_diameter or max(gun.barrel.muzzle_diameter + 4 * d.wall, across * bore)
+    baffles = d.baffles or count
     blast = d.blast_chamber or min(5 * bore, 0.4 * length)
-    return {"type": d.type, "length": length, "outer_radius": od / 2, "baffles": int(baffles),
-            "hole_radius": bore / 2 + d.bore_clearance / 2, "wall": d.wall, "blast_chamber": blast,
-            "baffle_angle": d.baffle_angle, "vent_fraction": d.vent_fraction}
+    hole = bore / 2 + d.bore_clearance / 2
+    out = {"type": d.type, "length": length, "outer_radius": od / 2, "baffles": int(baffles),
+           "hole_radius": hole, "wall": d.wall, "blast_chamber": blast,
+           "baffle_angle": d.baffle_angle, "vent_fraction": d.vent_fraction}
+    if d.type == "flash_hider":
+        # The collar, then the slots between the prongs to the open front; the bore opens up as it goes.
+        out.update(flare_angle=d.flare_angle, slot_start=FLASH_COLLAR * length,
+                   exit_radius=min(hole + length * math.tan(math.radians(d.flare_angle)), od / 2 - d.wall))
+    return out
 
 
 @dataclass
@@ -135,15 +150,22 @@ def draw(gun, X, Rr, h):
             # A cone's tip (the hole) points back at the muzzle; it leans forward with radius.
             xs = xk + (Rr - rh) * tan
             dev |= (X >= xs) & (X < xs + thick) & (Rr >= rh) & (Rr < r_in + h) & (X < end)
+    elif dims["type"] == "flash_hider":
+        # Solid from the flaring bore out to R; the slots then cut through all of it to the open front.
+        bore_r = np.minimum(rh + np.maximum(X, 0.0) * math.tan(math.radians(dims["flare_angle"])), r_in)
+        dev |= (X >= 0) & (X < L) & (Rr >= bore_r) & (Rr < R)
+        slots.append((dims["slot_start"], L))
     solid |= dev
     open_x = np.ones((nx + 1, nr))
     open_r = np.ones((nx, nr + 1))
-    # Brake vents: the tube wall in each slot is gas, with its radial faces open by vent_fraction
-    # and its axial faces too (gas can run along the slot); the slot's ends are shut.
+    # Vents: the wall in each slot is gas, with its radial faces open by vent_fraction and its
+    # axial faces too (gas can run along the slot); the slot's ends are shut. A brake's slots
+    # are in its outer tube; a flash hider's run through its whole wall.
     for xs, xe in slots:
         if xe - xs < h:
             continue
-        cells = (X >= xs) & (X < xe) & (Rr >= r_in) & (Rr < R)
+        wall = (Rr >= r_in) if dims["type"] == "brake" else dev
+        cells = (X >= xs) & (X < xe) & wall & (Rr < R)
         solid &= ~cells
         dev &= ~cells
         i_cells, j_cells = np.nonzero(cells)
@@ -309,6 +331,9 @@ class DeviceCoupling:
         if dims["type"] == "brake":
             r_in = dims["outer_radius"] - max(dims["wall"], g.h)
             vents = 2 * np.pi * r_in * dims["length"] * 0.5 * dims["vent_fraction"]
+        elif dims["type"] == "flash_hider":  # an open front, and the slots between the prongs
+            hole = np.pi * dims["exit_radius"] ** 2
+            vents = 2 * np.pi * dims["outer_radius"] * (dims["length"] - dims["slot_start"]) * dims["vent_fraction"]
         self.vessel = {"V": V, "m": m, "mp": m_p, "E": e_int, "area": hole + vents, "forward": hole / (hole + vents)}
         self.window_end = t
         self.stored_mass = max(m - self.ambient_mass, 0.0)

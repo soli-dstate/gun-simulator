@@ -121,6 +121,25 @@ def test_brake_throws_the_gas_sideways(plumes):
     assert brake.cloud["x"] < 0.5 * bare.cloud["x"]
 
 
+def test_flash_hider_removes_the_shock_reheat_and_trims_the_fireball():
+    """Bare, the jet's Mach disk shocks the gas hotter than burning can make it (the intermediate
+    flash). In a flash hider the jet expands first, so nothing gets hotter than burning makes it,
+    and less of the gas reignites. (4 cells across the bore: at 2 the Mach disk is barely resolved.)"""
+    out = {}
+    for kind in ("none", "flash_hider"):
+        gun = Gun.load(RIFLE)
+        gun.muzzle_device.type = kind
+        gun.solver.plume_resolution = 4
+        gun.solver.plume_time = 0.0012
+        out[kind] = plume.simulate(gun, fluid.simulate_cached(gun, blowdown_time=BLOWDOWN))
+    ceiling = Afterburn(*combustibles(None)).ceiling
+    bare, hider = out["none"], out["flash_hider"]
+    assert bare.peak_temperature > ceiling + 50
+    assert hider.peak_temperature < ceiling + 20
+    assert hider.afterburn < 0.97 * bare.afterburn
+    assert hider.glow.max() < bare.glow.max()
+
+
 def test_plume_json(plumes):
     r = plumes["bare"]
     gun = Gun.load(RIFLE)

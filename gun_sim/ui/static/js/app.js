@@ -692,7 +692,7 @@ function actionRows(a) {
 function deviceRows(d) {
   if (!d) return "";
   return `
-      <span>${d.dims.type[0].toUpperCase() + d.dims.type.slice(1)} (2D)</span><span>pushes the gun forwards ${d.impulse.toFixed(2)} N·s</span>
+      <span>${d.dims.type[0].toUpperCase() + d.dims.type.slice(1).replace("_", " ")} (2D)</span><span>pushes the gun forwards ${d.impulse.toFixed(2)} N·s</span>
       <span>Peak pressure inside</span><span>${(d.peak_pressure / 1e6).toFixed(2)} MPa</span>
       <span>Heat to its walls</span><span>${d.heat.toFixed(0)} J</span>
       <span>Jet momentum leaving forwards</span><span>${(d.momentum_ratio * 100).toFixed(0)} %</span>`;
@@ -825,7 +825,7 @@ function drawDevice() {
   ctx.fillText("400 bar", 166, H - 2);
   const exitT = shot.muzzle_time;
   $("device-snap-label").textContent = snap
-    ? `${((snap.t - exitT) * 1e3).toFixed(2)} ms after exit · ${d.dims.type}, ${(d.dims.h * 1e3).toFixed(2)} mm cells`
+    ? `${((snap.t - exitT) * 1e3).toFixed(2)} ms after exit · ${d.dims.type.replace("_", " ")}, ${(d.dims.h * 1e3).toFixed(2)} mm cells`
     : "";
   drawChart($("c-device-force"), {
     series: [{ label: "forwards (against recoil)", color: cssVar("--s1"), x: d.t.map((t) => (t - exitT) * 1e3), y: d.force }],

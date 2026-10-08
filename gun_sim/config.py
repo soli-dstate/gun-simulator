@@ -307,19 +307,22 @@ class SolverSettings:
     plume_time: float = 0.002       # s after exit the plume is solved for
 
 
-DEVICE_TYPES = ("none", "brake", "suppressor")
+DEVICE_TYPES = ("none", "brake", "suppressor", "flash_hider")
 
 
 @dataclass
 class MuzzleDevice:
-    """A muzzle brake or suppressor, solved in 2D (gun_sim/devices.py).
+    """A muzzle brake, suppressor or flash hider, solved in 2D (gun_sim/devices.py).
 
-    Both are axisymmetric: a tube of outer_diameter and length on the muzzle,
+    All are axisymmetric: a tube of outer_diameter and length on the muzzle,
     with `baffles` plates whose holes are bore + bore_clearance across. A brake's
     chambers vent sideways through slots that open `vent_fraction` of the
     circumference; a suppressor is closed except for its front hole, with a
     blast chamber before the first baffle. Baffles lean back by baffle_angle
-    (0 = flat plates; a cone baffle points its tip towards the muzzle).
+    (0 = flat plates; a cone baffle points its tip towards the muzzle). A flash
+    hider has no baffles: a collar on the muzzle, then a bore that opens at
+    flare_angle between prongs (`baffles` of them, drawn in 3D; the slots
+    between them open vent_fraction of the circumference) to an open front.
     None = scaled from the bore.
     """
     type: str = "none"
@@ -330,7 +333,8 @@ class MuzzleDevice:
     wall: float = 2.0e-3                  # m, tube wall and baffle thickness
     blast_chamber: float | None = None    # m, suppressor: muzzle to the first baffle
     baffle_angle: float = 0.0             # degrees
-    vent_fraction: float = 0.5            # brake: share of the circumference open at the vents
+    vent_fraction: float = 0.5            # brake, flash hider: share of the circumference open at the vents/slots
+    flare_angle: float = 4.0              # degrees, flash hider: half-angle its bore opens at
     mass: float | None = None             # kg, added to the gun; None = from its steel
 
 
@@ -520,6 +524,8 @@ class Gun:
             raise ValueError("muzzle_device.baffle_angle must be between 0 and 70 degrees")
         if not 0.05 <= d.vent_fraction <= 0.95:
             raise ValueError("muzzle_device.vent_fraction must be between 0.05 and 0.95")
+        if not 0 <= d.flare_angle <= 30:
+            raise ValueError("muzzle_device.flare_angle must be between 0 and 30 degrees")
         bore = self.barrel.bore_diameter
         od = d.outer_diameter
         if od is not None and od < bore + d.bore_clearance + 4 * d.wall:

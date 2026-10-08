@@ -63,25 +63,43 @@ const boxAt = (sx, sy, sz, x, y, z) => [box(sx, sy, sz), translation(x, y, z)];
 export function deviceDims(gun) {
   const d = gun.muzzle_device ?? {};
   if (!d.type || d.type === "none") return null;
-  const bore = gun.barrel.bore_diameter, brake = d.type === "brake";
+  const bore = gun.barrel.bore_diameter;
+  // Bores long, bores across and baffles (prongs) of each kind, as devices.py fills them in.
+  const [long, across, count] = { brake: [8, 2.8, 3], flash_hider: [6, 2.4, 4] }[d.type] ?? [23, 5.1, 8];
   const wall = d.wall ?? 2e-3;
-  const length = d.length ?? (brake ? 8 : 23) * bore;
-  const od = d.outer_diameter ?? Math.max(gun.barrel.muzzle_diameter + 4 * wall, (brake ? 2.8 : 5.1) * bore);
+  const length = d.length ?? long * bore;
+  const od = d.outer_diameter ?? Math.max(gun.barrel.muzzle_diameter + 4 * wall, across * bore);
+  const rh = bore / 2 + (d.bore_clearance ?? 1e-3) / 2;
+  const flare = Math.tan(((d.flare_angle ?? 4) * Math.PI) / 180);
   return {
-    type: d.type, L: length * MM, R: (od / 2) * MM, n: d.baffles ?? (brake ? 3 : 8),
-    rh: (bore / 2 + (d.bore_clearance ?? 1e-3) / 2) * MM, w: wall * MM,
+    type: d.type, L: length * MM, R: (od / 2) * MM, n: d.baffles ?? count,
+    rh: rh * MM, w: wall * MM,
     blast: (d.blast_chamber ?? Math.min(5 * bore, 0.4 * length)) * MM,
     angle: d.baffle_angle ?? 0, vent: d.vent_fraction ?? 0.5,
+    // Flash hider: the collar (FLASH_COLLAR in devices.py), then the bore's radius as it opens.
+    slotStart: 0.3 * length * MM, boreAt: (x) => Math.min(rh * MM + x * flare, (od / 2 - wall) * MM),
   };
 }
 
-/** Brake or suppressor on the muzzle at x0 (mm). */
+/** Brake, suppressor or flash hider on the muzzle at x0 (mm). */
 function buildDevice(dd, x0, boreR, rMuzzle) {
   const { L, R, rh, w } = dd;
   const ri = R - w;
   const parts = [];
   const tube = (a, b) => { if (b - a > 0.2) parts.push(lathe(tubeProfile(ri, R, x0 + a, x0 + b), 64)); };
-  if (dd.type === "suppressor") {
+  if (dd.type === "flash_hider") {
+    // Collar, its bore opening up, then prongs with slots between them to the open front.
+    const xs = dd.slotStart, rs = dd.boreAt(xs);
+    parts.push(lathe([
+      [[rh, x0], [R, x0]], [[R, x0], [R, x0 + xs]], [[R, x0 + xs], [rs, x0 + xs]], [[rs, x0 + xs], [rh, x0]],
+    ], 64));
+    const inner = 0.5 * (rs + dd.boreAt(L)), mid = 0.5 * (inner + R);
+    const width = 2 * mid * Math.sin(Math.max(0.05, ((1 - dd.vent) * Math.PI) / dd.n));
+    for (let k = 0; k < dd.n; k++) {
+      parts.push([box(L - xs, R - inner, width),
+                  chain(rotationX(((k + 0.5) * 2 * Math.PI) / dd.n), translation(x0 + (xs + L) / 2, mid, 0))]);
+    }
+  } else if (dd.type === "suppressor") {
     tube(0, L);
     parts.push(lathe(tubeProfile(boreR + 0.05, ri, x0, x0 + w), 64));         // rear cap
     parts.push(lathe(tubeProfile(rh, ri, x0 + L - w, x0 + L), 64));           // front cap

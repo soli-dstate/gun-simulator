@@ -97,7 +97,7 @@ def _physics(gun: Gun, s: SoundSettings) -> _Physics:
         # What leaves the muzzle device: its propellant gas, and the energy over the still air's.
         t_gas, m_gas, e_gas = dev.t, dev.out_propellant, np.maximum.accumulate(dev.out_energy)
         directivity = dev.momentum_ratio
-        source_x = dev.dims["length"] * (1.0 if dev.dims["type"] == "suppressor" else 0.5)
+        source_x = dev.dims["length"] * (0.5 if dev.dims["type"] == "brake" else 1.0)  # its vents, or its front
         ejected = float(e_gas[-1])
     source = BlastSource(
         t=np.concatenate((t_pre, [mf.exit_time], t_gas)),

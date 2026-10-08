@@ -87,9 +87,9 @@ two-lug rotating bolt with extractor, handle and firing pin, and a stock whose
 butt sits where `[action]` puts the shoulder. A gas-operated rifle has a bolt
 carrier instead, with a charging handle and an op rod running forward to a
 piston in the gas cylinder over the gas block (at the gas port), and a
-six-lug bolt head that turns in the carrier as it unlocks. A brake or
-suppressor on the muzzle is turned from the same dimensions the 2D solver
-uses; **Cutaway** shows its baffles. **Fire** runs the simulation,
+six-lug bolt head that turns in the carrier as it unlocks. A brake,
+suppressor or flash hider on the muzzle is turned from the same dimensions the
+2D solver uses; **Cutaway** shows its baffles. **Fire** runs the simulation,
 then animates the shot from its results. All the while the whole rifle
 recoils as the [recoil simulation](#recoil-and-action-cycling-gun_simactionpy)
 says: back into the shoulder, pitching muzzle-up about it, and settling again.
@@ -106,7 +106,7 @@ says: back into the shoulder, pitching muzzle-up about it, and settling again.
    hot, so the primary flash, the jet's shock cell and Mach disk, and the
    afterburning fireball come out of the flow rather than being drawn. A
    brake throws them sideways; a suppressor holds them in (look inside with
-   **Cutaway**). The flash lights the barrel and the smoke, and the readout
+   **Cutaway**); a flash hider lets the jet expand before it meets the air. The flash lights the barrel and the smoke, and the readout
    shows the heat afterburning released. The sound plays at this moment. The
    **Fire** button waits for the plume (a few seconds) before the shot plays.
 4. The clock ramps up to real time and the smoke cloud carries on from the
@@ -218,7 +218,7 @@ example.
 | `[ignition]` | igniter pressure; with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
 | `[action]` | `type` (`"bolt"`, `"gas"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas and gas-delayed); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
 | `[shooter]` | `stance` (`"shoulder"`, or `"free"` for free recoil); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
-| `[muzzle_device]` | `type` (`"none"`, `"brake"` or `"suppressor"`); length, outer diameter, number of baffles, baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake), mass. Missing sizes are scaled from the bore |
+| `[muzzle_device]` | `type` (`"none"`, `"brake"`, `"suppressor"` or `"flash_hider"`); length, outer diameter, number of baffles (prongs for a flash hider), baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake, flash hider), `flare_angle` (flash hider bore), mass. Missing sizes are scaled from the bore |
 | `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `two_phase` (a moving grain bed lit by the primer's flame); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
 
 You can leave out any geometry value (the barrel's outside diameters, twist
@@ -506,6 +506,11 @@ Where the geometry really is two-dimensional, a 2D solver takes over from the
     slots that open `vent_fraction` of the circumference.
   - A *suppressor* is a closed can with a blast chamber, flat or cone baffles,
     and a front cap.
+  - A *flash hider* is a solid collar on the muzzle, then prongs to an open
+    front, with slots between them (cut through the wall, open by
+    `vent_fraction`) and a bore that opens at `flare_angle`. It barely
+    changes the recoil (it pushes the gun forwards by 0.04 N·s); its job is
+    the flash (see *Muzzle flash and smoke* below).
   - During the bore's blowdown, the bore and the device overlap by a cell, each
     seeing the other's neighbouring gas, so waves pass both ways. A
     suppressor's back-pressure therefore slows the bore's emptying and raises
@@ -739,6 +744,17 @@ For the example rifle (2 cells across the bore, 2 ms):
 | None | 12 kJ, fireball 0.2 to 0.4 m out | 1 | thrown forwards, 0.6 g seeps out after |
 | Brake | 12 kJ, a ring sheet out of the vents | about 3 | spreads sideways, not forwards |
 | Suppressor | 0.3 kJ (the can's air burns away) | about 1/100 | 2.5 g seeps out of the front over ~8 ms |
+| Flash hider | 11.8 kJ | 0.95 | thrown forwards a little further, 0.6 g seeps out after |
+
+A flash hider's effect needs a finer grid to show. At 4 cells across the bore
+the bare muzzle's jet ends in a Mach disk that shocks the gas to about
+2840 K, hotter than burning can make it (2600 K, where the products come
+apart): that is the intermediate flash. In the flash hider the jet expands
+before it meets the air, and nothing in the plume gets hotter than burning
+makes it. The fireball shrinks less: afterburning falls by 6% (12% with a 10°
+flare) and the brightest glow by 12% (29%), because this rifle's gas leaves the
+muzzle hot enough to reignite on mixing with air, shock or no shock. That is
+the job of flash-suppressant additives, which are not modelled yet.
 
 The fireball's size and timing look like high-speed footage of unsuppressed
 rifles, but the numbers are only as good as the one-step chemistry and a grid
@@ -757,7 +773,7 @@ gun_sim/
   lumped.py      0-D reference model
   action.py      recoil and action cycling: gun, bolt, gas system, shooter, bursts
   axisym.py      2D axisymmetric compressible flow solver (face apertures for walls and ports)
-  devices.py     muzzle brake/suppressor and gas port geometry, coupling to the bore, discharge coefficient
+  devices.py     muzzle brake/suppressor/flash hider and gas port geometry, coupling to the bore, discharge coefficient
   plume.py       muzzle flash and smoke: the bore's outflow solved in 2D into the air, with afterburning
   propellants.py propellant compositions and grain shapes -> form function
   exterior.py    point-mass trajectory solver: G1/G7 drag, atmosphere, zeroing, range tables
@@ -823,7 +839,8 @@ build_exe.ps1    one-command Windows build
 - [x] Use the case geometry in the solver (chamber volume and area profile from `[case]`)
 - [x] 3D barrel, chamber and bolt action; animate the projectile, gas, flash, smoke and bolt cycle from a shot
 - [x] Muzzle flash and smoke solved in 2D from the bore's outflow, with afterburning, through brakes and suppressors
-- [ ] Flash hiders and flash-suppressant propellant additives; afterburning in the coupled device run (sound, recoil)
+- [x] Flash hiders
+- [ ] Flash-suppressant propellant additives; afterburning in the coupled device run (sound, recoil)
 - [x] Projectile variants: secant ogive, hollow point, cannelure, jacket/core section
 - [ ] Richer GUI: side-by-side gun comparison, parameter sweeps, live animation of the bore flow
 

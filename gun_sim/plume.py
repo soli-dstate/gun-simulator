@@ -115,8 +115,8 @@ def plume_grid(gun) -> PlumeGrid:
     solid, open_x, open_r, _, inside, r_muzzle = devices.draw(gun, X, Rr, h)
     in_bore = (X < 0) & (Rr < rb)
     inlet = in_bore & (X < -2 * h)    # the bore up to two cells from the muzzle holds the bore's exit state
-    # Where the gas comes out: the muzzle, a suppressor's front, or the middle of a brake's vents.
-    origin = {"brake": 0.5 * L, "suppressor": L}.get(kind, 0.0)
+    # Where the gas comes out: the muzzle, a suppressor's or flash hider's front, or the middle of a brake's vents.
+    origin = {"brake": 0.5 * L, "suppressor": L, "flash_hider": L}.get(kind, 0.0)
     dims.update(h=h, r_muzzle=r_muzzle, exit=L, origin=origin, nx=len(xc), nr=len(rc))
     return PlumeGrid(h, xe, re, solid, open_x, open_r, inside, in_bore, inlet, dims)
 
@@ -167,8 +167,10 @@ def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
     times = window * (np.arange(FRAMES) / (FRAMES - 1)) ** 1.5
     temps, props, sizes = [], [], []
     hidden = g.solid | g.bore
-    # Light from inside a suppressor doesn't get out; a brake's chambers show through the vents.
-    through = {"suppressor": 0.0, "brake": g.dims["vent_fraction"]}.get(g.dims["type"], 1.0)
+    # Light from inside a suppressor doesn't get out; a brake's chambers and a flash hider's bore
+    # show through the slots.
+    through = {"suppressor": 0.0, "brake": g.dims["vent_fraction"],
+               "flash_hider": g.dims["vent_fraction"]}.get(g.dims["type"], 1.0)
     seen = np.where(hidden, 0.0, np.where(g.inside, through, 1.0)) * s.volume
     xc = s.xc[:, None] * np.ones_like(seen)
     reach = np.hypot(s.xc[:, None] - g.dims["origin"], s.rc[None, :])

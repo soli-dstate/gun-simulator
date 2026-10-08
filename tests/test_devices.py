@@ -142,6 +142,35 @@ def test_action_sounds_follow_the_cycle():
     assert all(e["peak_db"] < blast - 30 for e in snd.events if e["name"].startswith("action"))
 
 
+def test_flash_hider_is_a_flared_cage_open_at_the_front():
+    gun = Gun.load(RIFLE)
+    gun.muzzle_device.type = "flash_hider"
+    g = devices.device_grid(gun)
+    d = g.dims
+    xc = g.x0 + (np.arange(d["nx"]) + 0.5) * g.h
+    rc = (np.arange(d["nr"]) + 0.5) * g.h
+    i_collar = np.argmin(np.abs(xc - 0.5 * d["slot_start"]))
+    i_slots = np.argmin(np.abs(xc - 0.5 * (d["slot_start"] + d["length"])))
+    wall = (rc > d["exit_radius"]) & (rc < d["outer_radius"])
+    assert g.device[i_collar, wall].all()                      # the collar is solid steel
+    assert not g.device[i_slots, wall].any()                   # the slots are cut through the wall
+    assert np.all(g.open_r[i_slots, 1:][wall] == pytest.approx(d["vent_fraction"]))
+    i_front = np.argmin(np.abs(xc - (d["length"] + g.h)))
+    assert not g.solid[i_front].any()                          # nothing in front: it is open
+    assert d["exit_radius"] > d["hole_radius"]                 # the bore flares out
+    assert 0.01 < devices.device_mass(gun) < 0.15
+
+
+def test_flash_hider_barely_changes_recoil(shots):
+    gun = Gun.load(RIFLE)
+    gun.muzzle_device.type = "flash_hider"
+    r = fluid.simulate_cached(gun, blowdown_time=BLOWDOWN)
+    assert r.recoil_impulse == pytest.approx(shots["none"][1].recoil_impulse, rel=0.03)
+    assert abs(r.device.impulse) < 0.1 * shots["brake"][1].device.impulse
+    charge = gun.propellant.charge_mass
+    assert 0.75 * charge < r.device.out_propellant[-1] < 1.02 * charge
+
+
 def test_bad_device_rejected():
     gun = Gun.load(RIFLE)
     gun.muzzle_device.type = "flash hider"
