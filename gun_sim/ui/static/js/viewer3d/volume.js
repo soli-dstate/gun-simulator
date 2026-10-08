@@ -128,7 +128,8 @@ float smokeDensity(int i, vec3 p, bool detail) {
   if (shape < 0.03) return 0.0;
   vec4 s = u_smokeShape[i], m = u_smokeMisc[i];
   if (!detail) return shape * s.z;
-  float n = fbm(q / (s.y * 0.42) + vec3(m.z, m.z * 1.7, m.z * 0.3) + vec3(0.0, -m.x * 0.5, m.x * 0.2));
+  // The detail is fixed to the puff's body, which stays put while its source moves.
+  float n = fbm((q - u_smokeDir[i] * s.x) / (s.y * 0.42) + vec3(m.z, m.z * 1.7, m.z * 0.3) + vec3(0.0, -m.x * 0.5, m.x * 0.2));
   return clamp(shape * 1.5 - 0.5 + (n - 0.5) * 1.3, 0.0, 1.0) * s.z;
 }
 

@@ -19,8 +19,9 @@
 //      unlocks, flies back, ejects, strips the next round and slams home.
 //
 // Throughout, the whole rifle moves as the recoil simulation says: back into
-// the shoulder and pitching about it, muzzle up. The flash and smoke are fixed
-// to the barrel tip and move with it.
+// the shoulder and pitching about it, muzzle up. Gas and smoke stay in the air
+// where they left the gun; only their source, the barrel tip or the breech,
+// moves with it, so a seeping trail joins the moving gun to the still cloud.
 //
 // A burst from a self-loading action is one action simulation with several
 // shots: each fires when the simulation says, with its own projectile, flash,
@@ -290,7 +291,7 @@ export class FiringRange {
       const t = c.t;
       if (t > CYCLE.lift && c.wispT === null && c.round === "spent") {
         c.wispT = 0;
-        this.wisps.push({ age: 0 });
+        this.wisps.push({ age: 0, gun: this._gunMatrix() });   // where the breech was when it opened
       }
       if (!c.ejected && t >= CYCLE.lift + CYCLE.back) {
         c.ejected = true;
@@ -576,9 +577,20 @@ export class FiringRange {
     const bore = L.bore;
     const state = { smoke: [], fields: [], gas: null, plume: null, light: null, time: 0 };
     let light = null;
-    // The rifle's model matrix now, and its action on points. The smoke is fixed to the rifle, so it
-    // rides the recoil and muzzle climb with the barrel tip.
+    // The rifle's model matrix at a sim time (recoil, then pitch about the pivot), and its action on points.
+    const gunAtT = (t) => {
+      const rc = this._actionAt("recoil", t) * 1e3, pc = this._actionAt("pitch", t);
+      if (!rc && !pc) return translation(0, 0, 0);
+      const [px, py] = L.pivot;
+      return chain(translation(-rc, 0, 0), translation(px, py, 0), rotationZ(pc), translation(-px, -py, 0));
+    };
     const at = (m, x, y, z) => [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
+    // A puff that stays in the air where it was put: its body is centred at `centre`, while its trail
+    // runs back to its source on the gun as the gun is now.
+    const puff = (source, centre) => {
+      const d = centre.map((v, i) => v - source[i]), reach = Math.hypot(...d);
+      return { origin: source, dir: reach > 1e-6 ? d.map((v) => v / reach) : [0, 1, 0], reach };
+    };
     const gT = state.gunModel = this._gunMatrix();
     if (s && this.T >= PIN_FALL && s.plume) {
       const r = s.result, P = s.plume;
@@ -600,32 +612,36 @@ export class FiringRange {
         const shown = exited.length > 1 ? [exited[0], latest] : [latest];
         for (const te of shown) {
           const thick = te === latest ? 1 : Math.sqrt(Math.min(exited.length - 1, 4));
-          state.fields.push(this._plumeAt(P, s.rise, this.tSim - te, gT, thick, 3.1 + te * 1e3));
+          // The gas is left in the air where the muzzle was when it came out.
+          state.fields.push(this._plumeAt(P, s.rise, this.tSim - te, gunAtT(te), thick, 3.1 + te * 1e3));
         }
-        const f = state.fields[state.fields.length - 1];
+        const f = state.fields[state.fields.length - 1], gE = gunAtT(latest);
         const g = FLASH_LIGHT * f.glow;
         if (g > 0.003) {
-          light = { position: at(gT, f.glowX, 0, 0), color: [14 * g, 7 * g, 2.6 * g], range: f.size };
+          light = { position: at(gE, f.glowX, 0, 0), color: [14 * g, 7 * g, 2.6 * g], range: f.size };
           state.light = { position: light.position, color: [0.6 * g, 0.3 * g, 0.11 * g], range: f.size };
         }
-        // What was left in the bore and the device seeps out of the exit afterwards and rises.
+        // What was left in the bore and the device seeps out of the exit afterwards and rises: from the
+        // exit as it is now, into a puff that stays above where the muzzle was at exit.
         const age = this.tSim - latest - P.times[P.times.length - 1], tr = P.trickle;
         if (age > 0 && age < SMOKE_LIFE && tr.mass > 0) {
           const out = tr.mass * (1 - Math.exp(-age / tr.tau));
           const R = Math.cbrt(3 * out * SEEP_DILUTION / (4 * Math.PI * 1.2)) * 1e3 + 1.5 * bore + 15 * age;
           const density = out / (4 / 3 * Math.PI * (R * 1e-3) ** 3);
+          const exit = at(gE, L.muzzleX + tr.x, 0, 0), up = R * 0.5 + 40 * age;
           state.smoke.push({
-            origin: at(gT, L.muzzleX + tr.x, 0, 0), dir: [0.35, 0.94, 0], reach: R * 0.5 + 40 * age, radius: R,
+            ...puff(at(gT, L.muzzleX + tr.x, 0, 0), [exit[0] + 0.35 * up, exit[1] + 0.94 * up, exit[2]]), radius: R,
             extinction: SMOKE * (P.smoke ?? 1) * density * Math.exp(-age / 2.5), rise: 0, age, group: 0, seed: 7.7, trail: 1,
           });
         }
       }
     }
     for (const w of this.wisps) {
-      const r = 1.8 * bore + 14 * w.age;
+      const r = 1.8 * bore + 14 * w.age, out = 2 * bore + 40 * w.age;
+      const port = at(w.gun, L.rearX - 4, 0, 0);
       state.smoke.push({
-        origin: at(gT, L.rearX - 4, 0, 0), dir: [-0.75, 0.55, 0.37], reach: 2 * bore + 40 * w.age, radius: r,
-        extinction: 0.55 * Math.exp(-w.age / 1.3) * smooth(w.age / 0.15) / r, rise: 20 * w.age * w.age,
+        ...puff(at(gT, L.rearX - 4, 0, 0), [port[0] - 0.75 * out, port[1] + 0.55 * out + 20 * w.age * w.age, port[2] + 0.37 * out]), radius: r,
+        extinction: 0.55 * Math.exp(-w.age / 1.3) * smooth(w.age / 0.15) / r, rise: 0,
         age: w.age, group: 1, seed: 12.4, trail: 0.8,
       });
     }
