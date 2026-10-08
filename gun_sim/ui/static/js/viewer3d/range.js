@@ -19,7 +19,8 @@
 //      unlocks, flies back, ejects, strips the next round and slams home.
 //
 // Throughout, the whole rifle moves as the recoil simulation says: back into
-// the shoulder and pitching about it, muzzle up.
+// the shoulder and pitching about it, muzzle up. The flash and smoke are fixed
+// to the barrel tip and move with it.
 //
 // A burst from a self-loading action is one action simulation with several
 // shots: each fires when the simulation says, with its own projectile, flash,
@@ -575,15 +576,10 @@ export class FiringRange {
     const bore = L.bore;
     const state = { smoke: [], fields: [], gas: null, plume: null, light: null, time: 0 };
     let light = null;
-    // The rifle's model matrix at a sim time (recoil, then pitch about the pivot), and its action on points.
-    const gunAtT = (t) => {
-      const rc = this._actionAt("recoil", t) * 1e3, pc = this._actionAt("pitch", t);
-      if (!rc && !pc) return translation(0, 0, 0);
-      const [px, py] = L.pivot;
-      return chain(translation(-rc, 0, 0), translation(px, py, 0), rotationZ(pc), translation(-px, -py, 0));
-    };
+    // The rifle's model matrix now, and its action on points. The smoke is fixed to the rifle, so it
+    // rides the recoil and muzzle climb with the barrel tip.
     const at = (m, x, y, z) => [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
-    state.gunModel = this._gunMatrix();
+    const gT = state.gunModel = this._gunMatrix();
     if (s && this.T >= PIN_FALL && s.plume) {
       const r = s.result, P = s.plume;
       const times = this._shotTimes;
@@ -604,9 +600,9 @@ export class FiringRange {
         const shown = exited.length > 1 ? [exited[0], latest] : [latest];
         for (const te of shown) {
           const thick = te === latest ? 1 : Math.sqrt(Math.min(exited.length - 1, 4));
-          state.fields.push(this._plumeAt(P, s.rise, this.tSim - te, gunAtT(te), thick, 3.1 + te * 1e3));
+          state.fields.push(this._plumeAt(P, s.rise, this.tSim - te, gT, thick, 3.1 + te * 1e3));
         }
-        const f = state.fields[state.fields.length - 1], gT = gunAtT(latest);
+        const f = state.fields[state.fields.length - 1];
         const g = FLASH_LIGHT * f.glow;
         if (g > 0.003) {
           light = { position: at(gT, f.glowX, 0, 0), color: [14 * g, 7 * g, 2.6 * g], range: f.size };
@@ -628,7 +624,7 @@ export class FiringRange {
     for (const w of this.wisps) {
       const r = 1.8 * bore + 14 * w.age;
       state.smoke.push({
-        origin: [L.rearX - 4, 0, 0], dir: [-0.75, 0.55, 0.37], reach: 2 * bore + 40 * w.age, radius: r,
+        origin: at(gT, L.rearX - 4, 0, 0), dir: [-0.75, 0.55, 0.37], reach: 2 * bore + 40 * w.age, radius: r,
         extinction: 0.55 * Math.exp(-w.age / 1.3) * smooth(w.age / 0.15) / r, rise: 20 * w.age * w.age,
         age: w.age, group: 1, seed: 12.4, trail: 0.8,
       });
