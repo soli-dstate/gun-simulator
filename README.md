@@ -53,7 +53,8 @@ This opens the simulator in its own window. It uses
 Edge WebView2 (already part of Windows 10 and 11). **Open…** and **Save…**
 load and save gun `.toml` files, and **Preset** picks one from `configs/`
 (the example rifle, the same cartridge in a gas-operated rifle, that rifle
-with a suppressor, a 7-perforated-grain load, and a hollow-point round).
+with a suppressor, a roller-delayed rifle, a 7-perforated-grain load, and a
+hollow-point round).
 The window has two tabs.
 
 **Editor.** Everything about the gun and the shot, one section at a time:
@@ -215,7 +216,7 @@ example.
 | `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1 or G7) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"` or `"copper"`) and `exposed_core_length` (soft point) |
 | `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win |
 | `[ignition]` | igniter pressure |
-| `[action]` | `type` (`"bolt"`, `"gas"`, `"blowback"` or `"short_recoil"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents; bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
+| `[action]` | `type` (`"bolt"`, `"gas"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas and gas-delayed); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
 | `[shooter]` | `stance` (`"shoulder"`, or `"free"` for free recoil); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"` or `"suppressor"`); length, outer diameter, number of baffles, baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake), mass. Missing sizes are scaled from the bore |
 | `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
@@ -363,6 +364,20 @@ the gun, solved for 300 ms with small fixed steps (2 µs while the gas acts):
   - *short_recoil*: the barrel and slide recoil locked together until the
     barrel has moved `unlock_travel` and stops against the frame. The slide
     carries on, and picks the barrel up again on the way home.
+  - *roller_delayed* and *lever_delayed*: delayed blowback with a two-part
+    bolt. The breech pressure pushes a light bolt head from the start, but
+    rollers (or a lever) bearing on the receiver make the heavy carrier move
+    `delay_ratio` (K) times as fast. The head therefore feels the carrier as
+    K² times its mass and opens slowly, and the receiver takes the rest of the
+    push. Once the carrier has moved `unlock_travel` the rollers are in, the
+    carrier pulls the head along (they share their momentum) and it runs on as
+    a plain blowback. Head, carrier and gun are solved together from their
+    kinetic energy, so momentum is kept exactly. K = 1 is a plain blowback.
+  - *gas_delayed*: blowback held shut by gas. A port just ahead of the chamber
+    (10% of the travel unless given) feeds a cylinder whose piston pushes the
+    slide forwards. Opening the slide drives the piston in and compresses the
+    gas, so the slide stays nearly shut until the bore pressure falls and the
+    gas runs back out of the port.
 - **Cycle.** The bolt ejects the case once it has come back a case length
   (plus 3 mm). It can pick up the next round once it has come back past a whole
   round, and drags `feed_force` while it chambers it. Impacts at the rear stop
@@ -390,6 +405,14 @@ the gas jet. Free, the rifle recoils at 3.0 m/s with 18 J. Held, it goes about
 unlocks with 8.6 MPa left in the chamber and cycles in 36 ms, the bolt
 reaching the rear stop at 6.8 m/s.
 
+The roller-delayed preset, `configs/example_roller_delayed.toml` (the same
+cartridge, a 1 kg bolt with a 0.15 kg head, K = 4), unlocks about 0.9 ms after
+the projectile leaves with 28 MPa left in the chamber, and the bolt reaches the
+rear stop at 5.4 m/s. The same bolt as a plain blowback reaches it at 23 m/s,
+having let the case 28 mm out of the chamber above 30 MPa. A delayed blowback's case
+always starts to move under pressure, which is why such rifles flute the
+chamber; the warnings say so.
+
 - **Bursts.** A self-loading action can fire several shots per trigger pull.
   Each fires 3 ms (sear, hammer, primer) after the bolt is back in battery on
   the one before, with the gun's motion and the gas cylinder carried over, so
@@ -402,8 +425,9 @@ reaching the rear stop at 6.8 m/s.
 
 Not modelled: the carrier's free travel before it picks up the bolt (they move
 as one), friction other than feeding, hammer cocking, extraction force (the
-case leaves the chamber freely), heat loss in the gas cylinder, delayed
-blowback (roller, lever, gas-delayed), and a non-linear shooter.
+case leaves the chamber freely), heat loss in the gas cylinder, a delay ratio
+that changes over the stroke (real roller and lever angles vary it a little),
+and a non-linear shooter.
 
 ### 2D axisymmetric solver: muzzle devices and gas ports (`gun_sim/axisym.py`, `gun_sim/devices.py`)
 
@@ -735,7 +759,8 @@ build_exe.ps1    one-command Windows build
 - [x] 2D axisymmetric solver for muzzle devices, suppressors and gas ports, coupled to the bore
 - [x] Action cycling (gas, recoil, blowback) and recoil impulse; the gun recoils and pitches in the 3D view
 - [x] Mechanical sounds from the action cycle; burst fire from the action simulation
-- [ ] Delayed blowback; gas-port flow in full 3D; a finer 2D grid (compiled kernels)
+- [x] Delayed blowback: roller, lever and gas-delayed
+- [ ] Gas-port flow in full 3D; a finer 2D grid (compiled kernels)
 - [x] External ballistics (drag models, trajectory)
 - [x] Procedural 3D cartridge (case, primer, projectile) with cutaway
 - [x] Use the case geometry in the solver (chamber volume and area profile from `[case]`)

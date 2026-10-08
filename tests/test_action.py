@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from gun_sim import Gun, action, fluid, lumped
@@ -186,6 +187,101 @@ def test_burst_conserves_momentum(gas_shot):
 
 def test_manual_bolt_fires_one_shot(rifle_shot):
     assert action.simulate(Gun.load(RIFLE), rifle_shot, shots=5).shots == 1
+
+
+ROLLER = CONFIGS / "example_roller_delayed.toml"
+
+
+@pytest.fixture(scope="module")
+def roller_shot():
+    return fluid.simulate(Gun.load(ROLLER), blowdown_time=BLOWDOWN)
+
+
+def ejected_at(a):
+    return next(e["time"] for e in a.events if e["name"] == "case ejected")
+
+
+def travel_at(a, t):
+    return float(np.interp(t, a.time, a.bolt))
+
+
+def test_roller_delayed_preset_cycles_after_exit(roller_shot):
+    gun = Gun.load(ROLLER)
+    a = action.simulate(gun, roller_shot)
+    assert a.status == "cycled"
+    t = {e["name"]: e["time"] for e in a.events}
+    order = ["bolt unlocks", "case ejected", "bolt hits the rear stop", "strips the next round", "back in battery"]
+    assert [t[name] for name in order] == sorted(t[name] for name in order)
+    assert t["bolt unlocks"] > roller_shot.muzzle_time   # the rollers hold it until the projectile is gone
+    assert a.rear_speed < action.REAR_SPEED_WARNING
+    assert 300 < a.cyclic_rate < 3000
+    assert a.strokes["unlock"] == pytest.approx(gun.action.unlock_travel / gun.action.delay_ratio)
+
+
+def test_delay_ratio_of_one_is_a_plain_blowback(roller_shot):
+    gun = Gun.load(ROLLER)
+    gun.action.delay_ratio = 1.0
+    delayed = action.simulate(gun, roller_shot)
+    gun.action.type = "blowback"
+    plain = action.simulate(gun, roller_shot)
+    assert ejected_at(delayed) == pytest.approx(ejected_at(plain), rel=1e-6)
+    assert delayed.rear_speed == pytest.approx(plain.rear_speed, rel=1e-6)
+
+
+@pytest.mark.parametrize("kind", ["roller_delayed", "lever_delayed"])
+def test_delay_holds_the_bolt_and_conserves_momentum(roller_shot, kind):
+    gun = Gun.load(ROLLER)
+    gun.shooter.stance = "free"
+    gun.action.type = kind
+    gun.action.delay_ratio = None   # the type's default
+    delayed = action.simulate(gun, roller_shot)
+    # Free, the rollers and impacts are internal: the gun ends with the shot's impulse.
+    assert gun_momentum_at_end(gun, delayed) == pytest.approx(delayed.impulse, rel=0.01)
+    gun.action.type = "blowback"
+    plain = action.simulate(gun, roller_shot)
+    assert travel_at(delayed, 2e-3) < 0.3 * travel_at(plain, 2e-3)
+
+
+def test_higher_delay_ratio_unlocks_at_lower_pressure(roller_shot):
+    gun = Gun.load(ROLLER)
+    low = action.simulate(gun, roller_shot)
+    gun.action.delay_ratio = 6.0
+    high = action.simulate(gun, roller_shot)
+    assert high.unlock_pressure < low.unlock_pressure
+
+
+def test_gas_delay_holds_the_slide_back():
+    gun = Gun.load(ROLLER)
+    a = gun.action
+    a.type, a.piston_diameter, a.gas_volume, a.gas_stroke, a.gas_port_diameter = "gas_delayed", 12e-3, 6e-6, 0.04, 2e-3
+    gun.solver.gas_port_2d = False
+    gun.shooter.stance = "free"
+    gun.validate()
+    shot = fluid.simulate(gun, blowdown_time=BLOWDOWN)
+    assert shot.loads.port_position == pytest.approx(0.1 * gun.barrel.travel)  # just ahead of the chamber
+    held = action.simulate(gun, shot)
+    assert held.gas_peak_pressure > 20e6
+    assert gun_momentum_at_end(gun, held) == pytest.approx(held.impulse, rel=0.01)
+    a.type = "blowback"
+    plain = action.simulate(gun, shot)
+    # On a rifle cartridge the cylinder fills slowly through the port, so the hold comes late.
+    assert travel_at(held, 3e-3) < 0.8 * travel_at(plain, 3e-3)
+
+
+def test_bad_delayed_blowback_rejected():
+    gun = Gun.load(ROLLER)
+    gun.action.delay_ratio = 0.5
+    with pytest.raises(ValueError, match="delay_ratio"):
+        gun.validate()
+    gun = Gun.load(ROLLER)
+    gun.action.bolt_head_mass = 2.0
+    with pytest.raises(ValueError, match="bolt_head_mass"):
+        gun.validate()
+    gun = Gun.load(ROLLER)
+    gun.action.type = "gas_delayed"
+    gun.action.gas_stroke = 0.05   # sweeps more than the cylinder holds
+    with pytest.raises(ValueError, match="bottom out"):
+        gun.validate()
 
 
 def test_gas_port_discharge_coefficient_from_2d(gas_shot):

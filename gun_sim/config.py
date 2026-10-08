@@ -327,7 +327,7 @@ class MuzzleDevice:
     mass: float | None = None             # kg, added to the gun; None = from its steel
 
 
-ACTION_TYPES = ("bolt", "gas", "blowback", "short_recoil")
+ACTION_TYPES = ("bolt", "gas", "blowback", "short_recoil", "roller_delayed", "lever_delayed", "gas_delayed")
 STANCES = ("shoulder", "free")
 
 
@@ -339,7 +339,10 @@ class Action:
     cylinder whose piston drives the bolt carrier; "blowback" has an unlocked
     bolt held shut only by its own mass and spring; "short_recoil" has the
     barrel and slide recoil locked together until the barrel stops and unlocks.
-    None = worked out from the cartridge (see action.py).
+    Delayed blowbacks: "roller_delayed" and "lever_delayed" split the bolt into
+    a light head and a carrier that rollers (a lever) drive delay_ratio times
+    as fast; "gas_delayed" has gas from a port by the chamber push a piston on
+    the slide forwards. None = worked out from the cartridge (see action.py).
     """
     type: str = "bolt"
     gun_mass: float = 4.0               # kg, the whole gun unloaded, bolt included
@@ -349,7 +352,12 @@ class Action:
     spring_rate: float = 700.0          # N/m, return spring
     spring_preload: float = 50.0        # N, return spring force with the bolt closed
     unlock_travel: float | None = None  # m, gas: carrier travel before the bolt unlocks (None = 6 mm);
-                                        # short recoil: barrel travel before it stops (None = 3 mm)
+                                        # short recoil: barrel travel before it stops (None = 3 mm);
+                                        # roller/lever delayed: carrier travel until the delay ends (None = 5 / 6 mm)
+    # Roller/lever delayed blowback: carrier speed over bolt head speed while delayed
+    # (None = 4 roller, 6 lever), and the bolt head's share of bolt_mass (None = a fifth).
+    delay_ratio: float | None = None
+    bolt_head_mass: float | None = None  # kg
     rear_restitution: float = 0.3       # bounce of the bolt off the rear stop (buffer)
     battery_restitution: float = 0.05   # bounce of the bolt as it closes
     feed_force: float = 15.0            # N, drag on the bolt while it strips and chambers a round
@@ -447,7 +455,7 @@ class Gun:
         moving = a.bolt_mass + ((a.barrel_mass or 0.0) if a.type == "short_recoil" else 0.0)
         if a.gun_mass <= 0 or a.bolt_mass <= 0 or moving >= a.gun_mass:
             raise ValueError("action: the gun must be heavier than the parts that cycle inside it")
-        for name in ("barrel_mass", "bolt_travel", "unlock_travel", "gas_port_position"):
+        for name in ("barrel_mass", "bolt_travel", "unlock_travel", "gas_port_position", "bolt_head_mass"):
             value = getattr(a, name)
             if value is not None and value <= 0:
                 raise ValueError(f"action.{name} must be positive (or left out)")
@@ -460,8 +468,16 @@ class Gun:
                      "gas_volume", "gas_stroke", "bore_height", "cg_distance", "radius_of_gyration"):
             if getattr(a, name) < 0:
                 raise ValueError(f"action.{name} cannot be negative")
-        if a.type == "gas" and (a.gas_volume <= 0 or a.piston_diameter <= 0 or a.gas_port_diameter <= 0):
+        if a.type in ("gas", "gas_delayed") and (a.gas_volume <= 0 or a.piston_diameter <= 0
+                                                 or a.gas_port_diameter <= 0):
             raise ValueError("a gas action needs a gas port, a piston and a gas cylinder volume")
+        if a.type == "gas_delayed" and a.gas_volume <= math.pi / 4 * a.piston_diameter**2 * a.gas_stroke:
+            raise ValueError("gas-delayed: the piston would bottom out in its cylinder before it vents "
+                             "(a bigger gas_volume or a shorter gas_stroke)")
+        if a.delay_ratio is not None and not 1 <= a.delay_ratio <= 20:
+            raise ValueError("action.delay_ratio must be between 1 and 20")
+        if a.bolt_head_mass is not None and a.bolt_head_mass >= a.bolt_mass:
+            raise ValueError("action.bolt_head_mass must be less than bolt_mass (the head and carrier together)")
         for name in ("body_mass", "shoulder_stiffness", "shoulder_damping", "hold_stiffness", "hold_damping"):
             if getattr(s, name) < 0:
                 raise ValueError(f"shooter.{name} cannot be negative")

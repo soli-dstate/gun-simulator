@@ -33,6 +33,21 @@ Actions. Which body the bore forces push depends on the action:
   until the barrel has moved `unlock_travel`, where it stops against the frame
   and unlocks; the slide carries on. Going forward, the slide picks the barrel
   up and returns it to battery.
+* roller_delayed, lever_delayed: delayed blowback with a two-part bolt. The
+  breech pressure pushes the light bolt head from the start, but rollers (or a
+  lever) bearing on the receiver make the heavy carrier move `delay_ratio`
+  times as fast as the head. The head then feels the carrier as a mass of
+  m_head + K^2 m_carrier (K = delay_ratio), so it opens slowly, and the
+  receiver takes the rest of the push through the rollers. Once the carrier
+  has moved `unlock_travel` the rollers are in and the head is pulled along
+  (head and carrier share their momentum); from there it is a plain blowback.
+  The two are solved as one degree of freedom with the gun from their kinetic
+  energy (Lagrange), so momentum is kept exactly.
+* gas_delayed: blowback held shut by gas. A port near the chamber feeds a
+  cylinder whose piston pushes the slide forwards; opening the slide drives
+  the piston into the cylinder and compresses the gas, so the slide stays
+  nearly shut until the bore pressure falls and the gas runs back out of the
+  port.
 
 Impacts at the rear stop and in battery are instantaneous, with a coefficient
 of restitution; the impulse is shared between the bolt and the gun by their
@@ -54,7 +69,10 @@ coefficient comes from a 2D solution of the port (devices.py) unless
 solver.gas_port_2d is off; a muzzle device's mass is added to the gun.
 
 Approximations: the bolt and carrier move as one mass (a real carrier runs
-free for its unlock travel before it picks up the bolt); no friction except
+free for its unlock travel before it picks up the bolt), except in a delayed
+blowback, whose delay ratio is constant (real roller and lever angles change
+it a little over the stroke) and whose carrier closes its gap at once when
+the head reaches battery; no friction except
 feeding, no hammer to cock, and the case leaves the chamber freely. The gas in
 the cylinder is ideal and keeps its heat. The shooter's body moves rigidly
 with the butt, and is linear. Small angles throughout.
@@ -88,6 +106,18 @@ REAR_SPEED_WARNING = 8.0        # m/s into the rear stop
 UNLOCK_PRESSURE_WARNING = 20e6  # Pa in the chamber when it unlocks
 CASE_PRESSURE = 30e6            # Pa: above this the case is pressed hard into the chamber
 CASE_SETBACK_WARNING = 1e-3     # m the case may back out while it is
+# Delayed blowback: (carrier speed / head speed while delayed, carrier travel until unlocked).
+DELAYED = {"roller_delayed": (4.0, 5e-3), "lever_delayed": (6.0, 6e-3)}
+GAS_SYSTEMS = ("gas", "gas_delayed")
+HEAD_SHARE = 0.2                # delayed blowback: bolt head's share of bolt_mass, unless given
+
+
+def delay(gun: Gun) -> tuple[float, float]:
+    """Delayed blowback: (delay ratio K, bolt head mass in kg)."""
+    a = gun.action
+    ratio = a.delay_ratio if a.delay_ratio is not None else DELAYED.get(a.type, (1.0, 0.0))[0]
+    head = a.bolt_head_mass if a.bolt_head_mass is not None else HEAD_SHARE * a.bolt_mass
+    return ratio, head
 
 
 def head_area(gun: Gun) -> float:
@@ -102,7 +132,10 @@ def head_area(gun: Gun) -> float:
 def port_position(gun: Gun) -> float:
     """Projectile travel from its seat to the gas port (m)."""
     position = gun.action.gas_port_position
-    return position if position is not None else 0.75 * gun.barrel.travel
+    if position is not None:
+        return position
+    # A gas-delayed port sits just ahead of the chamber, where the pressure is.
+    return (0.1 if gun.action.type == "gas_delayed" else 0.75) * gun.barrel.travel
 
 
 def barrel_mass(gun: Gun) -> float:
@@ -116,13 +149,23 @@ def barrel_mass(gun: Gun) -> float:
 
 
 def strokes(gun: Gun) -> dict:
-    """Bolt travel (m) at which things happen."""
+    """Bolt travel (m) at which things happen.
+
+    For a delayed blowback the bolt travel is the bolt head's (the bolt face),
+    and "unlock" is how far the head has come back when the carrier has moved
+    unlock_travel; "carrier_unlock" is that carrier travel.
+    """
     a, c = gun.action, gun.case
     eject = c.length + 3e-3          # the case is clear of the chamber and hits the ejector
     feed = c.overall_length + 3e-3   # the bolt face is behind the next round
     stroke = a.bolt_travel if a.bolt_travel is not None else feed + 8e-3
-    unlock = a.unlock_travel if a.unlock_travel is not None else {"gas": 6e-3, "short_recoil": 3e-3}.get(a.type, 0.0)
-    return {"eject": eject, "feed": feed, "stroke": stroke, "unlock": min(unlock, stroke)}
+    defaults = {"gas": 6e-3, "short_recoil": 3e-3, **{k: v[1] for k, v in DELAYED.items()}}
+    unlock = a.unlock_travel if a.unlock_travel is not None else defaults.get(a.type, 0.0)
+    out = {"eject": eject, "feed": feed, "stroke": stroke, "unlock": min(unlock, stroke)}
+    if a.type in DELAYED:
+        out["carrier_unlock"] = unlock
+        out["unlock"] = min(unlock / delay(gun)[0], stroke)
+    return out
 
 
 def _orifice(area: float, p_up: float, t_up: float, p_down: float, gamma: float, r_gas: float,
@@ -271,8 +314,15 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     port_area = math.pi / 4 * a.gas_port_diameter**2
     piston_area = math.pi / 4 * a.piston_diameter**2
 
+    # Delayed blowback: head and carrier, and the carrier's speed over the head's while delayed.
+    ratio, m_head = delay(gun) if kind in DELAYED else (1.0, m_bolt)
+    m_carrier = m_bolt - m_head
+    carrier_gap = (ratio - 1) * unlock   # how far the carrier is ahead of the head once unlocked
+    # The gas cylinder grows as a gas piston is driven back, and shrinks as a gas-delayed slide opens.
+    swept = -1.0 if kind == "gas_delayed" else 1.0
+
     port_cd, port_2d = None, False
-    if kind == "gas":
+    if kind in GAS_SYSTEMS:
         port_cd = ORIFICE_CD
         if gun.solver.gas_port_2d:
             port = devices.port_discharge(gun, loads)
@@ -285,7 +335,8 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     x = v = th = w = 0.0      # gun: recoil, velocity, pitch, pitch rate
     s = u = 0.0               # bolt: travel and velocity in the gun
     carry = kind == "short_recoil"   # barrel still moving with the slide
-    unlocked = kind == "blowback"
+    unlocked = kind in ("blowback", "gas_delayed", *DELAYED)   # the breech pressure pushes the bolt
+    delayed = kind in DELAYED        # rollers (lever) out: the carrier runs `ratio` times the head's speed
     sealed = True             # gas cylinder closed (the piston hasn't reached the vent)
     m_c = AMBIENT * a.gas_volume / (r_gas * AIR_TEMPERATURE)  # cylinder starts full of air
     e_c = m_c * cv * AIR_TEMPERATURE
@@ -329,9 +380,9 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             g_ext, r_ext = 0.0, fb + fr
 
         f_piston = 0.0
-        if kind == "gas":
+        if kind in GAS_SYSTEMS:
             if sealed:
-                vol = a.gas_volume + piston_area * s
+                vol = a.gas_volume + swept * piston_area * s
                 p_c = (gamma - 1) * e_c / vol
                 t_c = p_c * vol / (m_c * r_gas)
                 if pp > p_c:
@@ -341,26 +392,38 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                     flow = -_orifice(port_area, p_c, t_c, pp, gamma, r_gas, port_cd)
                     enthalpy = cp * t_c
                 m_c = max(m_c + flow * dt, 1e-12)
-                e_c = max(e_c + (flow * enthalpy - p_c * piston_area * u) * dt, 1e-9)
-                f_piston = (p_c - AMBIENT) * piston_area
+                e_c = max(e_c + (flow * enthalpy - p_c * swept * piston_area * u) * dt, 1e-9)
+                f_piston = swept * (p_c - AMBIENT) * piston_area
                 gas_peak = max(gas_peak, p_c)
             else:
                 p_c = AMBIENT
 
-        # Forces between the bolt group and the gun (+ pushes the bolt back).
-        f_int = f_piston - (a.spring_preload + a.spring_rate * s)
+        # Forces between the bolt group and the gun (+ pushes the bolt back). The spring
+        # bears on the carrier, which a delayed blowback's head drives `ratio` times as far.
+        carrier = ratio * s if delayed else s + carrier_gap
+        f_spring = a.spring_preload + a.spring_rate * carrier
+        f_int = f_piston - f_spring
         if cyc["feeding"] and u < 0 and s < feed_at:
             f_int += a.feed_force
         f_sh = -(k_sh * x + c_sh * v)
-        acc_g = (g_ext + f_int) / m_g
-        acc_r = (r_ext - f_int + f_sh) / m_r
-        held = kind == "bolt" or (s <= 0 and u <= 0 and acc_g <= acc_r)
+        if delayed:
+            # Gun (x) and head (s) from T = m_r x'^2/2 + m_head (x' + s')^2/2 + m_carrier (x' + K s')^2/2:
+            # the bore pushes the head, the spring the carrier through the rollers.
+            m11, m12, m22 = m_g + m_r, m_head + ratio * m_carrier, m_head + ratio**2 * m_carrier
+            q1, q2 = g_ext + r_ext + f_sh, g_ext - ratio * f_spring
+            det = m11 * m22 - m12 * m12
+            acc_r, rel = (q1 * m22 - q2 * m12) / det, (m11 * q2 - m12 * q1) / det
+        else:
+            acc_g = (g_ext + f_int) / m_g
+            acc_r = (r_ext - f_int + f_sh) / m_r
+            rel = acc_g - acc_r
+        held = kind == "bolt" or (s <= 0 and u <= 0 and rel <= 0)
         if held:  # the bolt is shut and stays shut: one body
             acc_r = (g_ext + r_ext + f_sh) / (m_g + m_r)
             axial = g_ext + r_ext
             s = u = 0.0
         else:
-            axial = r_ext - f_int
+            axial = m_r * acc_r - f_sh   # what acts on the gun body (the shooter's share aside)
         v += acc_r * dt
         x += v * dt
         w += (h * axial - k_th * th - c_th * w) / inertia * dt
@@ -368,25 +431,38 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         t_end = t + dt
 
         if not held:
-            u += (acc_g - acc_r) * dt
+            u += rel * dt
             s += u * dt
-            mu = m_g * m_r / (m_g + m_r)
+            if delayed and s >= unlock and u > 0:
+                # The rollers are in: the carrier pulls the head along, and they move on as one.
+                delayed = False
+                u *= (m_head + ratio * m_carrier) / m_g
+                p_unlock = fb / loads.head_area + AMBIENT
+                unlock_pressure = unlock_pressure or p_unlock
+                event(t_end, "bolt unlocks", f"{p_unlock / 1e6:.1f} MPa in the chamber")
+            # An impact that changes the bolt's speed in the gun by du changes the gun's by
+            # -du m12 / m11 (from the mass matrix above: m12 = m_g for a one-piece bolt).
+            share = (m_head + ratio * m_carrier if delayed else m_g) / (m_g + m_r)
             if s >= stroke and u > 0:  # into the rear stop
                 if rear_speed is None:
                     rear_speed = u
                 event(t_end, "bolt hits the rear stop", f"{u:.1f} m/s", u)
-                impulse = (1 + a.rear_restitution) * mu * u
-                v += impulse / m_r
-                w += h * impulse / inertia
+                dv = (1 + a.rear_restitution) * u * share
+                v += dv
+                w += h * m_r * dv / inertia
                 s, u = stroke, -a.rear_restitution * u
             elif s <= 0 and u < 0:  # closes
-                impulse = (1 + a.battery_restitution) * mu * -u
-                v -= impulse / m_r
-                w -= h * impulse / inertia
+                dv = (1 + a.battery_restitution) * u * share
+                v += dv
+                w += h * m_r * dv / inertia
                 speed = -u
                 s, u = 0.0, -a.battery_restitution * u
                 if u < REST_SPEED:
                     u = 0.0
+                if kind in DELAYED:
+                    # The carrier closes its gap and cams the rollers out again; any rebound keeps its momentum.
+                    delayed = True
+                    u *= m_g / (m_head + ratio * m_carrier)
                 if cyc["feeding"] and cyc["battery"] is None:
                     cyc["battery"] = t_end
                     first_battery = first_battery or t_end
@@ -407,12 +483,13 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                     event(t_end, "bolt unlocks", f"{p_unlock / 1e6:.1f} MPa in the chamber")
                 elif unlocked and s < unlock and u < 0:
                     unlocked = False  # locks again on the way home
+            if kind in GAS_SYSTEMS:
                 if sealed and s >= a.gas_stroke:
                     sealed = False
                     event(t_end, "gas cylinder vents")
                 elif not sealed and s < a.gas_stroke and u < 0:
                     sealed = True  # the piston closes the cylinder again, on air
-                    m_c = AMBIENT * (a.gas_volume + piston_area * s) / (r_gas * AIR_TEMPERATURE)
+                    m_c = AMBIENT * (a.gas_volume + swept * piston_area * s) / (r_gas * AIR_TEMPERATURE)
                     e_c = m_c * cv * AIR_TEMPERATURE
             elif kind == "short_recoil":
                 if carry and s >= unlock and u > 0:  # the barrel stops against the frame
@@ -482,14 +559,17 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     if rear_speed is not None and rear_speed > REAR_SPEED_WARNING:
         cure = {"gas": "over-gassed; a smaller gas port, a heavier carrier or a stiffer spring would ease it",
                 "blowback": "a heavier bolt or a stiffer spring would slow it",
-                "short_recoil": "a heavier slide or a stiffer spring would slow it"}[kind]
+                "short_recoil": "a heavier slide or a stiffer spring would slow it",
+                "gas_delayed": "a bigger piston or a port nearer the chamber would hold it back longer",
+                }.get(kind, "a higher delay ratio, a heavier carrier or a stiffer spring would slow it")
         warnings.append(f"the bolt hits the rear stop at {rear_speed:.1f} m/s, battering the gun: {cure}")
+    flutes = " (delayed blowbacks use a fluted chamber so the case can slide)" if kind in DELAYED else ""
     if unlock_pressure is not None and unlock_pressure > UNLOCK_PRESSURE_WARNING:
         warnings.append(f"it unlocks with {unlock_pressure / 1e6:.0f} MPa still in the chamber, "
-                        "so the case is pulled while pressed into the chamber walls")
+                        "so the case is pulled while pressed into the chamber walls" + flutes)
     if setback > CASE_SETBACK_WARNING:
         warnings.append(f"the case backs {setback * 1e3:.1f} mm out of the chamber while the chamber is still "
-                        f"above {CASE_PRESSURE / 1e6:.0f} MPa: its unsupported head may rupture")
+                        f"above {CASE_PRESSURE / 1e6:.0f} MPa: its unsupported head may rupture" + flutes)
 
     impulse = loads.impulse
     arr = {k: np.array(val) for k, val in out.items()}
@@ -516,7 +596,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         rear_speed=rear_speed,
         cycle_time=first_battery,
         unlock_pressure=unlock_pressure,
-        gas_peak_pressure=gas_peak if kind == "gas" else None,
+        gas_peak_pressure=gas_peak if kind in GAS_SYSTEMS else None,
         port_cd=port_cd,
         port_cd_2d=port_2d,
     )
