@@ -397,6 +397,20 @@ class Action:
     rear_restitution: float = 0.3       # bounce of the bolt off the rear stop (buffer)
     battery_restitution: float = 0.05   # bounce of the bolt as it closes
     feed_force: float = 15.0            # N, drag on the bolt while it strips and chambers a round
+    friction: float = 0.0               # N, sliding friction on the bolt group all the way (rails, a tilting carrier)
+    # Hammer (self-loading actions): cocked by the carrier, held by the sear, tripped by the
+    # closing carrier in a burst. Off: each shot of a burst fires 3 ms after the bolt is home.
+    hammer: bool = False
+    hammer_inertia: float = 6e-6        # kg m^2, about its pivot
+    hammer_spring_torque: float = 0.35  # N m, hammer spring with the hammer down on the firing pin
+    hammer_spring_rate: float = 0.25    # N m/rad
+    hammer_angle: float = 60.0          # degrees back from the firing pin to where the sear holds it
+    hammer_cock_travel: float = 0.025   # m of carrier travel over which the carrier pushes it down
+    hammer_trip_travel: float = 0.5e-3  # m: the carrier picks it up, and trips the auto sear, this far from home
+    hammer_friction: float = 0.15       # friction coefficient of the hammer's face on the carrier
+    # Rate reducer (AKM): an inertial lever the hammer swings with it over the start of its fall.
+    rate_reducer_inertia: float = 0.0   # kg m^2; 0 = none
+    rate_reducer_angle: float = 20.0    # degrees of the hammer's fall it drags the lever through
     # Gas system.
     gas_port_position: float | None = None  # m of projectile travel from its seat to the port; None = 75 % of travel
     gas_port_diameter: float = 1.2e-3   # m
@@ -540,6 +554,16 @@ class Gun:
             raise ValueError("action.delay_ratio must be between 1 and 20")
         if a.bolt_head_mass is not None and a.bolt_head_mass >= a.bolt_mass:
             raise ValueError("action.bolt_head_mass must be less than bolt_mass (the head and carrier together)")
+        if a.friction < 0 or a.hammer_friction < 0 or a.rate_reducer_inertia < 0 or a.hammer_spring_rate < 0:
+            raise ValueError("action.friction, hammer_friction, hammer_spring_rate and rate_reducer_inertia "
+                             "cannot be negative")
+        if a.hammer_inertia <= 0 or a.hammer_spring_torque <= 0 or a.hammer_cock_travel <= 0 or a.hammer_trip_travel < 0:
+            raise ValueError("action.hammer_inertia, hammer_spring_torque and hammer_cock_travel must be positive, "
+                             "and hammer_trip_travel cannot be negative")
+        if not 10 <= a.hammer_angle <= 120:
+            raise ValueError("action.hammer_angle must be between 10 and 120 degrees")
+        if not 0 <= a.rate_reducer_angle <= a.hammer_angle:
+            raise ValueError("action.rate_reducer_angle must be between 0 and hammer_angle")
         for name in ("body_mass", "shoulder_stiffness", "shoulder_damping", "hold_stiffness", "hold_damping"):
             if getattr(s, name) < 0:
                 raise ValueError(f"shooter.{name} cannot be negative")

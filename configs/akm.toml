@@ -81,8 +81,8 @@ bolt_mass         = 0.52      # kg, carrier with its piston (0.45) and bolt (0.0
 bolt_travel       = 0.118     # m, carrier stroke
 spring_rate       = 200.0     # N/m, return spring
 spring_preload    = 30.0      # N
-# The simulated cyclic rate runs above the real 600-650 rounds/min: the hammer
-# the carrier cocks, the rate reducer (AKM) and friction aren't modelled.
+# The piston's push, 30 mm over the bore, tilts the carrier onto its rails.
+friction          = 22.0      # N
 unlock_travel     = 10.0e-3   # m: free travel, then the 35-degree turn
 gas_port_position = 0.228     # m of travel from the seat
 gas_port_diameter = 2.5e-3    # m
@@ -90,6 +90,13 @@ piston_diameter   = 15.0e-3   # m
 gas_volume        = 1.5e-6    # m^3, gas block and cylinder with the piston forward
 gas_stroke        = 10.0e-3   # m, piston travel before the cylinder's vent holes
 rear_restitution  = 0.3       # steel carrier on the steel rear trunnion
+# The carrier rides over the hammer and cocks it; in automatic fire the auto
+# sear holds it until the carrier trips it in its last half millimetre. The
+# rate reducer is a weighted lever the hammer has to swing out of its way at
+# the start of its fall, so it arrives after the carrier's bounce has died.
+hammer               = true
+rate_reducer_inertia = 1.5e-5  # kg m^2
+rate_reducer_angle   = 20.0    # degrees
 bore_height       = 0.045     # m, the drop of the stock
 cg_distance       = 0.36      # m
 radius_of_gyration = 0.24     # m

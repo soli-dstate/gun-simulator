@@ -440,6 +440,18 @@ export class FiringRange {
     return out;
   }
 
+  /**
+   * The hammer's angle back from the firing pin (rad): on the sear until the trigger is pulled,
+   * falling as the firing pin does, then as the action simulation has it.
+   */
+  _hammerAngle() {
+    const sear = this.layout.hammer?.sear ?? 0, a = this._action;
+    if (!this.shot) return sear;
+    if (this.T < PIN_FALL) return sear * (1 - this.pin);
+    if (!a?.hammer) return 0;
+    return interp(a.time, a.hammer, Math.min(this.tSim, a.time[a.time.length - 1]));
+  }
+
   get animating() {
     return this.shot || this.cycle || this.ejected.length || this.wisps.length;
   }
@@ -752,6 +764,8 @@ export class FiringRange {
       ...optional(m.rollerRight, chain(boltAt, translation(0, 0, -pose.lock * (L.rollerIn ?? 0))), MATERIALS.bolt),
       ...optional(m.rollerLeft, chain(boltAt, translation(0, 0, pose.lock * (L.rollerIn ?? 0))), MATERIALS.bolt),
       ...optional(m.lever, lv && chain(boltAt, translation(lv.px, lv.py, 0), rotationZ(pose.lever), translation(-lv.px, -lv.py, 0)), MATERIALS.bolt),
+      // The hammer turns on its pin in the receiver.
+      ...optional(m.hammer, L.hammer && chain(gunAt, translation(L.hammer.px, L.hammer.py, 0), rotationZ(this._hammerAngle())), MATERIALS.bolt),
       { mesh: m.striker, model: chain(gunAt, translation(-pose.travel + pinBack * L.pinTravel, 0, 0)), material: MATERIALS.bolt, clip: false },
     ];
     const addProjectile = (model, clip) => {

@@ -685,6 +685,7 @@ function actionRows(a) {
   if (a.unlock_pressure !== null) rows += `<span>Chamber pressure at unlock</span><span>${(a.unlock_pressure / 1e6).toFixed(1)} MPa</span>`;
   if (a.gas_peak_pressure !== null) rows += `<span>Peak gas cylinder pressure</span><span>${(a.gas_peak_pressure / 1e6).toFixed(1)} MPa</span>`;
   if (a.port_cd !== null) rows += `<span>Gas port discharge coefficient</span><span>${a.port_cd.toFixed(2)}${a.port_cd_2d ? " (2D)" : " (assumed)"}</span>`;
+  if (a.hammer_energy !== null) rows += `<span>Hammer</span><span>${(a.lock_time * 1e3).toFixed(1)} ms from the sear to ignition, hits the pin with ${a.hammer_energy.toFixed(2)} J</span>`;
   return rows;
 }
 

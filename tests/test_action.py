@@ -353,3 +353,71 @@ def test_kalashnikov_presets_cycle(name, velocity):
     a = action.simulate(gun, shot)
     assert a.status == "cycled", a.warnings
     assert a.rear_speed < action.REAR_SPEED_WARNING
+    # The hammer, rate reducer and friction bring it down near the real 600-650 rounds/min.
+    assert a.hammer is not None and 550 < a.cyclic_rate < 800
+
+
+def hammer_gun(**changes):
+    gun = Gun.load(GAS_RIFLE)
+    gun.action.hammer = True
+    for key, value in changes.items():
+        setattr(gun.action, key, value)
+    return gun
+
+
+def test_hammer_fall_turns_the_spring_into_strike_energy():
+    gun = hammer_gun()
+    a = gun.action
+    sear = math.radians(a.hammer_angle)
+    t, energy = action.hammer_fall(gun)
+    assert energy == pytest.approx(a.hammer_spring_torque * sear + 0.5 * a.hammer_spring_rate * sear**2, rel=0.01)
+    assert 2e-3 < t < 10e-3
+    # A rate reducer slows the fall and takes some of the energy with it.
+    gun.action.rate_reducer_inertia = 2e-5
+    t2, energy2 = action.hammer_fall(gun)
+    assert t2 > t + 1e-3 and energy2 < energy
+
+
+def test_hammer_is_cocked_tripped_and_fires_the_burst(gas_shot):
+    plain = action.simulate(Gun.load(GAS_RIFLE), gas_shot, shots=4)
+    gun = hammer_gun()
+    burst = action.simulate(gun, gas_shot, shots=4)
+    assert burst.status == "cycled" and burst.shots == 4, burst.warnings
+    names = [e["name"] for e in burst.events]
+    assert names.count("hammer cocked") == 4
+    assert names.count("hammer released") == names.count("hammer strikes the firing pin") == 3
+    strikes = [e["time"] for e in burst.events if e["name"] == "hammer strikes the firing pin"]
+    assert burst.shot_times[1:] == pytest.approx([s + action.PRIMER_DELAY for s in strikes], abs=3 * action.SLOW_DT)
+    # Cocking it slows the carrier, and its fall takes longer than the old fixed lock time.
+    assert burst.cyclic_rate < plain.cyclic_rate
+    assert burst.lock_time > action.LOCK_TIME
+    top = math.radians(gun.action.hammer_angle) * (1 + action.HAMMER_OVERTRAVEL)
+    assert burst.hammer.min() >= 0 and burst.hammer.max() <= top + 1e-9
+    assert burst.hammer[-1] == pytest.approx(math.radians(gun.action.hammer_angle))  # left on the sear
+
+
+def test_rate_reducer_lets_the_carrier_settle(gas_shot):
+    bouncy = hammer_gun(battery_restitution=0.1)
+    a = action.simulate(bouncy, gas_shot, shots=4)
+    assert a.status == "light strike" and a.shots == 1
+    assert any("bounced out of battery" in w for w in a.warnings)
+    bouncy.action.rate_reducer_inertia = 2e-5
+    a = action.simulate(bouncy, gas_shot, shots=4)
+    assert a.status == "cycled" and a.shots == 4, a.warnings
+
+
+def test_friction_and_a_long_hammer_cam(gas_shot):
+    free = action.simulate(hammer_gun(), gas_shot)
+    dragged = action.simulate(hammer_gun(friction=20.0), gas_shot)
+    assert dragged.rear_speed < free.rear_speed and dragged.cycle_time > free.cycle_time
+    short = action.simulate(hammer_gun(hammer_cock_travel=0.2), gas_shot, shots=3)
+    assert short.status == "hammer not cocked" and short.shots == 1
+
+
+def test_bad_hammer_rejected():
+    gun = hammer_gun(hammer_angle=150.0)
+    with pytest.raises(ValueError, match="hammer_angle"):
+        gun.validate()
+    gun = hammer_gun(friction=-1.0)
+    with pytest.raises(ValueError, match="friction"):
+        gun.validate()

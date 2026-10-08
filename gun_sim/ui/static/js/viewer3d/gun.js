@@ -20,6 +20,8 @@
 // * gas_delayed: a sleeve around the barrel, tied to the bolt by two rods,
 //   whose front closes on a piston ring on the barrel just ahead of the port.
 //
+// With action.hammer, a hammer on a pivot behind the bolt group turns as the
+// action simulation has it.
 // [appearance] style dresses it: "rifle" a sporting stock round a turned
 // receiver; "ar15" an aluminium upper and lower, rail, A-frame front sight,
 // round handguard, buffer tube and collapsible stock; "ak" a stamped receiver
@@ -619,6 +621,26 @@ export function buildRifle(gun) {
     lathe(rodProfile(pinR - 0.15, boltRear - 10, -0.9, 0.3), 24),
     lathe(rodProfile(boltR * 0.45, boltRear - 24, boltRear - 12, 1.0), 48),
   );
+  // Hammer: pivoted below the bolt's path, its head resting on the tail of the firing pin. It
+  // turns back (rotationZ(+angle) swings the head rearwards and down) as the carrier rides over
+  // it; sized so the head sweeps about the carrier travel that cocks it, and lies below the
+  // carrier when it is fully back.
+  let hammer = null;
+  if (act.hammer && kind !== "bolt") {
+    const sear = ((act.hammer_angle ?? 60) * Math.PI) / 180;
+    const top = Math.min(sear * 1.15, Math.PI / 2);
+    const w = Math.max(3, boltR * 0.45), t = Math.max(4, boltR * 0.8), headH = Math.max(5, boltR * 0.7);
+    // An AK's shallow receiver keeps the pivot above its floor.
+    const deepest = ak ? -magTop - 1.5 - w * 0.45 + headH / 2 : boltR * 4;
+    const len = Math.min(clamp(((act.hammer_cock_travel ?? 0.025) * MM) / Math.sin(top), boltR * 1.8, boltR * 4), deepest);
+    hammer = merge(
+      boxAt(w, len - headH / 2, t, 0, (len - headH / 2) / 2, 0),                         // arm
+      boxAt(w * 1.5, headH, t * 1.1, w * 0.25, len - headH / 2, 0),                       // head
+      boxAt(w * 1.2, w, t, -w * 0.6, len * 0.55, 0),                                      // sear notch
+      [lathe(rodProfile(w * 0.45, -t * 0.9, t * 0.9), 24), rotationY(-Math.PI / 2)],      // pivot pin
+    );
+    extra.hammer = { px: boltRear - 24 - w, py: -len + headH / 2, sear };
+  }
 
   return {
     cartridge: cart,
@@ -628,6 +650,7 @@ export function buildRifle(gun) {
       ...(shroud ? { shroud } : {}), ...(carrier ? { carrier } : {}),
       ...(barrelMesh ? { barrel: barrelMesh } : {}), ...(lock ? { lock } : {}),
       ...(rollers ? { rollerRight: rollers.right, rollerLeft: rollers.left } : {}), ...(lever ? { lever } : {}),
+      ...(hammer ? { hammer } : {}),
       case: lathe(cart.parts.case),
       primer: lathe(cart.parts.primer),
       projectile: lathe(cart.parts.projectile),

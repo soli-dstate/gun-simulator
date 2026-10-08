@@ -79,8 +79,9 @@ type              = "direct_impingement"
 gun_mass          = 2.88      # kg, unloaded
 bolt_mass         = 0.43      # kg, carrier group (0.32) and H buffer (0.11)
 bolt_travel       = 0.083     # m, the carrier's 3.25" stroke into the buffer tube
-spring_rate       = 500.0     # N/m, carbine action spring
-spring_preload    = 50.0      # N
+spring_rate       = 300.0     # N/m, carbine action spring: about 30 N installed, 55 N compressed
+spring_preload    = 30.0      # N
+friction          = 12.0      # N, the buffer and spring sliding in the tube
 unlock_travel     = 7.0e-3    # m: 3.2 mm free travel, then the cam turns the bolt 22.5 degrees
 gas_port_position = 0.156     # m of travel: carbine length, 7.5" from the bolt face
 gas_port_diameter = 1.60e-3   # m (0.063")
@@ -90,8 +91,9 @@ gas_stroke        = 6.0e-3    # m of carrier travel before its vent holes open
 gas_tube_length   = 0.250     # m, carbine gas tube
 gas_tube_diameter = 1.5e-3    # m, inside: the key's narrower bore limits the flow
 rear_restitution  = 0.05      # the H buffer's sliding weights are there to kill the bounce
-# The simulated cyclic rate (about 1300 rounds/min) runs above the real 700-950:
-# the hammer the carrier cocks and the buffer's friction aren't modelled.
+# The carrier cocks the hammer; on automatic the auto sear holds it until the
+# carrier's trip at the end of its travel releases it.
+hammer            = true
 bore_height       = 0.025     # m, nearly straight-line stock
 cg_distance       = 0.33      # m
 radius_of_gyration = 0.22     # m

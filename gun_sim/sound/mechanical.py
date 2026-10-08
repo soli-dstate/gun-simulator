@@ -55,8 +55,10 @@ def impacts(action_result, gun) -> list[dict]:
     """The sounds of one shot's cycle: {time (s from ignition), name, energy (J), where, modes}."""
     a = action_result
     bolt = gun.action.bolt_mass
-    out = [{"time": -LOCK_TIME, "name": "hammer falls", "energy": 0.5 * 0.03 * 4.0**2, "where": "receiver",
-            "modes": STEEL}]
+    # The hammer as the action simulation has it, or a typical one (30 g at 4 m/s, 3 ms before ignition).
+    simulated = getattr(a, "hammer_energy", None) is not None
+    out = [{"time": -a.lock_time if simulated else -LOCK_TIME, "name": "hammer falls", "where": "receiver",
+            "energy": a.hammer_energy if simulated else 0.5 * 0.03 * 4.0**2, "modes": STEEL}]
     for e in a.events:
         if e.get("shot", 1) != 1:
             continue
@@ -67,6 +69,10 @@ def impacts(action_result, gun) -> list[dict]:
         elif e["name"] in ("back in battery", "closes on an empty chamber") and speed:
             out.append({"time": e["time"], "name": "bolt slams home", "where": "receiver",
                         "energy": 0.5 * bolt * speed**2, "modes": STEEL})
+        elif e["name"] == "hammer cocked":
+            # The sear snapping over the hammer's notch: a small click.
+            out.append({"time": e["time"], "name": "hammer cocked", "where": "receiver",
+                        "energy": 0.002, "modes": STEEL})
         elif e["name"] in ("bolt unlocks", "barrel stops and unlocks"):
             out.append({"time": e["time"], "name": "bolt unlocks", "where": "receiver",
                         "energy": 0.02 * 0.5 * bolt * 25.0, "modes": STEEL})

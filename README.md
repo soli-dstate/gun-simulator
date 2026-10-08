@@ -102,6 +102,10 @@ Every action type has its own moving parts:
 - *gas_delayed*: a sleeve round the barrel, tied to the bolt by two rods, whose
   front closes on a piston ring on the barrel just ahead of the port.
 
+With `hammer = true`, a hammer on its pivot pin stands behind the bolt group.
+It falls on the firing pin when you fire, is pushed down and back as the
+carrier rides over it, and in a burst falls again as the simulation has it.
+
 `[appearance] style` dresses the gun: *rifle* is a sporting stock round a
 turned receiver; *ar15* an aluminium upper and lower with a rail, A-frame
 front sight, round handguard, pistol grip, buffer tube and collapsible stock;
@@ -236,7 +240,7 @@ example.
 | `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1 or G7) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"` or `"copper"`) and `exposed_core_length` (soft point) |
 | `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win. `flash_suppressant` (`potassium_sulfate`, `potassium_nitrate`, `potassium_cryolite`) with `suppressant_fraction` (share of the charge mass) puts out the secondary flash, at some impetus and more smoke |
 | `[ignition]` | igniter pressure; with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
-| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
+| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
 direct impingement the "piston" is the bolt's tail in the carrier); `gas_tube_length` and `gas_tube_diameter` (direct impingement); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
 | `[shooter]` | `stance` (`"shoulder"`, or `"free"` for free recoil); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"`, `"suppressor"` or `"flash_hider"`); length, outer diameter, number of baffles (prongs for a flash hider), baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake, flash hider), `flare_angle` (flash hider bore), mass. Missing sizes are scaled from the bore |
@@ -469,9 +473,29 @@ the gun, solved for 300 ms with small fixed steps (2 µs while the gas acts):
     gas runs back out of the port.
 - **Cycle.** The bolt ejects the case once it has come back a case length
   (plus 3 mm). It can pick up the next round once it has come back past a whole
-  round, and drags `feed_force` while it chambers it. Impacts at the rear stop
-  and in battery are instantaneous, with a coefficient of restitution, shared
-  between the bolt and the gun by their masses.
+  round, and drags `feed_force` while it chambers it, and `friction` (rails, a
+  carrier tilted by its piston's off-axis push) all the way. Impacts at the
+  rear stop and in battery are instantaneous, with a coefficient of
+  restitution, shared between the bolt and the gun by their masses.
+- **Hammer** (`hammer = true`). A hammer on a pivot in the receiver, with its
+  own inertia and a spring (torque with it down, plus a rate per radian). It
+  rests on the firing pin. Once the carrier has come back `hammer_trip_travel`
+  its underside cams the hammer down, as a straight ramp over
+  `hammer_cock_travel`, to 15% past the sear angle (`hammer_angle`). While they
+  touch, the carrier carries the hammer's inertia (J (dφ/ds)²), feels its spring
+  through the cam (dφ/ds × torque) and rubs on its face (`hammer_friction`). If
+  the carrier pulls away faster than the spring can follow (at the rear stop)
+  the hammer flies free, and going home it rides the carrier back up onto the
+  sear. In a burst the closing carrier trips the auto sear in its last
+  `hammer_trip_travel`. The hammer falls on its spring and the next shot fires
+  0.3 ms after it reaches the firing pin, if it still has 0.15 J. If the
+  carrier has bounced back out of battery, the hammer lands on it and rides it
+  home: a light strike, and the burst stops.
+  - A **rate reducer** (`rate_reducer_inertia`, the AKM's) is a weighted lever
+    the hammer has to swing with it over the first `rate_reducer_angle` of its
+    fall. It slows the fall by a few milliseconds, so the carrier's bounce has
+    died before the hammer arrives.
+  - Without a hammer, each shot of a burst fires 3 ms after the bolt is home.
 - **Muzzle rise.** Every force along the bore acts `bore_height` above the
   shoulder, so the shot lifts the muzzle, and the bolt hitting the rear stop
   kicks it again.
@@ -479,14 +503,16 @@ the gun, solved for 300 ms with small fixed steps (2 µs while the gas acts):
   the shoulder and peak shoulder force, muzzle rise, and for an automatic
   action its events (unlock, ejection, rear stop, feeding, back in battery),
   cycle time and cyclic rate. It reports when the action fails:
-  - short stroking: the case is not ejected, or no round is picked up;
+  - short stroking: the case is not ejected, no round is picked up, or the
+    hammer is not cocked;
+  - a light strike: the hammer reaches the firing pin with under 0.15 J;
   - battering: the bolt reaches the rear stop above 8 m/s;
   - unlocking with more than 20 MPa in the chamber;
   - a case backing more than 1 mm out of the chamber while it is still above
     30 MPa, as in a blowback with too light a bolt.
 
-  The cyclic rate counts only the bolt's own travel, with no hammer or sear
-  time, so real guns fire more slowly.
+  The cyclic rate counts the bolt's travel and, with a hammer, its fall from
+  the sear to the firing pin (otherwise a fixed 3 ms).
 
 For the example rifle (4 kg) this gives 11.9 N·s of recoil, of which 2.5 N·s is
 the gas jet. Free, the rifle recoils at 3.0 m/s with 18 J. Held, it goes about
@@ -496,13 +522,17 @@ reaching the rear stop at 5.0 m/s.
 
 The M4A1 preset (`configs/m4a1.toml`: M855 from a 14.5" barrel, a carbine-length
 gas system) leaves the muzzle at 885 m/s with a 408 MPa peak. The bolt unlocks
-2.8 ms after ignition, well after the bullet has gone, with about 9 MPa left in
-the chamber, and the carrier reaches the buffer at 6.6 m/s. The AKM (`configs/akm.toml`, M43 ball) gives
+2.8 ms after ignition, well after the bullet has gone, with about 8 MPa left in
+the chamber, and the carrier reaches the buffer at 6.5 m/s. The AKM (`configs/akm.toml`, M43 ball) gives
 741 m/s at 313 MPa and the AK-74 (`configs/ak74.toml`, 7N6, with its brake)
-901 m/s at 351 MPa; their long-stroke pistons bring the carrier to the rear trunnion at 6 to 8 m/s. All
-three cycle faster than the real rifles (about 950 to 1,300 rounds a minute
-against 600 to 950), since the hammer the carrier cocks, an AK's rate reducer
-and friction are not modelled.
+901 m/s at 351 MPa; their long-stroke pistons bring the carrier to the rear
+trunnion at 4.2 and 6.4 m/s. With their hammers, the AKs' rate reducers and
+friction on the carriers (22 N, from the piston's push 30 mm over the bore
+tilting them onto their rails; 12 N for the M4's buffer in its tube), the AKM
+fires at about 620 rounds a minute (real: 600), the AK-74 at about 770 (real:
+600 to 650) and the M4A1 at about 850 (real: 700 to 950). Without its rate
+reducer the AK-74's hammer arrives while the carrier is still bouncing in
+battery, and a burst stops on a light strike.
 
 The roller-delayed preset, `configs/example_roller_delayed.toml` (the same
 cartridge, a 1 kg bolt with a 0.15 kg head, K = 4), unlocks about 0.9 ms after
@@ -513,8 +543,9 @@ always starts to move under pressure, which is why such rifles flute the
 chamber; the warnings say so.
 
 - **Bursts.** A self-loading action can fire several shots per trigger pull.
-  Each fires 3 ms (sear, hammer, primer) after the bolt is back in battery on
-  the one before, with the gun's motion and the gas cylinder carried over, so
+  Each fires when the tripped hammer reaches the firing pin (or 3 ms after the
+  bolt is back in battery, without a hammer) on the one before, with the gun's
+  motion and the gas cylinder carried over, so
   recoil and muzzle climb build up. The burst stops if a cycle fails. The
   example gas rifle fires at about 1,300 rounds a minute, its muzzle climbing
   about 0.9° a shot.
@@ -523,7 +554,9 @@ chamber; the warnings say so.
   (see below).
 
 Not modelled: the carrier's free travel before it picks up the bolt (they move
-as one), friction other than feeding, hammer cocking, extraction force (the
+as one), friction that changes along the stroke (it is a constant drag), a
+hammer cam that isn't a straight ramp, the disconnector (the sear catches the
+hammer as soon as it passes), extraction force (the
 case leaves the chamber freely), heat loss in the gas cylinder, a delay ratio
 that changes over the stroke (real roller and lever angles vary it a little),
 and a non-linear shooter.

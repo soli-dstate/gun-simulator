@@ -70,21 +70,45 @@ every axial force on the gun body turns it: the shot lifts the muzzle, and the
 bolt slamming into the rear stop gives it a second kick. Internal forces along
 the same line cancel.
 
-Bursts. A self-loading action can fire several shots: each is fired
-LOCK_TIME after the bolt is back in battery on the one before, with
-everything (the gun's recoil and pitch, the gas cylinder) carried over, so
-recoil and muzzle climb build up through the burst. The gas port's discharge
-coefficient comes from a 2D solution of the port (devices.py) unless
-solver.gas_port_2d is off; a muzzle device's mass is added to the gun.
+Hammer (action.hammer). A hammer turns on a pivot in the receiver against its
+spring. It rests on the firing pin; once the carrier has come back
+`hammer_trip_travel`, the carrier's underside cams it down, turning it in
+proportion to the carrier's travel until it is past the sear (by
+HAMMER_OVERTRAVEL) after `hammer_cock_travel` more. While they touch, the
+hammer is part of the carrier's motion: the carrier carries its inertia
+(J (dphi/ds)^2) and feels its spring torque through the cam (dphi/ds times
+the torque), plus friction on the hammer's face. If the carrier pulls away
+faster than the spring can follow (at the rear stop), the hammer flies free.
+Going home, the hammer rides the carrier back up to the sear, which holds it.
+In a burst the closing carrier trips the auto sear in its last
+`hammer_trip_travel`; the hammer falls on its own spring, first swinging any
+rate reducer's inertia with it (the AKM's: an inertial lever that delays the
+fall so the carrier has settled before the hammer arrives), and the next shot
+fires PRIMER_DELAY after it reaches the firing pin, if it still has
+LIGHT_STRIKE joules. If the carrier has bounced back out of battery, the
+hammer lands on it instead, and rides it home with too little energy to fire.
+
+Bursts. A self-loading action can fire several shots: each is fired when the
+hammer falls on the bolt closing on the one before (without a hammer,
+LOCK_TIME after the bolt is back in battery), with everything (the gun's
+recoil and pitch, the gas cylinder) carried over, so recoil and muzzle climb
+build up through the burst. The gas port's discharge coefficient comes from a
+2D solution of the port (devices.py) unless solver.gas_port_2d is off; a
+muzzle device's mass is added to the gun.
+
+Friction. `friction` drags on the bolt group whenever it slides (the rails,
+and the tilt a gas piston's off-axis push gives the carrier), as well as the
+feeding drag and the hammer's.
 
 Approximations: the bolt and carrier move as one mass (a real carrier runs
 free for its unlock travel before it picks up the bolt), except in a delayed
 blowback, whose delay ratio is constant (real roller and lever angles change
 it a little over the stroke) and whose carrier closes its gap at once when
-the head reaches battery; no friction except
-feeding, no hammer to cock, and the case leaves the chamber freely. The gas in
-the cylinder is ideal and keeps its heat. The shooter's body moves rigidly
-with the butt, and is linear. Small angles throughout.
+the head reaches battery; friction is Coulomb and constant; the hammer's cam
+is a straight ramp and the sear holds it from the moment it passes it; and
+the case leaves the chamber freely. The gas in the cylinder is ideal and
+keeps its heat. The shooter's body moves rigidly with the butt, and is
+linear. Small angles throughout.
 """
 
 from __future__ import annotations
@@ -107,7 +131,10 @@ FAST_DT, FAST_UNTIL = 2e-6, 0.02  # fine steps while the gas acts
 SLOW_DT = 2e-5
 OUT_FAST, OUT_SLOW = 2e-5, 5e-4   # output sampling, before and after FAST_UNTIL
 ORIFICE_CD = 0.8          # discharge coefficient of the gas port, unless solved in 2D (devices.py)
-LOCK_TIME = 0.003         # s from back in battery to the next ignition in a burst (sear, hammer, primer)
+LOCK_TIME = 0.003         # s from back in battery to the next ignition in a burst, without a hammer
+PRIMER_DELAY = 3e-4       # s from the hammer hitting the firing pin to ignition
+LIGHT_STRIKE = 0.15       # J the hammer needs to fire a rifle primer through the firing pin
+HAMMER_OVERTRAVEL = 0.15  # the carrier pushes the hammer this fraction of its angle past the sear
 MAX_BURST = 30
 REST_SPEED = 0.05         # m/s: slower than this after closing, the bolt stays shut
 # Thresholds for the warnings.
@@ -188,6 +215,41 @@ def barrel_mass(gun: Gun) -> float:
     return STEEL_DENSITY * (math.pi / 12 * length * (d1 * d1 + d1 * d2 + d2 * d2) - bar.bore_area * length)
 
 
+def hammer_torque(a, angle: float) -> float:
+    """The hammer spring's torque (N m) with the hammer `angle` rad back from the firing pin."""
+    return a.hammer_spring_torque + a.hammer_spring_rate * angle
+
+
+def hammer_cam(a, travel: float) -> tuple[float, float]:
+    """How far (rad) the carrier, `travel` m back, holds the hammer down, and d(angle)/d(travel)."""
+    top = math.radians(a.hammer_angle) * (1 + HAMMER_OVERTRAVEL)
+    slope = top / a.hammer_cock_travel
+    ramp = travel - a.hammer_trip_travel
+    if ramp <= 0:
+        return 0.0, 0.0
+    if ramp >= a.hammer_cock_travel:
+        return top, 0.0
+    return slope * ramp, slope
+
+
+def hammer_inertia(a, angle: float, falling: bool) -> float:
+    """The hammer's moment of inertia (kg m^2), with a rate reducer's while it drags one."""
+    reducer = falling and angle > math.radians(a.hammer_angle - a.rate_reducer_angle)
+    return a.hammer_inertia + (a.rate_reducer_inertia if reducer else 0.0)
+
+
+def hammer_fall(gun: Gun) -> tuple[float, float]:
+    """The hammer's fall from the sear to the firing pin, with nothing in its way:
+    (time in s, energy it hits the pin with in J)."""
+    a = gun.action
+    angle, rate, t, dt = math.radians(a.hammer_angle), 0.0, 0.0, 1e-6
+    while angle > 0:
+        rate -= hammer_torque(a, angle) / hammer_inertia(a, angle, True) * dt
+        angle += rate * dt
+        t += dt
+    return t, 0.5 * a.hammer_inertia * rate * rate
+
+
 def strokes(gun: Gun) -> dict:
     """Bolt travel (m) at which things happen.
 
@@ -205,6 +267,11 @@ def strokes(gun: Gun) -> dict:
     if a.type in DELAYED:
         out["carrier_unlock"] = unlock
         out["unlock"] = min(unlock / delay(gun)[0], stroke)
+    if a.hammer and a.type != "bolt":
+        # Carrier travel to cock the hammer (to the bolt's, for a delayed blowback).
+        cock = a.hammer_trip_travel + a.hammer_cock_travel / (1 + HAMMER_OVERTRAVEL)
+        out["hammer"] = cock / delay(gun)[0] if a.type in DELAYED and cock < unlock else (
+            cock - (delay(gun)[0] - 1) * out["unlock"] if a.type in DELAYED else cock)
     return out
 
 
@@ -243,6 +310,7 @@ class ActionResult:
     force: np.ndarray             # N, the shots' force on the gun (+ rearwards)
     shoulder_force: np.ndarray    # N, the gun pushing on the shooter
     gas_pressure: np.ndarray      # Pa, in the gas cylinder (gas action)
+    hammer: np.ndarray | None     # rad the hammer is back from the firing pin (None: no hammer)
     impulse: float                # N s, recoil impulse of one shot
     free_recoil_velocity: float   # m/s, of the gun alone, one shot
     free_recoil_energy: float     # J
@@ -263,6 +331,8 @@ class ActionResult:
     gas_peak_pressure: float | None = None  # Pa
     port_cd: float | None = None          # discharge coefficient of the gas port used
     port_cd_2d: bool = False              # True if it came from the 2D solution of the port
+    lock_time: float = LOCK_TIME          # s from tripping the hammer (or back in battery) to ignition
+    hammer_energy: float | None = None    # J the hammer hits the firing pin with, falling freely
 
     @property
     def shots(self) -> int:
@@ -273,7 +343,7 @@ class ActionResult:
         """Rounds per minute: from the burst, or from one cycle plus the lock time."""
         if len(self.shot_times) > 1:
             return 60 * (len(self.shot_times) - 1) / (self.shot_times[-1] - self.shot_times[0])
-        return 60 / (self.cycle_time + LOCK_TIME) if self.cycle_time else None
+        return 60 / (self.cycle_time + self.lock_time) if self.cycle_time else None
 
     def summary(self) -> str:
         lines = [
@@ -298,6 +368,9 @@ class ActionResult:
             lines.append(line)
             if self.port_cd is not None:
                 lines.append(f"  gas port Cd          {self.port_cd:9.2f}" + (" (2D)" if self.port_cd_2d else ""))
+            if self.hammer_energy is not None:
+                lines.append(f"  hammer               {self.lock_time * 1e3:9.1f} ms from the sear to ignition, "
+                             f"hits the firing pin with {self.hammer_energy:.2f} J")
         lines += [f"  warning: {w}" for w in self.warnings]
         return "\n".join(lines)
 
@@ -333,9 +406,10 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     """Recoil of the gun and the cycle of its action, from a shot's loads.
 
     shots > 1 fires a burst (self-loading actions only): each shot is fired
-    LOCK_TIME after the bolt is back in battery on the previous one, with the
-    gun's motion carried over, so recoil and muzzle climb build up. The burst
-    stops early if a cycle fails.
+    when the hammer the closing bolt trips reaches the firing pin (without a
+    hammer, LOCK_TIME after the bolt is back in battery), with the gun's motion
+    carried over, so recoil and muzzle climb build up. The burst stops early if
+    a cycle fails.
     """
     from . import devices
     loads = shot.loads
@@ -343,7 +417,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         raise ValueError("this shot has no recorded loads on the gun")
     a, sh = gun.action, gun.shooter
     kind = a.type
-    shots = 1 if kind == "bolt" else int(min(max(shots, 1), MAX_BURST))
+    shots = requested = 1 if kind == "bolt" else int(min(max(shots, 1), MAX_BURST))
     geo = strokes(gun)
     stroke, unlock, eject_at, feed_at = geo["stroke"], geo["unlock"], geo["eject"], geo["feed"]
     m_bolt = a.bolt_mass
@@ -403,16 +477,26 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     s_max = setback = 0.0
     events, warnings = [], []
     shot_times = [0.0]
-    cyc = {}                  # this shot's cycle: ejected, can_feed, feeding, battery, s_max
+    cyc = {}                  # this shot's cycle: ejected, can_feed, feeding, battery, s_max, cocked
     next_shot = None
-    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas")}
+    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas", "hammer")}
     next_out = 0.0
+    # Hammer: angle back from the firing pin and its rate; "down" (on the pin, or riding the
+    # carrier short of the sear), "cocked" (on the sear, or held past it by the carrier) or "falling".
+    hammer = a.hammer and kind != "bolt"
+    ph = om = 0.0
+    hammer_state = "down"
+    sear = math.radians(a.hammer_angle)
+    rub_arm = math.radians(a.hammer_angle) * (1 + HAMMER_OVERTRAVEL) / a.hammer_cock_travel  # 1 / hammer length
+    rel = 0.0
+    on_carrier = False
+    light_strike = None
 
     def event(t, name, detail="", speed=None):
         events.append({"time": t, "name": name, "detail": detail, "shot": len(shot_times), "speed": speed})
 
     def new_cycle():
-        cyc.update(ejected=False, can_feed=False, feeding=False, battery=None, s_max=0.0)
+        cyc.update(ejected=False, can_feed=False, feeding=False, battery=None, s_max=0.0, cocked=False)
 
     def masses():
         m_g = m_bolt + (m_bar if carry else 0.0)
@@ -470,7 +554,17 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         # Forces between the bolt group and the gun (+ pushes the bolt back). The spring
         # bears on the carrier, which a delayed blowback's head drives `ratio` times as far.
         carrier = ratio * s if delayed else s + carrier_gap
-        f_spring = a.spring_preload + a.spring_rate * carrier
+        gear = ratio if delayed else 1.0      # carrier speed over bolt speed
+        slide = math.copysign(1.0, u) if u else 0.0
+        f_spring = a.spring_preload + a.spring_rate * carrier + a.friction * slide
+        if hammer:
+            cam, slope = hammer_cam(a, carrier)
+            if ph <= cam + 1e-9:
+                # The carrier holds the hammer down: its spring through the cam and its inertia
+                # (from the last step's acceleration), unless the carrier is pulling away from it.
+                torque = hammer_torque(a, ph)
+                f_spring += max(0.0, slope * (torque + a.hammer_inertia * slope * gear * rel))
+                f_spring += a.hammer_friction * torque * rub_arm * slide
         f_int = f_piston - f_spring
         if cyc["feeding"] and u < 0 and s < feed_at:
             f_int += a.feed_force
@@ -490,7 +584,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         if held:  # the bolt is shut and stays shut: one body
             acc_r = (g_ext + r_ext + f_sh) / (m_g + m_r)
             axial = g_ext + r_ext
-            s = u = 0.0
+            s = u = rel = 0.0
         else:
             axial = m_r * acc_r - f_sh   # what acts on the gun body (the shooter's share aside)
         v += acc_r * dt
@@ -536,7 +630,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                     cyc["battery"] = t_end
                     first_battery = first_battery or t_end
                     event(t_end, "back in battery", f"{speed:.1f} m/s", speed)
-                    if len(shot_times) < shots:
+                    if len(shot_times) < shots and not hammer:
                         next_shot = t_end + LOCK_TIME
                 elif cyc["ejected"] and not cyc["can_feed"] and cyc["battery"] is None:
                     cyc["battery"] = -1.0
@@ -587,6 +681,46 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             if (unlocked or (kind == "short_recoil" and not carry)) and fb / loads.head_area > CASE_PRESSURE:
                 setback = max(setback, free)
 
+        if hammer:
+            carrier = ratio * s if delayed else s + carrier_gap
+            gear = ratio if delayed else 1.0
+            cam, slope = hammer_cam(a, carrier)
+            driven = slope * gear * u           # the hammer's rate while the carrier holds it
+            if hammer_state == "cocked":
+                ph, om = (cam, driven) if cam > sear else (sear, 0.0)
+                if (len(shot_times) < shots and next_shot is None and cyc["feeding"]
+                        and carrier <= a.hammer_trip_travel):
+                    hammer_state = "falling"
+                    event(t_end, "hammer released", "the closing carrier trips the auto sear")
+            else:
+                falling = hammer_state == "falling"
+                om -= hammer_torque(a, ph) / hammer_inertia(a, ph, falling) * dt
+                ph += om * dt
+                if ph <= 0 and cam <= 0:
+                    # On the firing pin.
+                    energy = 0.5 * a.hammer_inertia * om * om
+                    ph = om = 0.0
+                    if falling:
+                        hammer_state = "down"
+                        if energy >= LIGHT_STRIKE:
+                            event(t_end, "hammer strikes the firing pin", f"{energy:.2f} J")
+                            next_shot = t_end + PRIMER_DELAY
+                        else:
+                            event(t_end, "light strike", f"{energy:.2f} J")
+                            light_strike = light_strike or (len(shot_times) + 1, energy)
+                            shots = len(shot_times)
+                elif ph <= cam:
+                    # Caught by the carrier (or, falling, landing on it out of battery).
+                    if not on_carrier and not falling and om < driven:
+                        u *= m_g / (m_g + a.hammer_inertia * (slope * gear) ** 2)  # it kicks the hammer along
+                        driven = slope * gear * u
+                    ph, om = cam, driven
+                if hammer_state == "down" and ph >= sear:
+                    hammer_state = "cocked"
+                    cyc["cocked"] = True
+                    event(t_end, "hammer cocked", "past the sear")
+            on_carrier = ph <= cam + 1e-9 and cam > 0
+
         if t >= next_out:
             next_out += OUT_FAST if fast else OUT_SLOW
             out["t"].append(t_end)
@@ -598,6 +732,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             out["force"].append(fb + fr)
             out["shoulder"].append(-f_sh)
             out["gas"].append(p_c)
+            out["hammer"].append(ph)
         t = t_end
 
         # Back in battery: fire the next shot of the burst.
@@ -611,7 +746,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     status = "manual" if kind == "bolt" else "cycled"
     if kind != "bolt":
         n = len(shot_times)
-        which = f" on shot {n}" if shots > 1 else ""
+        which = f" on shot {n}" if requested > 1 else ""
         if not cyc["ejected"]:
             status = "failed to eject"
             warnings.append(f"short stroke{which}: the bolt only came back {cyc['s_max'] * 1e3:.0f} mm, "
@@ -623,8 +758,20 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         elif cyc["battery"] is None or cyc["battery"] < 0:
             status = "did not return to battery"
             warnings.append(f"the return spring did not close the bolt on the new round{which}")
-        if status != "cycled" and n < shots:
-            warnings.append(f"the burst stopped after {n} of {shots} shots")
+        elif hammer and not cyc["cocked"]:
+            status = "hammer not cocked"
+            warnings.append(f"short stroke{which}: the carrier came back {cyc['s_max'] * 1e3:.0f} mm, and it needs "
+                            f"{geo['hammer'] * 1e3:.0f} mm to cock the hammer")
+        elif light_strike:
+            status = "light strike"
+            shot_no, energy = light_strike
+            why = ("it fell on the carrier while the carrier had bounced out of battery, and rode it home; "
+                   "a rate reducer or a softer return would let the carrier settle first"
+                   if energy < 0.5 * hammer_fall(gun)[1] else "a stronger hammer spring would fix it")
+            warnings.append(f"light strike on shot {shot_no}: the hammer hit the firing pin with {energy:.2f} J "
+                            f"(a primer needs {LIGHT_STRIKE:.2f} J); {why}")
+        if status != "cycled" and n < requested:
+            warnings.append(f"the burst stopped after {n} of {requested} shots")
     if rear_speed is not None and rear_speed > REAR_SPEED_WARNING:
         cure = {"gas": "over-gassed; a smaller gas port, a heavier carrier or a stiffer spring would ease it",
                 "direct_impingement": "over-gassed; a smaller gas port, a heavier carrier or buffer, or a stiffer spring would ease it",
@@ -642,6 +789,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                         f"above {CASE_PRESSURE / 1e6:.0f} MPa: its unsupported head may rupture" + flutes)
 
     impulse = loads.impulse
+    fall = hammer_fall(gun) if hammer else None
     arr = {k: np.array(val) for k, val in out.items()}
     shoulder_force = arr["shoulder"] if shoulder else np.zeros_like(arr["t"])
     return ActionResult(
@@ -649,6 +797,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         recoil=arr["x"], recoil_velocity=arr["v"], pitch=arr["th"],
         bolt=arr["s"], bolt_velocity=arr["u"], force=arr["force"],
         shoulder_force=shoulder_force, gas_pressure=arr["gas"],
+        hammer=arr["hammer"] if hammer else None,
         impulse=impulse,
         free_recoil_velocity=impulse / gun_mass,
         free_recoil_energy=impulse**2 / (2 * gun_mass),
@@ -669,4 +818,6 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         gas_peak_pressure=gas_peak if kind in GAS_SYSTEMS else None,
         port_cd=port_cd,
         port_cd_2d=port_2d,
+        lock_time=fall[0] + PRIMER_DELAY if hammer else LOCK_TIME,
+        hammer_energy=fall[1] if hammer else None,
     )
