@@ -83,6 +83,8 @@ export const META = {
   "propellant.grain_diameter": { min: 0, max: 5, step: 0.01, help: "Outer diameter of a multi-perforated grain. 0 to derive it from the web." },
   "propellant.perforation_diameter": { min: 0, max: 1, step: 0.01, help: "Bore of each perforation in a multi-perforated grain. 0 if unused." },
   "propellant.molar_mass": { min: 18, max: 32, step: 0.1, help: "Molar mass of the product gas (muzzle blast only)." },
+  "propellant.flash_suppressant": { help: "Potassium salt in the grains. Its potassium keeps the gas from reigniting in the air (the secondary flash), at a little impetus and more smoke. Potassium nitrate is an oxidizer: it costs no impetus." },
+  "propellant.suppressant_fraction": { min: 0, max: 5, step: 0.1, help: "Share of the charge mass that is the suppressant. A percent or two is usual. Force and molar mass above are for the powder without it." },
 
   "ignition.pressure": { min: 0, max: 20, help: "Chamber pressure the primer produces. With the two-phase grain bed, it sets how much hot gas the primer jets in." },
   "ignition.duration": { min: 0.01, max: 2, step: 0.01, help: "Two-phase grain bed: how long the primer's flash lasts as it jets through the flash hole." },

@@ -85,13 +85,13 @@ class GrainBed:
         self.theta_light = gun.ignition.grain_ignition_temperature - GRAIN_TEMPERATURE
         cp = p.gamma * p.gas_constant / (p.gamma - 1)
         self.k_gas = GAS_VISCOSITY * cp / GAS_PRANDTL
-        self.e_release = p.force / (p.gamma - 1)
+        self.e_release = p.impetus / (p.gamma - 1)
         # The primer: its gas, how long it takes to come out, and the flash-hole jet.
         p_ign = gun.ignition.pressure
         free = chamber_volume - p.charge_mass / p.density
-        self.primer_mass = p_ign / (p.force + p.covolume * p_ign) * free
+        self.primer_mass = p_ign / (p.impetus + p.covolume * p_ign) * free
         self.primer_time = gun.ignition.duration
-        self.jet = np.sqrt(2 * p.gamma / (p.gamma + 1) * p.force)   # sonic, at the flame temperature
+        self.jet = np.sqrt(2 * p.gamma / (p.gamma + 1) * p.impetus)   # sonic, at the flame temperature
         self.lit_time = np.full(n, np.nan)   # s, when each cell's grains first lit
         self.ejected = 0.0                   # kg of unburnt grain blown out of the muzzle
 

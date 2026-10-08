@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .propellants import COMPOSITIONS, form_coefficients, grain_geometry, is_multi_perf, sliver_phase
+from .propellants import COMPOSITIONS, form_coefficients, grain_geometry, is_multi_perf, sliver_phase, suppressant
 
 
 @dataclass
@@ -168,6 +168,11 @@ class Propellant:
     form_chi_s: float | None = None
     form_lambda_s: float | None = None
     form_z_k: float = 1.0
+    # Flash suppressant (see propellants.SUPPRESSANTS): a potassium salt making up
+    # suppressant_fraction of the charge mass. force, molar_mass and the composition
+    # describe the propellant without it; impetus and gas_constant include it.
+    flash_suppressant: str | None = None  # "potassium_sulfate", "potassium_nitrate", "potassium_cryolite"
+    suppressant_fraction: float = 0.0     # kg of salt per kg of charge
 
     # Fields that must be known before the propellant can be used.
     _REQUIRED = ("force", "covolume", "gamma", "density", "web", "burn_rate_coeff", "burn_rate_exp")
@@ -217,10 +222,28 @@ class Propellant:
             self.form_chi_s, self.form_lambda_s, self.form_z_k = sliver_phase(
                 self.web, self.perforation_diameter, psi_1)
 
+        if not 0.0 <= self.suppressant_fraction <= 0.1:
+            raise ValueError("suppressant_fraction must be between 0 and 0.1")
+        if self.suppressant_fraction and self.flash_suppressant is None:
+            raise ValueError("suppressant_fraction needs a flash_suppressant")
+        suppressant(self.flash_suppressant)   # rejects an unknown name
+        if self.impetus <= 0:
+            raise ValueError("the flash suppressant leaves the charge no impetus")
+
     @property
     def gas_constant(self) -> float:
-        """Specific gas constant of the product gas, J/(kg K)."""
-        return 8.314462618 / self.molar_mass
+        """Specific gas constant of the products, J/(kg K).
+
+        The suppressant's particles go with the gas but add no pressure: R is per kg of both.
+        """
+        return 8.314462618 / self.molar_mass * (1 - self.suppressant_fraction)
+
+    @property
+    def impetus(self) -> float:
+        """Force (J/kg of charge) with the flash suppressant: its mass makes no gas, and it
+        takes (or gives) its heat from the flame, R T_flame = f (1 - w) - (gamma - 1) w sink."""
+        w = self.suppressant_fraction
+        return self.force * (1 - w) - (self.gamma - 1) * w * suppressant(self.flash_suppressant)["sink"]
 
     @property
     def z_burnout(self) -> float:

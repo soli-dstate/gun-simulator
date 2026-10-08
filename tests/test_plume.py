@@ -140,6 +140,18 @@ def test_flash_hider_removes_the_shock_reheat_and_trims_the_fireball():
     assert hider.glow.max() < bare.glow.max()
 
 
+def test_flash_suppressant_puts_out_the_secondary_flash(plumes):
+    """A percent of potassium sulfate keeps the gas from reigniting; the smoke is thicker for it."""
+    gun = Gun.load(RIFLE)
+    gun.propellant.flash_suppressant, gun.propellant.suppressant_fraction = "potassium_sulfate", 0.01
+    gun.solver.plume_time = 0.0012
+    salted = plume.simulate(gun, fluid.simulate_cached(gun, blowdown_time=BLOWDOWN))
+    bare = plumes["bare"]
+    assert salted.afterburn < 0.1 * bare.afterburn
+    assert salted.glow.max() < 0.1 * bare.glow.max()
+    assert salted.smoke > 2 and bare.smoke == 1.0
+
+
 def test_plume_json(plumes):
     r = plumes["bare"]
     gun = Gun.load(RIFLE)
@@ -151,3 +163,4 @@ def test_plume_json(plumes):
     assert d["layers"] == len(d["times"]) + 1
     assert len(d["x_edges"]) == d["nx"] + 1 and len(d["r_edges"]) == d["nr"] + 1
     assert len(d["bore"]["t"]) == len(d["bore"]["T"]) > 50
+    assert d["smoke"] == 1.0

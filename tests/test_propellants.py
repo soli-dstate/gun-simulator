@@ -6,7 +6,8 @@ import pytest
 
 from gun_sim import Gun, lumped
 from gun_sim.config import Propellant
-from gun_sim.propellants import COMPOSITIONS, GRAINS, form_coefficients, grain_geometry, sliver_phase
+from gun_sim.propellants import (COMPOSITIONS, GRAINS, combustibles, form_coefficients, grain_geometry, inhibition,
+                                 sliver_phase, smokiness)
 
 ROOT = Path(__file__).parent.parent
 RIFLE = ROOT / "configs" / "example_rifle.toml"
@@ -159,3 +160,35 @@ def test_seven_perf_config_runs_lumped():
     result = lumped.simulate(gun)
     assert result.muzzle_velocity > 100
     assert result.peak_breech_pressure < 450e6
+
+
+def test_flash_suppressant_costs_impetus_and_cools_the_flame():
+    plain = make(web=0.4e-3)
+    salt = make(web=0.4e-3, flash_suppressant="potassium_sulfate", suppressant_fraction=0.01)
+    assert plain.impetus == plain.force
+    assert 0.97 * plain.force < salt.impetus < 0.99 * plain.force
+    assert salt.gas_constant == pytest.approx(0.99 * plain.gas_constant)
+    assert salt.impetus / salt.gas_constant < plain.impetus / plain.gas_constant   # cooler flame
+    # The oxidizer gives heat instead, and burns some of the fuel in the bore.
+    nitrate = make(web=0.4e-3, flash_suppressant="potassium_nitrate", suppressant_fraction=0.01)
+    assert nitrate.impetus / nitrate.gas_constant > plain.impetus / plain.gas_constant
+    assert combustibles("single_base", "potassium_nitrate", 0.01)[0] < combustibles("single_base", "potassium_sulfate", 0.01)[0]
+    assert inhibition(None, 0.0) == 0.0 and inhibition("potassium_sulfate", 0.01) > 0
+    assert smokiness(None, 0.0) == 1.0 and smokiness("potassium_sulfate", 0.01) > 2
+
+
+def test_flash_suppressant_is_not_applied_twice_on_a_round_trip():
+    gun = Gun.load(RIFLE)
+    gun.propellant = replace(gun.propellant, flash_suppressant="potassium_cryolite", suppressant_fraction=0.015)
+    again = Gun.from_dict(asdict(gun))
+    assert again.propellant.impetus == pytest.approx(gun.propellant.impetus)
+    assert lumped.simulate(again).muzzle_velocity < lumped.simulate(Gun.load(RIFLE)).muzzle_velocity
+
+
+def test_flash_suppressant_is_checked():
+    with pytest.raises(ValueError, match="unknown flash_suppressant"):
+        make(web=0.4e-3, flash_suppressant="sodium_chloride", suppressant_fraction=0.01)
+    with pytest.raises(ValueError, match="needs a flash_suppressant"):
+        make(web=0.4e-3, suppressant_fraction=0.01)
+    with pytest.raises(ValueError, match="between 0 and 0.1"):
+        make(web=0.4e-3, flash_suppressant="potassium_sulfate", suppressant_fraction=0.5)

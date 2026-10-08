@@ -59,7 +59,7 @@ uniform vec2 u_fieldCells;               // nx, nr
 uniform int u_fieldCount;
 uniform mat4 u_fieldInv[MAX_FIELD];      // world -> the field's frame (mm, x along the bore from the muzzle face)
 uniform vec4 u_fieldA[MAX_FIELD];        // frame (texture z), scale, density factor, temperature factor
-uniform vec4 u_fieldB[MAX_FIELD];        // x the field scales about, noise seed, -, -
+uniform vec4 u_fieldB[MAX_FIELD];        // x the field scales about, noise seed, smoke factor, -
 
 uniform int u_smokeCount;
 uniform vec3 u_smokeOrigin[MAX_SMOKE];
@@ -167,11 +167,13 @@ void plumeAt(vec3 p, out float sigma, out vec3 emit, out float shadow) {
     float k = 0.25 + 1.5 * n;
     // Hot gas is clear and bright; the smoke shows as it cools. Water and the products condense
     // only once the gas has mixed with air, so the dense, fresh gas of the jet carries little yet.
-    sigma += SMOKE * f.x / (1.0 + f.x / 0.15) * k * mix(0.15, 1.0, smoothstep(1400.0, 600.0, f.y));
+    // A flash suppressant's salt adds particles (u_fieldB.z).
+    float smoke = SMOKE * u_fieldB[i].z;
+    sigma += smoke * f.x / (1.0 + f.x / 0.15) * k * mix(0.15, 1.0, smoothstep(1400.0, 600.0, f.y));
     emit += GLOW * f.x * wien(f.y) * k * blackbody(f.y);
     // Self-shadowing: the smoke above this point, towards the sky.
     vec2 above = fieldAt(i, p + vec3(0.0, 25.0 * scale, 0.0));
-    shadow += SMOKE * above.x * 50.0 * scale;
+    shadow += smoke * above.x * 50.0 * scale;
   }
 }
 
@@ -435,7 +437,7 @@ export class VolumeEffects {
     const padF = (arr, n) => arr.concat(new Array(MAX_FIELD * n - arr.length).fill(0));
     gl.uniformMatrix4fv(u.u_fieldInv, false, padF(fields.flatMap((f) => Array.from(f.inverse)), 16));
     gl.uniform4fv(u.u_fieldA, padF(fields.flatMap((f) => [f.frame, f.scale, f.density, f.temperature]), 4));
-    gl.uniform4fv(u.u_fieldB, padF(fields.flatMap((f) => [f.origin, f.seed, 0, 0]), 4));
+    gl.uniform4fv(u.u_fieldB, padF(fields.flatMap((f) => [f.origin, f.seed, f.smoke ?? 1, 0]), 4));
 
     const smoke = (s.smoke || []).slice(0, MAX_SMOKE);
     const pad = (arr, n) => arr.concat(new Array(MAX_SMOKE * n - arr.length).fill(0));

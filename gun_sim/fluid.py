@@ -177,7 +177,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
     bar, proj, prop, cfg = gun.barrel, gun.projectile, gun.propellant, gun.solver
     n = cfg.cells
     bore = bar.bore_area
-    f, b, gamma = prop.force, prop.covolume, prop.gamma
+    f, b, gamma = prop.impetus, prop.covolume, prop.gamma
     e_release = f / (gamma - 1)        # specific internal energy of fresh gas
     z_end = prop.z_burnout
     chamber = chamber_profile(gun)

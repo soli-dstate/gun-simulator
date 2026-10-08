@@ -214,7 +214,7 @@ example.
 | `[barrel]` | bore diameter, projectile travel, chamber volume; `chamber_shape` (`"cylinder"`, or `"case"` to solve inside the real case); outside diameter at the breech and muzzle (3D view only); rifling: `twist` (m per turn, negative for left-hand, 0 for a smooth bore), `groove_depth`, `freebore` (travel before the lands), `leade_angle` (forcing-cone half-angle, degrees) |
 | `[case]` | case length, overall length, rim, extractor groove, base and shoulder diameters, shoulder position and angle, neck and body wall, head thickness, primer pocket (the solver uses it with `chamber_shape = "case"`) |
 | `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1 or G7) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"` or `"copper"`) and `exposed_core_length` (soft point) |
-| `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win |
+| `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win. `flash_suppressant` (`potassium_sulfate`, `potassium_nitrate`, `potassium_cryolite`) with `suppressant_fraction` (share of the charge mass) puts out the secondary flash, at some impetus and more smoke |
 | `[ignition]` | igniter pressure; with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
 | `[action]` | `type` (`"bolt"`, `"gas"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas and gas-delayed); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
 | `[shooter]` | `stance` (`"shoulder"`, or `"free"` for free recoil); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
@@ -570,7 +570,9 @@ sets the form function ψ(z): the fraction of the charge burnt once a fraction z
 of the web has gone. Tubes, spheres and flakes burn out at z = 1.
 Multi-perforated grains (7-perf, 19-perf) leave thin slivers that burn on
 after the web has gone, so they have a second phase up to z_k > 1. Explicit
-numbers in the config always override the library. The values in the library
+numbers in the config always override the library. A flash suppressant (a
+potassium salt, a percent or two of the charge) is added on top of the
+composition. See the plume section. The values in the library
 are illustrative textbook-range figures, not data for any real powder. See
 `configs/example_7perf.toml`.
 
@@ -754,7 +756,40 @@ before it meets the air, and nothing in the plume gets hotter than burning
 makes it. The fireball shrinks less: afterburning falls by 6% (12% with a 10°
 flare) and the brightest glow by 12% (29%), because this rifle's gas leaves the
 muzzle hot enough to reignite on mixing with air, shock or no shock. That is
-the job of flash-suppressant additives, which are not modelled yet.
+the job of flash-suppressant additives.
+
+**Flash suppressants.** `[propellant] flash_suppressant` names a potassium
+salt (`potassium_sulfate`, `potassium_nitrate`, `potassium_cryolite`;
+`propellants.SUPPRESSANTS`) making up `suppressant_fraction` of the charge
+mass. The potassium it frees into the gas recombines the radicals that carry
+the CO/H2 flame, which in the one-step chemistry divides the burning rate by
+`1 + I·Y`. Here `Y` is the share of propellant gas in the cell (it carries the
+potassium, so the inhibitor thins out as the gas mixes with air) and `I` is
+proportional to the kg of potassium per kg of gas. The salt makes no gas and
+takes heat from the flame, so the impetus and the flame temperature drop
+(`Propellant.impetus`). Its particles go with the gas without adding pressure,
+so R is per kg of gas plus particles. The particles also thicken the smoke.
+Potassium nitrate is an oxidizer instead. It gives heat, costs almost no
+impetus, and burns some of the CO in the bore. `force`, `molar_mass` and the
+composition stay those of the powder without the salt.
+
+The example rifle (2 cells across the bore, 2 ms):
+
+| Suppressant | Muzzle velocity | Afterburning | Brightest glow | Smoke |
+| --- | --- | --- | --- | --- |
+| None | 835 m/s | 12 kJ | 1 | 1 |
+| 0.5% potassium sulfate | 830 m/s | 8.1 kJ | about 2.5 | ×2.3 |
+| 1% potassium sulfate | 824 m/s | 0.4 kJ | about 1/40 | ×3.5 |
+| 2% potassium sulfate | 813 m/s | 0.1 kJ | about 1/45 | ×6 |
+| 1% potassium nitrate | 832 m/s | 5.1 kJ | 0.8 | ×2.7 |
+| 1% potassium cryolite | 824 m/s | 0.3 kJ | about 1/40 | ×3.5 |
+
+Reignition is all or nothing. Strength `I` (`propellants.INHIBITION`) was set
+so that about 1% of sulfate puts this rifle's flash out, as a percent or two
+does in practice. Half that delays ignition until more air has mixed in, and
+the late fireball comes out brighter. That result is the model's and is not
+checked against data. With a suppressant the remaining glow is the primary
+flash, the hot gas itself.
 
 The fireball's size and timing look like high-speed footage of unsuppressed
 rifles, but the numbers are only as good as the one-step chemistry and a grid

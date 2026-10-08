@@ -520,7 +520,7 @@ export class FiringRange {
     return {
       inverse: chain(translation(-L.muzzleX, 0, 0), invert(m)),
       frame: (frame + 0.5) / P.layers, scale, density: thick * dilute, temperature: dilute,
-      origin: c.origin, seed,
+      origin: c.origin, seed, smoke: P.smoke ?? 1,
       bound: [...centre, Math.hypot((extent[1] - extent[0]) / 2, extent[2]) + 10],
       // The flash's light: the solved glow, then the cloud's, falling with its temperature.
       glow: tau < last ? interp(P.times, P.glow, tau)
@@ -580,7 +580,7 @@ export class FiringRange {
           const density = out / (4 / 3 * Math.PI * (R * 1e-3) ** 3);
           state.smoke.push({
             origin: at(gT, L.muzzleX + tr.x, 0, 0), dir: [0.35, 0.94, 0], reach: R * 0.5 + 40 * age, radius: R,
-            extinction: SMOKE * density * Math.exp(-age / 2.5), rise: 0, age, group: 0, seed: 7.7, trail: 1,
+            extinction: SMOKE * (P.smoke ?? 1) * density * Math.exp(-age / 2.5), rise: 0, age, group: 0, seed: 7.7, trail: 1,
           });
         }
       }
@@ -796,6 +796,7 @@ export class FiringRange {
       if (s.plume) {
         rows.push(["afterburning", `${(s.plume.afterburn / 1e3).toFixed(1)} kJ`],
                   ["hottest gas", `${s.plume.peak_temperature.toFixed(0)} K`]);
+        if ((s.plume.smoke ?? 1) > 1.005) rows.push(["smoke (suppressant)", `×${s.plume.smoke.toFixed(1)}`]);
       }
     }
     if (this._action && this.T >= PIN_FALL) {

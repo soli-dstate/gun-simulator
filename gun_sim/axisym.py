@@ -73,10 +73,15 @@ class Afterburn:
     900 K, which is where muzzle gas is found to reignite. Above ceiling the
     products (CO2, H2O) come apart as fast as they form, so burning stops
     there and goes on as the gas cools.
+
+    inhibition: a flash suppressant's potassium recombines the flame's radicals,
+    dividing the rate by 1 + inhibition * Y, Y the share of propellant gas (which
+    carries the potassium) in the cell. See propellants.inhibition.
     """
     fuel: float
     heat: float
     oxygen: float
+    inhibition: float = 0.0
     rate: float = 2e10           # 1/s
     activation: float = 15000.0  # K
     ceiling: float = 2600.0      # K
@@ -358,10 +363,12 @@ class Axisymmetric:
     def _burn(self, U, dt):
         """Afterburning: the fuel burns with the oxygen it has mixed with, exactly over dt at fixed T."""
         a = self.afterburn
-        rho, _, _, p, _, cv, rg = self.primitives(U)
+        rho, _, _, p, Y, cv, rg = self.primitives(U)
         T = p / (rho * rg)
         fuel, o2 = self.fuel_oxygen(U)
         k = a.rate * np.exp(-a.activation / np.maximum(T, 200.0))
+        if a.inhibition:
+            k /= 1 + a.inhibition * np.clip(Y, 0.0, 1.0)
         burnt = np.minimum(fuel, o2 / a.oxygen) * (1 - np.exp(-k * dt))
         burnt = np.minimum(burnt, np.maximum(cv * (a.ceiling - T), 0.0) / a.heat)
         burnt[self.fixed | self.solid] = 0.0

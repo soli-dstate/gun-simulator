@@ -14,7 +14,7 @@ import numpy as np
 
 from .. import action, devices, exterior, fluid, lumped, plume, rifling, sound
 from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, STANCES, Gun
-from ..propellants import COMPOSITIONS, GRAINS
+from ..propellants import COMPOSITIONS, GRAINS, SUPPRESSANTS
 from ..results import ShotResult
 from ..sound import GROUNDS, PRESET_LABELS, PRESETS, SoundSettings
 
@@ -100,6 +100,8 @@ FIELDS = {
         ("grain_diameter", "Grain outer diameter", "mm", 1e-3),
         ("perforation_diameter", "Perforation diameter", "mm", 1e-3),
         ("molar_mass", "Gas molar mass", "g/mol", 1e-3),
+        ("flash_suppressant", "Flash suppressant", "choice", ["", *SUPPRESSANTS]),
+        ("suppressant_fraction", "Suppressant share of charge", "%", 1e-2),
     ],
     "ignition": [
         ("pressure", "Igniter pressure", "MPa", 1e6),

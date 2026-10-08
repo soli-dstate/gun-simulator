@@ -15,14 +15,16 @@ follows from the flow:
   propellants.PRODUCTS). Where it mixes with air and is still hot enough, it
   reignites and burns, and the fireball can outshine everything else. The
   burning is axisym.Afterburn's one-step reaction, so nothing decides whether
-  it happens except temperature and mixing.
+  it happens except temperature and mixing, and a flash suppressant in the
+  propellant, whose potassium slows the reaction where the gas carries it.
 * A brake turns the jet out of its vents; a suppressor holds the gas in its
   chambers, cools it on the baffles, and burns away the oxygen of the air
   inside (the first-round pop), so what comes out is late, slow, cool and
   short of oxygen.
 * Smoke: what's visible of it is carried by the propellant gas (particles from
   the primer and the grains, and water that condenses as it cools), so it
-  goes where the propellant gas goes.
+  goes where the propellant gas goes. A flash suppressant's salt adds to the
+  particles (PlumeResult.smoke).
 
 The grid is fine round the muzzle and the device and grows by GROWTH per cell
 away from them, so it can reach the fireball at little cost. It is solved
@@ -50,7 +52,7 @@ import numpy as np
 
 from . import devices, fluid
 from .axisym import Afterburn, Axisymmetric
-from .propellants import combustibles
+from .propellants import combustibles, inhibition, smokiness
 
 GROWTH = 1.07        # each cell this much bigger than the last, away from the fine region
 COARSEST = 8         # cells grow to at most this many fine cells across
@@ -138,6 +140,7 @@ class PlumeResult:
     peak_temperature: float  # K, hottest gas outside the bore and device
     steps: int
     seconds: float           # wall-clock time of the solve
+    smoke: float = 1.0       # smoke per kg of propellant gas, relative to a propellant without suppressant
 
 
 def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
@@ -150,10 +153,11 @@ def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
     start = time.perf_counter()
     g = plume_grid(gun)
     prop = gun.propellant
-    fuel, heat, oxygen = combustibles(prop.composition)
+    additive, share = prop.flash_suppressant, prop.suppressant_fraction
+    fuel, heat, oxygen = combustibles(prop.composition, additive, share)
     s = Axisymmetric(g.h, 0.0, g.solid, g.open_x, g.open_r, prop.gas_constant, prop.gamma,
                      ambient_pressure, ambient_temperature, x_edges=g.x_edges, r_edges=g.r_edges,
-                     afterburn=Afterburn(fuel, heat, oxygen))
+                     afterburn=Afterburn(fuel, heat, oxygen, inhibition(additive, share)))
 
     # The bore's exit state over time, from the moment of exit. The axisymmetric gas is ideal: give it
     # the bore gas's internal energy, so it has the bore gas's temperature.
@@ -248,7 +252,7 @@ def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
         extent=np.array(extent), cloud=cloud, trickle=trickle, afterburn=s.burnt, heat=s.heat,
         escaped=float(s.out[4] / max(mass + stored + s.out[4], 1e-30)),
         peak_temperature=float(T_all[:, outside].max()), steps=s.steps,
-        seconds=time.perf_counter() - start)
+        seconds=time.perf_counter() - start, smoke=smokiness(additive, share))
 
 
 _cache: dict = {}
@@ -311,6 +315,7 @@ def to_json(r: PlumeResult, shot) -> dict:
         "heat": r.heat,
         "escaped": r.escaped,
         "peak_temperature": r.peak_temperature,
+        "smoke": r.smoke,
         "steps": r.steps,
         "seconds": r.seconds,
         "muzzle_time": exit_t,

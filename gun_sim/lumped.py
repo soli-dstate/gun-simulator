@@ -44,7 +44,7 @@ def simulate(gun: Gun, blowdown_time: float = 0.0) -> ShotResult:
     omega = prop.charge_mass
     m = proj.mass
     m_eff = rifling.effective_mass(gun)  # spinning the projectile up adds to its inertia
-    f, b, gamma = prop.force, prop.covolume, prop.gamma
+    f, b, gamma = prop.impetus, prop.covolume, prop.gamma
     z_end = prop.z_burnout  # 1 for a single-phase grain, z_k for multi-perforated
 
     # Igniter gas fills the space around the unburnt grains.

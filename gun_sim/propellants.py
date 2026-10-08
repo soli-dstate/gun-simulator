@@ -9,6 +9,10 @@ Two things a gun designer usually looks up rather than measures:
   fast they burn. The values here are generic and illustrative, drawn from
   textbook ranges. They are NOT data for any commercial product.
 
+* Flash-suppressant additives (SUPPRESSANTS): potassium salts that keep the
+  gas from reigniting in air outside the muzzle, at some cost in impetus and
+  a smokier muzzle.
+
 * The shape of the grain (GRAINS). The form function psi(z) gives the mass
   fraction burnt once a fraction z of the web has burnt away. A grain's shape
   fixes its coefficients.
@@ -102,16 +106,73 @@ _HEATING = {"co": 10.1e6, "h2": 120.0e6}  # J/kg, lower heating values
 _OXYGEN = {"co": 0.571, "h2": 7.94}       # kg O2 per kg burnt
 
 
-def combustibles(composition: str | None) -> tuple[float, float, float]:
+# Flash suppressants: potassium salts mixed into the grains at a percent or two.
+# They don't stop the gas being fuel-rich. Potassium freed into the hot gas
+# (K, KOH) recombines the H and OH radicals that carry the CO/H2 flame, so the
+# gas has to be hotter before it reignites in air; the secondary flash is put
+# out, or starts later and smaller. The price: the salt is mass that makes no
+# gas and soaks up heat (less impetus, a cooler flame), and it ends up as fine
+# particles, so the muzzle smokes more.
+#
+#   potassium: mass fraction of K, which sets how much inhibitor a kg frees
+#   sink:      J/kg the salt takes from the flame to heat, melt and come apart
+#              (negative: it gives heat)
+#   oxygen:    kg O2 a kg of it gives up to burn the gas's fuel in the bore
+#   residue:   kg of particles (sulfate, carbonate, fluoride) left per kg
+#
+# Potassium nitrate is an oxidizer: it burns some of the CO in the bore,
+# so it costs no impetus and leaves less to afterburn, but it draws water.
+# Illustrative values, like the families above.
+SUPPRESSANTS: dict[str, dict[str, float]] = {
+    "potassium_sulfate": {"potassium": 0.449, "sink": 2.5e6, "oxygen": 0.0, "residue": 1.0},
+    "potassium_nitrate": {"potassium": 0.387, "sink": -2.4e6, "oxygen": 0.396, "residue": 0.68},
+    "potassium_cryolite": {"potassium": 0.454, "sink": 2.8e6, "oxygen": 0.0, "residue": 1.0},
+}
+# Afterburning is slowed by 1 + INHIBITION * (kg of K per kg of gas) * (share of
+# propellant gas in the cell): the inhibitor thins out as the gas mixes with air.
+# Set so that about 1 % of potassium sulfate puts out the example rifle's
+# secondary flash, as a percent or two does in practice. Reignition is all or
+# nothing: half as much hardly helps.
+INHIBITION = 1.2e5
+# Particles and condensate already in the smoke of a plain propellant, kg per kg
+# of gas (what the 3D view's smoke is scaled to).
+BASE_SMOKE = 0.004
+
+
+def suppressant(name: str | None) -> dict[str, float]:
+    """The data of a flash suppressant (zeros for None)."""
+    if name is None:
+        return {"potassium": 0.0, "sink": 0.0, "oxygen": 0.0, "residue": 0.0}
+    if name not in SUPPRESSANTS:
+        raise ValueError(f"unknown flash_suppressant {name!r}; choose from {', '.join(SUPPRESSANTS)}")
+    return SUPPRESSANTS[name]
+
+
+def combustibles(composition: str | None, additive: str | None = None,
+                 fraction: float = 0.0) -> tuple[float, float, float]:
     """(fuel fraction of the gas, J released per kg of fuel, kg O2 needed per kg of fuel).
 
-    A propellant without a named composition burns like single-base.
+    A propellant without a named composition burns like single-base. A share
+    `fraction` of the charge that is the flash suppressant `additive` makes no
+    fuel, and an oxidizing one burns some of the rest before it leaves the bore.
     """
     gas = PRODUCTS.get(composition or "single_base", PRODUCTS["single_base"])
     fuel = sum(gas.values())
     heat = sum(gas[k] * _HEATING[k] for k in gas) / fuel
     oxygen = sum(gas[k] * _OXYGEN[k] for k in gas) / fuel
+    salt = suppressant(additive)
+    fuel = max((1 - fraction) * fuel - fraction * salt["oxygen"] / oxygen, 0.0)
     return fuel, heat, oxygen
+
+
+def inhibition(additive: str | None, fraction: float) -> float:
+    """How strongly the suppressant slows afterburning in pure propellant gas (0 = not at all)."""
+    return INHIBITION * suppressant(additive)["potassium"] * fraction
+
+
+def smokiness(additive: str | None, fraction: float) -> float:
+    """The smoke's density relative to the same propellant without the suppressant."""
+    return 1.0 + suppressant(additive)["residue"] * fraction / BASE_SMOKE
 
 
 # Grain shapes and a one-line description of each.
