@@ -1,0 +1,94 @@
+# The example rifle cartridge in a self-loading, gas-operated rifle.
+# These are illustrative values, not data for any specific load.
+# All units are SI (m, kg, s, Pa, J).
+
+name = "Example 7.62 mm gas-operated rifle"
+
+[barrel]
+bore_diameter  = 7.82e-3   # m
+travel         = 0.48      # m, seated base to muzzle
+chamber_volume = 3.6e-6    # m^3 (3.6 cm^3)
+# Outside shape, used by the 3D view only.
+breech_diameter = 30.0e-3  # m
+muzzle_diameter = 16.0e-3  # m
+# Rifling: spin, stability and spin drift, and where engraving happens.
+twist        = 0.2794      # m per turn (1 in 11"); negative = left-hand, 0 = smooth bore
+groove_depth = 0.1e-3      # m, land height
+freebore     = 0.0         # m, travel before the projectile meets the lands
+leade_angle  = 1.5         # degrees, forcing-cone half-angle
+
+[projectile]
+mass                = 9.7e-3  # kg
+shot_start_pressure = 30e6    # Pa
+bore_resistance     = 5e6     # Pa
+engraving_pressure  = 0.0     # Pa, peak extra resistance while engraving (0 = none)
+# Shape, used by the 3D view (diameter = bore diameter). Any value left out is
+# taken from a reference shape scaled to the bore.
+length           = 28.6e-3  # m, base to tip
+ogive_length     = 15.5e-3  # m, tangent-ogive nose
+meplat_diameter  = 1.0e-3   # m, flat tip
+boat_tail_length = 4.0e-3   # m, 0 for a flat base
+boat_tail_angle  = 9.0      # degrees
+
+[case]
+# Cartridge case geometry, measured from the case head. Used by the 3D view;
+# the solvers use it with chamber_shape = "case" in [barrel].
+length            = 51.2e-3   # m, head to mouth
+overall_length    = 71.0e-3   # m, head to projectile tip
+rim_diameter      = 11.94e-3  # m
+rim_thickness     = 1.27e-3   # m
+groove_diameter   = 10.0e-3   # m, extractor groove (>= base_diameter for none)
+groove_width      = 1.2e-3    # m
+base_diameter     = 11.94e-3  # m
+shoulder_diameter = 11.53e-3  # m
+shoulder_position = 39.6e-3   # m, head to start of the shoulder
+shoulder_angle    = 20.0      # degrees
+neck_wall         = 0.38e-3   # m
+body_wall         = 0.45e-3   # m
+head_thickness    = 5.0e-3    # m, solid web
+primer_diameter   = 5.33e-3   # m
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+charge_mass     = 2.9e-3   # kg
+force           = 1.0e6    # J/kg
+covolume        = 1.0e-3   # m^3/kg
+gamma           = 1.24
+density         = 1600     # kg/m^3
+web             = 0.4e-3   # m
+burn_rate_coeff = 7.0e-9   # (m/s)/Pa^n
+burn_rate_exp   = 0.9
+form_chi        = 1.0
+form_lambda     = 0.0
+
+[ignition]
+pressure = 5e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Short-stroke gas piston: gas bled from a port near the muzzle fills a small
+# cylinder; its piston kicks the bolt carrier back, which unlocks the bolt,
+# ejects the case and strips the next round on the way home.
+type              = "gas"
+gun_mass          = 4.3       # kg, unloaded
+bolt_mass         = 0.45      # kg, bolt + carrier + piston
+spring_rate       = 700.0     # N/m, return spring
+spring_preload    = 50.0      # N
+unlock_travel     = 6.0e-3    # m of carrier travel before the bolt unlocks
+gas_port_position = 0.36      # m of projectile travel from its seat
+gas_port_diameter = 1.6e-3    # m
+piston_diameter   = 10.0e-3   # m
+gas_volume        = 1.0e-6    # m^3 (1 cm^3)
+gas_stroke        = 8.0e-3    # m, piston travel before the cylinder vents
+bore_height       = 0.02      # m, a straighter stock than the bolt rifle's
+cg_distance       = 0.38      # m
+
+[shooter]
+stance             = "shoulder"
+body_mass          = 5.0
+shoulder_stiffness = 15e3
+shoulder_damping   = 400.0

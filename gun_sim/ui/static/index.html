@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gun Simulator</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1c1f24; --muted: #646b75;
+    --border: #d9dde3; --accent: #c2410c; --accent-text: #ffffff; --accent-soft: #fdebdf;
+    --grid: #e6e8ec; --error-bg: #fde8e8; --error: #9b1c1c; --warn: #b45309;
+    --s1: #2563eb; --s2: #d97706; --s3: #059669; --s4: #db2777;
+    --view-hi: #3a3f47; --view-lo: #16181c; --view-text: #e6e8eb; --view-muted: #9aa1ab;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --panel: #1e2126; --text: #e6e8eb; --muted: #9aa1ab;
+      --border: #33373e; --accent: #f97316; --accent-text: #15171b; --accent-soft: #3a2416;
+      --grid: #2b2f35; --error-bg: #3b1d1d; --error: #fca5a5; --warn: #f59e0b;
+      --s1: #60a5fa; --s2: #fbbf24; --s3: #34d399; --s4: #f472b6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; position: sticky; top: 0; z-index: 5;
+           padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); min-height: 52px; }
+  header h1 { font-size: 17px; margin: 0 8px 0 0; }
+  header label { color: var(--muted); }
+  nav.tabs { display: flex; align-self: stretch; }
+  nav.tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none;
+                    padding: 0 18px; font-weight: 600; color: var(--muted); }
+  nav.tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); }
+  select, input, button { font: inherit; color: var(--text); }
+  select, input[type=number], input[type=text] {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; }
+  button { background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+           padding: 5px 12px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+                   font-weight: 600; padding: 6px 24px; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  input[type=range] { accent-color: var(--accent); }
+  .spacer { flex: 1; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+  [hidden] { display: none !important; }
+  #error { display: none; background: var(--error-bg); color: var(--error); padding: 10px 14px; border-radius: 6px; margin: 16px 16px 0; }
+
+  /* ---------- editor ---------- */
+  #editor { display: grid; grid-template-columns: 190px minmax(380px, 1fr) minmax(360px, 1.1fr); gap: 16px; padding: 16px; }
+  @media (max-width: 1100px) { #editor { grid-template-columns: 170px 1fr; } #preview { grid-column: 1 / -1; } }
+  @media (max-width: 700px) { #editor { grid-template-columns: 1fr; } }
+  #sections { display: flex; flex-direction: column; gap: 2px; align-self: start; position: sticky; top: 68px; }
+  #sections .name-row { display: grid; gap: 4px; margin-bottom: 10px; }
+  #sections .name-row label { font-weight: 600; font-size: 12px; color: var(--muted); }
+  #sections h4 { margin: 12px 0 4px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  #sections button.sec { text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 5px; }
+  #sections button.sec:hover { background: var(--grid); }
+  #sections button.sec[aria-selected=true] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  #fields { padding: 14px 18px 18px; align-self: start; }
+  #fields h2 { margin: 0; font-size: 18px; }
+  #fields .blurb { color: var(--muted); margin: 4px 0 8px; }
+  .field { display: grid; grid-template-columns: 1fr 120px 54px; gap: 2px 10px; align-items: center;
+           padding: 10px 0; border-top: 1px solid var(--grid); }
+  .field label { font-weight: 600; }
+  .field .help { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+  .field input[type=range] { grid-column: 1 / -1; width: 100%; margin: 4px 0 0; }
+  .field input[type=number], .field select { width: 100%; }
+  .field .unit { color: var(--muted); font-size: 12px; }
+  .field input[type=checkbox] { justify-self: start; }
+  .field.derived { opacity: 0.55; }
+  .field.invalid input[type=number] { border-color: var(--error); }
+  .preset-row { display: flex; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--grid); }
+  .preset-row label { font-weight: 600; flex: 1; }
+  #preview { display: flex; flex-direction: column; gap: 12px; align-self: start; position: sticky; top: 68px; }
+  #preview-panel { position: relative; overflow: hidden; }
+  #preview-panel canvas { width: 100%; height: 340px; display: block; cursor: grab; touch-action: none; }
+  #cartridge-view { background: radial-gradient(ellipse at 50% 40%, var(--view-hi), var(--view-lo)); }
+  #preview-panel canvas:active { cursor: grabbing; }
+  .view-bar { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; gap: 12px; align-items: center;
+              color: var(--view-text); pointer-events: none; }
+  .view-bar > * { pointer-events: auto; }
+  .view-bar .hint { color: var(--view-muted); font-size: 12px; pointer-events: none; }
+  .seg { display: inline-flex; border: 1px solid #555b64; border-radius: 5px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: rgba(0,0,0,0.35); color: var(--view-text); padding: 3px 10px; }
+  .seg button[aria-pressed=true] { background: var(--accent); color: #fff; }
+  #preview-warnings { position: absolute; right: 12px; bottom: 10px; max-width: 70%; text-align: right; font-size: 12px; color: #f59e0b; }
+  #derived { padding: 12px 16px; }
+  #derived h3 { margin: 0 0 6px; font-size: 14px; }
+  .stats { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
+  .stats span:nth-child(odd) { color: var(--muted); }
+  .stats span:nth-child(even) { font-variant-numeric: tabular-nums; text-align: right; }
+  .stats .warn { color: var(--warn); font-weight: 600; }
+  #derived .actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  #editor-status { color: var(--error); font-size: 12px; min-height: 1em; }
+
+  /* ---------- firing range ---------- */
+  #range-tab { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 14px; }
+  .toolbar label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  .toolbar .group { display: inline-flex; gap: 8px; align-items: center; }
+  #range-panel { position: relative; overflow: hidden; }
+  #range { width: 100%; height: min(62vh, 640px); min-height: 320px; display: block; cursor: grab; touch-action: none; background: #0b0c0e; }
+  #range:active { cursor: grabbing; }
+  #hud { position: absolute; top: 12px; left: 14px; display: grid; grid-template-columns: auto auto; gap: 1px 14px;
+         font-size: 12px; color: var(--view-muted); pointer-events: none; background: rgba(10,11,13,0.55);
+         padding: 8px 12px; border-radius: 6px; min-width: 200px; }
+  #hud b { grid-column: 1 / -1; color: var(--view-text); font-size: 13px; margin-bottom: 3px; }
+  #hud span:nth-of-type(even) { color: var(--view-text); text-align: right; font-variant-numeric: tabular-nums; }
+  #range-hint { position: absolute; top: 12px; right: 14px; color: var(--view-muted); font-size: 12px; pointer-events: none; }
+  #range-warnings { position: absolute; right: 14px; bottom: 10px; max-width: 60%; text-align: right; font-size: 12px; color: #f59e0b; }
+  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { padding: 12px 16px; }
+  .card h2 { margin: 0 0 8px; font-size: 15px; text-transform: capitalize; }
+  .card .bad { color: var(--error); font-weight: 600; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+  .chart { padding: 10px 12px; }
+  .chart h3 { margin: 0 0 6px; font-size: 14px; }
+  .chart canvas { width: 100%; height: 280px; display: block; }
+  .device-bar { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .device-bar input { flex: 1; }
+  #burst { width: 52px; }
+  .placeholder { color: var(--muted); padding: 24px; text-align: center; }
+  #sound-panel { padding: 10px 14px 12px; }
+  .sound-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  .sound-bar h3 { margin: 0 4px 0 0; font-size: 15px; }
+  .sound-bar label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  .sound-bar input[type=number] { width: 64px; }
+  .sound-bar input[type=range] { width: 90px; }
+  #play { min-width: 84px; }
+  #sound-status { color: var(--muted); font-size: 12px; }
+  #sound-out { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 4px 24px; margin-top: 10px; }
+  #sound-out:empty { display: none; }
+  #sound-out .note { color: var(--muted); font-size: 12px; grid-column: 1 / -1; }
+  #traj-panel { padding: 10px 14px 12px; }
+  #traj-panel .sound-bar input[type=number] { width: 72px; }
+  #traj-panel .charts { margin-top: 10px; }
+  #traj-status { color: var(--muted); font-size: 12px; }
+  #traj-table table { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  #traj-table th { color: var(--muted); font-weight: 500; text-align: right; padding: 2px 12px; }
+  #traj-table td { text-align: right; padding: 2px 12px; }
+  #traj-table:empty { display: none; }
+  .events { display: grid; grid-template-columns: 1fr auto auto; gap: 2px 12px; align-content: start; }
+  .events span:nth-child(3n+1) { color: var(--muted); }
+  .events span:nth-child(3n+2), .events span:nth-child(3n) { font-variant-numeric: tabular-nums; text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gun Simulator</h1>
+  <nav class="tabs" role="tablist">
+    <button role="tab" id="tab-btn-editor" aria-selected="true" data-tab="editor">Editor</button>
+    <button role="tab" id="tab-btn-range" aria-selected="false" data-tab="range">Firing range</button>
+  </nav>
+  <span class="spacer"></span>
+  <label>Preset <select id="preset"></select></label>
+  <button id="load-btn" title="Load a gun from a .toml file">Open…</button>
+  <button id="save-btn" title="Save the current gun as a .toml file">Save…</button>
+  <input type="file" id="file" accept=".toml" hidden>
+</header>
+<div id="error"></div>
+
+<main id="editor" role="tabpanel">
+  <div id="sections">
+    <div class="name-row"><label for="f-name">Gun name</label><input type="text" id="f-name"></div>
+  </div>
+  <section class="panel" id="fields"></section>
+  <section id="preview">
+    <div class="panel" id="preview-panel">
+      <canvas id="cartridge-view"></canvas>
+      <canvas id="rifle-view" hidden></canvas>
+      <div class="view-bar">
+        <span class="seg"><button id="pv-cartridge" aria-pressed="true">Cartridge</button><button id="pv-rifle" aria-pressed="false">Rifle</button></span>
+        <label><input type="checkbox" id="pv-cutaway"> Cutaway</label>
+        <label id="pv-pull-wrap"><input type="checkbox" id="pv-pull"> Pull projectile</label>
+        <span class="spacer"></span>
+        <span class="hint">drag · wheel · double-click</span>
+      </div>
+      <div id="preview-warnings"></div>
+    </div>
+    <div class="panel" id="derived">
+      <h3>At a glance</h3>
+      <div class="stats" id="derived-stats"></div>
+      <div class="actions">
+        <button id="use-capacity" hidden title="Set the solver's chamber volume to the space under the projectile">Use case space as chamber volume</button>
+        <button id="go-range" class="primary">To the range →</button>
+      </div>
+      <div id="editor-status"></div>
+    </div>
+  </section>
+</main>
+
+<main id="range-tab" role="tabpanel" hidden>
+  <div class="panel toolbar">
+    <button id="run" class="primary" title="Simulate and fire (Enter)">Fire</button>
+    <button id="replay" disabled title="Show the last shot again without re-simulating">Replay</button>
+    <button id="cycle" title="Work the bolt: eject and chamber a new round">Cycle bolt</button>
+    <span class="group">
+      <label>Camera <select id="camera">
+        <option value="auto">Director</option>
+        <option value="rifle">Whole rifle</option>
+        <option value="breech">Breech</option>
+        <option value="follow">Follow projectile</option>
+        <option value="muzzle">Muzzle</option>
+      </select></label>
+      <label title="Display seconds per simulated millisecond while the projectile is in the bore">Slow motion
+        <input type="range" id="slowmo" min="0" max="1" step="0.01" value="0.5"> <span id="slowmo-label"></span></label>
+      <label title="Play the shot at its real speed: the bore takes about a millisecond"><input type="checkbox" id="realtime"> Real time</label>
+      <label><input type="checkbox" id="cutaway" checked> Cutaway</label>
+      <label title="Work a manual bolt by itself after the shot (automatic actions always cycle)"><input type="checkbox" id="auto-cycle" checked> Auto-cycle bolt</label>
+      <label title="Shots per trigger pull, for a self-loading action: each fires when the action is back in battery">Burst <input type="number" id="burst" value="1" min="1" max="30" step="1"></label>
+    </span>
+    <span class="spacer"></span>
+    <span class="group">
+      <span id="model-boxes"></span>
+      <label title="Synthesise the sound of the shot from the fluid simulation"><input type="checkbox" id="sound-on" checked> Sound</label>
+    </span>
+  </div>
+  <div class="panel" id="range-panel">
+    <canvas id="range"></canvas>
+    <div id="hud"></div>
+    <div id="range-hint">drag to orbit · wheel to zoom · double-click to reset</div>
+    <div id="range-warnings"></div>
+  </div>
+  <div id="cards"><div class="panel placeholder">Press <b>Fire</b> to simulate the shot.</div></div>
+  <div class="panel" id="sound-panel">
+    <div class="sound-bar">
+      <h3>Sound</h3>
+      <button id="play" disabled title="Play the last shot's sound again (space)">▶ Play</button>
+      <label>Surroundings <select id="environment"></select></label>
+      <label>Ears <select id="protection"></select></label>
+      <label title="Recorded: overdriven like a microphone, the way shots sound on recordings (loud, with audible echoes). Normalised: the loudest instant at full scale, everything else at its true level below it. Calibrated: a fixed dB SPL at full scale, to compare guns and distances">Level <select id="level-mode">
+        <option value="recorded">Recorded</option>
+        <option value="normalized">Normalised</option>
+        <option value="calibrated">Calibrated</option></select></label>
+      <label id="drive-wrap" title="How hard the recorder is overdriven: the body of the shot and its echoes come up by this much against the peak">Drive <input type="range" id="drive" min="0" max="48" step="1" value="36"></label>
+      <label id="full-scale-wrap" hidden title="The sound pressure level that plays at full scale">0 dBFS = <input type="number" id="full-scale" value="150" step="any"> dB</label>
+      <label>Volume <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8"></label>
+      <label title="On the range, each sound starts when the slowed-down clock reaches it. Stretched: it slows down with the clock (to a quarter speed at most); real speed: it plays as it would really sound">Slow motion <select id="slowmo-sound">
+        <option value="stretch">Stretched</option>
+        <option value="real">Real speed</option></select></label>
+      <label>Shots <input type="number" id="shots" value="1" min="1" max="100" step="1"></label>
+      <label><input type="number" id="rpm" value="700" min="1" step="any"> rpm</label>
+      <span id="sound-status"></span>
+    </div>
+    <div id="sound-out"></div>
+  </div>
+  <div class="panel" id="traj-panel">
+    <div class="sound-bar">
+      <h3>Trajectory</h3>
+      <label>Zero <input type="number" id="t-zero" value="100" min="1" step="any"> m</label>
+      <label>Max range <input type="number" id="t-range" value="1000" min="10" step="any"> m</label>
+      <label>Sight height <input type="number" id="t-sight" value="40" min="0" step="any"> mm</label>
+      <label>Crosswind <input type="number" id="t-wind" value="0" step="any"> m/s</label>
+      <span id="traj-status"></span>
+    </div>
+    <div class="charts">
+      <div class="chart"><h3>Drop vs range (relative to the line of sight)</h3><canvas id="c-drop"></canvas></div>
+      <div class="chart"><h3>Velocity vs range</h3><canvas id="c-flight"></canvas></div>
+    </div>
+    <div id="traj-table"></div>
+  </div>
+  <div class="charts">
+    <div class="panel chart"><h3>Pressure vs time</h3><canvas id="c-pressure"></canvas></div>
+    <div class="panel chart"><h3>Projectile velocity vs travel</h3><canvas id="c-velocity"></canvas></div>
+    <div class="panel chart"><h3>Pressure along the bore (fluid model)</h3><canvas id="c-profile"></canvas></div>
+    <div class="panel chart"><h3>Recoil and action</h3><canvas id="c-motion"></canvas></div>
+    <div class="panel chart"><h3 id="c-shoulder-title">Force on the shooter's shoulder</h3><canvas id="c-shoulder"></canvas></div>
+    <div class="panel chart" id="device-panel" hidden>
+      <h3>Muzzle device, 2D: pressure</h3>
+      <canvas id="c-device"></canvas>
+      <div class="device-bar"><input type="range" id="device-snap" min="0" max="9" step="1" value="2" aria-label="Snapshot">
+        <span id="device-snap-label"></span></div>
+    </div>
+    <div class="panel chart" id="device-force-panel" hidden><h3>Muzzle device: push on the gun</h3><canvas id="c-device-force"></canvas></div>
+    <div class="panel chart"><h3>Sound at the listener (free field)</h3><canvas id="c-sound"></canvas></div>
+    <div class="panel chart"><h3>Muzzle blast near the muzzle (blast solver)</h3><canvas id="c-blast"></canvas></div>
+  </div>
+</main>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

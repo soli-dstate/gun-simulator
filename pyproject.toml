@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gun-sim"
+version = "0.1.0"
+description = "Customisable gun simulator with fluid-dynamics interior ballistics"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "pywebview>=6.0"]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+dev = ["matplotlib>=3.8", "pytest>=8"]
+build = ["pyinstaller>=6.10"]
+
+[project.scripts]
+gun-sim = "gun_sim.__main__:main"
+gun-sim-ui = "gun_sim.ui.app:main"
+
+[tool.setuptools]
+packages = ["gun_sim", "gun_sim.sound", "gun_sim.ui"]
+
+[tool.setuptools.package-data]
+"gun_sim.ui" = ["static/*", "static/js/*", "static/js/viewer3d/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

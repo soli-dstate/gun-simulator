@@ -1,0 +1,522 @@
+"""Recoil and action cycling: how the gun moves when it fires, and how it reloads.
+
+Loads. The interior-ballistics models record what the shot does to the gun
+(ShotResult.loads): the gas pressure on the bolt face, the rest of the push on
+the barrel (the chamber shoulder and the projectile's drag on the bore pull it
+forwards), and, during blowdown, the reaction of the gas jet. They also record
+the gas at a port in the barrel. The forces integrate to the recoil impulse.
+
+Bodies. Everything moves along the bore axis, plus the gun's pitch:
+
+* the gun (receiver, barrel, stock) recoils a distance x and pitches the
+  muzzle up by theta, about the shoulder (or about its centre of mass when
+  nothing holds it);
+* the bolt group (bolt and carrier, or a pistol's slide) slides a distance s
+  back inside it against the return spring, from closed (s = 0) to the rear
+  stop (s = stroke);
+* with a shoulder, the part of the shooter's body that moves with the butt
+  is added to the gun, and the shoulder is a spring and damper to the rest of
+  the body. The hold resists pitch with a torsional spring and damper.
+
+Actions. Which body the bore forces push depends on the action:
+
+* bolt: locked; the shot pushes the whole gun. The bolt is worked by hand.
+* gas: locked until the carrier has moved `unlock_travel`. Gas flows from the
+  port into the cylinder through the port as through an orifice (choked or
+  subsonic compressible flow, either way), and its pressure drives the piston
+  and carrier until the piston has moved `gas_stroke`, when the cylinder
+  vents. The reaction pushes the gas block forwards. Once unlocked, any
+  pressure left in the chamber pushes the bolt too.
+* blowback: never locked. The breech pressure pushes the bolt from the
+  start, held back only by its inertia and the spring.
+* short_recoil: the barrel and slide recoil locked together inside the frame
+  until the barrel has moved `unlock_travel`, where it stops against the frame
+  and unlocks; the slide carries on. Going forward, the slide picks the barrel
+  up and returns it to battery.
+
+Impacts at the rear stop and in battery are instantaneous, with a coefficient
+of restitution; the impulse is shared between the bolt and the gun by their
+masses (the shoulder is far too soft to take part). The bolt ejects the case
+once it has come back a case length (plus 3 mm), can pick up the next round
+once it has come back past a whole round, and drags `feed_force` while it
+pushes that round into the chamber.
+
+Pitch. The forces act along the bore, `bore_height` above the shoulder, so
+every axial force on the gun body turns it: the shot lifts the muzzle, and the
+bolt slamming into the rear stop gives it a second kick. Internal forces along
+the same line cancel.
+
+Bursts. A self-loading action can fire several shots: each is fired
+LOCK_TIME after the bolt is back in battery on the one before, with
+everything (the gun's recoil and pitch, the gas cylinder) carried over, so
+recoil and muzzle climb build up through the burst. The gas port's discharge
+coefficient comes from a 2D solution of the port (devices.py) unless
+solver.gas_port_2d is off; a muzzle device's mass is added to the gun.
+
+Approximations: the bolt and carrier move as one mass (a real carrier runs
+free for its unlock travel before it picks up the bolt); no friction except
+feeding, no hammer to cock, and the case leaves the chamber freely. The gas in
+the cylinder is ideal and keeps its heat. The shooter's body moves rigidly
+with the butt, and is linear. Small angles throughout.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+if TYPE_CHECKING:
+    from .config import Gun
+    from .results import ShotResult
+
+AMBIENT = 101325.0        # Pa
+AIR_TEMPERATURE = 300.0   # K
+STEEL_DENSITY = 7850.0    # kg/m^3
+DURATION = 0.3            # s simulated from ignition
+FAST_DT, FAST_UNTIL = 2e-6, 0.02  # fine steps while the gas acts
+SLOW_DT = 2e-5
+OUT_FAST, OUT_SLOW = 2e-5, 5e-4   # output sampling, before and after FAST_UNTIL
+ORIFICE_CD = 0.8          # discharge coefficient of the gas port, unless solved in 2D (devices.py)
+LOCK_TIME = 0.003         # s from back in battery to the next ignition in a burst (sear, hammer, primer)
+MAX_BURST = 30
+REST_SPEED = 0.05         # m/s: slower than this after closing, the bolt stays shut
+# Thresholds for the warnings.
+REAR_SPEED_WARNING = 8.0        # m/s into the rear stop
+UNLOCK_PRESSURE_WARNING = 20e6  # Pa in the chamber when it unlocks
+CASE_PRESSURE = 30e6            # Pa: above this the case is pressed hard into the chamber
+CASE_SETBACK_WARNING = 1e-3     # m the case may back out while it is
+
+
+def head_area(gun: Gun) -> float:
+    """Area the breech pressure pushes the bolt with: the largest inside cross-section of the case."""
+    from .chamber import ChamberProfile
+    try:
+        return float(ChamberProfile.from_case(gun).area.max())
+    except ValueError:
+        return gun.barrel.bore_area
+
+
+def port_position(gun: Gun) -> float:
+    """Projectile travel from its seat to the gas port (m)."""
+    position = gun.action.gas_port_position
+    return position if position is not None else 0.75 * gun.barrel.travel
+
+
+def barrel_mass(gun: Gun) -> float:
+    """The barrel's mass: given, or its steel (a frustum between the outside diameters, less the bore)."""
+    if gun.action.barrel_mass is not None:
+        return gun.action.barrel_mass
+    bar = gun.barrel
+    length = gun.case.length + bar.travel
+    d1, d2 = bar.breech_diameter, bar.muzzle_diameter
+    return STEEL_DENSITY * (math.pi / 12 * length * (d1 * d1 + d1 * d2 + d2 * d2) - bar.bore_area * length)
+
+
+def strokes(gun: Gun) -> dict:
+    """Bolt travel (m) at which things happen."""
+    a, c = gun.action, gun.case
+    eject = c.length + 3e-3          # the case is clear of the chamber and hits the ejector
+    feed = c.overall_length + 3e-3   # the bolt face is behind the next round
+    stroke = a.bolt_travel if a.bolt_travel is not None else feed + 8e-3
+    unlock = a.unlock_travel if a.unlock_travel is not None else {"gas": 6e-3, "short_recoil": 3e-3}.get(a.type, 0.0)
+    return {"eject": eject, "feed": feed, "stroke": stroke, "unlock": min(unlock, stroke)}
+
+
+def _orifice(area: float, p_up: float, t_up: float, p_down: float, gamma: float, r_gas: float,
+             cd: float = ORIFICE_CD) -> float:
+    """Mass flow (kg/s) of an ideal gas through an orifice from p_up to p_down."""
+    if p_up <= p_down:
+        return 0.0
+    ratio = p_down / p_up
+    k = cd * area * p_up / math.sqrt(r_gas * t_up)
+    if ratio <= (2 / (gamma + 1)) ** (gamma / (gamma - 1)):  # choked
+        return k * math.sqrt(gamma) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1)))
+    return k * math.sqrt(2 * gamma / (gamma - 1) * (ratio ** (2 / gamma) - ratio ** ((gamma + 1) / gamma)))
+
+
+@dataclass
+class ActionResult:
+    kind: str                     # action type
+    stance: str                   # shooter stance
+    time: np.ndarray              # s from the first ignition
+    recoil: np.ndarray            # m the gun has moved back
+    recoil_velocity: np.ndarray   # m/s, + rearwards
+    pitch: np.ndarray             # rad, + muzzle up
+    bolt: np.ndarray              # m the bolt has moved back inside the gun
+    bolt_velocity: np.ndarray     # m/s relative to the gun, + rearwards
+    force: np.ndarray             # N, the shots' force on the gun (+ rearwards)
+    shoulder_force: np.ndarray    # N, the gun pushing on the shooter
+    gas_pressure: np.ndarray      # Pa, in the gas cylinder (gas action)
+    impulse: float                # N s, recoil impulse of one shot
+    free_recoil_velocity: float   # m/s, of the gun alone, one shot
+    free_recoil_energy: float     # J
+    max_recoil: float             # m
+    peak_recoil_velocity: float   # m/s
+    peak_shoulder_force: float    # N
+    max_pitch: float              # rad
+    bolt_max_travel: float        # m
+    strokes: dict                 # see strokes()
+    status: str                   # "manual", "cycled", or what went wrong
+    gun_mass: float = 0.0         # kg, with any muzzle device
+    events: list = field(default_factory=list)    # {"time", "name", "detail", "shot"}
+    warnings: list = field(default_factory=list)
+    shot_times: list = field(default_factory=list)  # s, ignition of each shot of a burst
+    rear_speed: float | None = None       # m/s, bolt into the rear stop (first shot)
+    cycle_time: float | None = None       # s, ignition to back in battery (first shot)
+    unlock_pressure: float | None = None  # Pa in the chamber when the bolt unlocks (first shot)
+    gas_peak_pressure: float | None = None  # Pa
+    port_cd: float | None = None          # discharge coefficient of the gas port used
+    port_cd_2d: bool = False              # True if it came from the 2D solution of the port
+
+    @property
+    def shots(self) -> int:
+        return len(self.shot_times)
+
+    @property
+    def cyclic_rate(self) -> float | None:
+        """Rounds per minute: from the burst, or from one cycle plus the lock time."""
+        if len(self.shot_times) > 1:
+            return 60 * (len(self.shot_times) - 1) / (self.shot_times[-1] - self.shot_times[0])
+        return 60 / (self.cycle_time + LOCK_TIME) if self.cycle_time else None
+
+    def summary(self) -> str:
+        lines = [
+            f"  recoil impulse       {self.impulse:9.2f} N s; free recoil {self.free_recoil_velocity:.2f} m/s, "
+            f"{self.free_recoil_energy:.1f} J",
+            f"  with the shooter     {self.max_recoil * 1e3:9.1f} mm back at up to {self.peak_recoil_velocity:.2f} m/s, "
+            f"muzzle rise {math.degrees(self.max_pitch):.2f} deg, peak shoulder force {self.peak_shoulder_force:.0f} N"
+            if self.stance == "shoulder" else
+            f"  free recoil          {self.max_recoil * 1e3:9.1f} mm in {self.time[-1] * 1e3:.0f} ms, "
+            f"muzzle rise {math.degrees(self.max_pitch):.2f} deg",
+        ]
+        if self.kind != "bolt":
+            line = f"  {self.kind.replace('_', ' ') + ' action':20s} {self.status}"
+            if self.shots > 1:
+                line += f", {self.shots} shots"
+            elif self.cycle_time:
+                line += f" in {self.cycle_time * 1e3:.1f} ms"
+            if self.cyclic_rate:
+                line += f" ({self.cyclic_rate:.0f} rounds/min)"
+            if self.rear_speed is not None:
+                line += f", bolt at {self.rear_speed:.1f} m/s into the rear stop"
+            lines.append(line)
+            if self.port_cd is not None:
+                lines.append(f"  gas port Cd          {self.port_cd:9.2f}" + (" (2D)" if self.port_cd_2d else ""))
+        lines += [f"  warning: {w}" for w in self.warnings]
+        return "\n".join(lines)
+
+
+class _Loads:
+    """A shot's loads on a fine uniform grid, so a burst can look them up by index."""
+
+    def __init__(self, loads):
+        self.end = float(loads.t[-1])
+        n = int(self.end / FAST_DT) + 1
+        tau = (np.arange(n) + 0.5) * FAST_DT
+        self.breech = np.interp(tau, loads.t, loads.breech_force, left=0.0, right=0.0)
+        self.barrel = np.interp(tau, loads.t, loads.barrel_force, left=0.0, right=0.0)
+        self.p = np.interp(tau, loads.t, loads.port_pressure, left=AMBIENT, right=AMBIENT)
+        self.T = np.interp(tau, loads.t, loads.port_temperature, left=AIR_TEMPERATURE, right=AIR_TEMPERATURE)
+        self.n = n
+
+    def at(self, shot_times, t):
+        """Breech and barrel force (all shots), and the port gas of the newest shot under way."""
+        fb = fr = 0.0
+        p, T = AMBIENT, AIR_TEMPERATURE
+        for t0 in shot_times:
+            i = int((t - t0) / FAST_DT)
+            if 0 <= i < self.n:
+                fb += self.breech[i]
+                fr += self.barrel[i]
+                if self.p[i] > p:
+                    p, T = self.p[i], self.T[i]
+        return fb, fr, p, T
+
+
+def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
+    """Recoil of the gun and the cycle of its action, from a shot's loads.
+
+    shots > 1 fires a burst (self-loading actions only): each shot is fired
+    LOCK_TIME after the bolt is back in battery on the previous one, with the
+    gun's motion carried over, so recoil and muzzle climb build up. The burst
+    stops early if a cycle fails.
+    """
+    from . import devices
+    loads = shot.loads
+    if loads is None or len(loads.t) < 2:
+        raise ValueError("this shot has no recorded loads on the gun")
+    a, sh = gun.action, gun.shooter
+    kind = a.type
+    shots = 1 if kind == "bolt" else int(min(max(shots, 1), MAX_BURST))
+    geo = strokes(gun)
+    stroke, unlock, eject_at, feed_at = geo["stroke"], geo["unlock"], geo["eject"], geo["feed"]
+    m_bolt = a.bolt_mass
+    m_bar = barrel_mass(gun) if kind == "short_recoil" else 0.0
+    gun_mass = a.gun_mass + devices.device_mass(gun)
+    if m_bolt + m_bar >= gun_mass:
+        raise ValueError(f"short recoil: the slide and barrel ({(m_bolt + m_bar):.2f} kg) "
+                         f"must be lighter than the gun ({gun_mass:.2f} kg)")
+    shoulder = sh.stance == "shoulder"
+    m_body = sh.body_mass if shoulder else 0.0
+    k_sh, c_sh = (sh.shoulder_stiffness, sh.shoulder_damping) if shoulder else (0.0, 0.0)
+    k_th, c_th = (sh.hold_stiffness, sh.hold_damping) if shoulder else (0.0, 0.0)
+    arm = a.cg_distance if shoulder else 0.0
+    inertia = gun_mass * (a.radius_of_gyration**2 + arm**2)
+    h = a.bore_height
+    gamma, r_gas = gun.propellant.gamma, gun.propellant.gas_constant
+    cp, cv = gamma * r_gas / (gamma - 1), r_gas / (gamma - 1)
+    port_area = math.pi / 4 * a.gas_port_diameter**2
+    piston_area = math.pi / 4 * a.piston_diameter**2
+
+    port_cd, port_2d = None, False
+    if kind == "gas":
+        port_cd = ORIFICE_CD
+        if gun.solver.gas_port_2d:
+            port = devices.port_discharge(gun, loads)
+            if port is not None:
+                port_cd, port_2d = port["cd"], True
+
+    table = _Loads(loads)
+    fast_for = max(FAST_UNTIL, table.end + 1e-3)   # fine steps while a shot's gas acts
+
+    x = v = th = w = 0.0      # gun: recoil, velocity, pitch, pitch rate
+    s = u = 0.0               # bolt: travel and velocity in the gun
+    carry = kind == "short_recoil"   # barrel still moving with the slide
+    unlocked = kind == "blowback"
+    sealed = True             # gas cylinder closed (the piston hasn't reached the vent)
+    m_c = AMBIENT * a.gas_volume / (r_gas * AIR_TEMPERATURE)  # cylinder starts full of air
+    e_c = m_c * cv * AIR_TEMPERATURE
+    p_c = gas_peak = AMBIENT
+    rear_speed = unlock_pressure = first_battery = None
+    s_max = setback = 0.0
+    events, warnings = [], []
+    shot_times = [0.0]
+    cyc = {}                  # this shot's cycle: ejected, can_feed, feeding, battery, s_max
+    next_shot = None
+    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas")}
+    next_out = 0.0
+
+    def event(t, name, detail="", speed=None):
+        events.append({"time": t, "name": name, "detail": detail, "shot": len(shot_times), "speed": speed})
+
+    def new_cycle():
+        cyc.update(ejected=False, can_feed=False, feeding=False, battery=None, s_max=0.0)
+
+    def masses():
+        m_g = m_bolt + (m_bar if carry else 0.0)
+        return m_g, gun_mass - m_g + m_body
+
+    new_cycle()
+    event(0.0, "fires")
+    t = 0.0
+    end = DURATION
+    while t < end:
+        fast = t - shot_times[-1] < fast_for
+        dt = FAST_DT if fast else SLOW_DT
+        fb, fr, pp, tp = table.at(shot_times, t + 0.5 * dt)
+        m_g, m_r = masses()
+        # Bore forces on the bolt group and on the gun body.
+        if kind == "bolt":
+            g_ext, r_ext = 0.0, fb + fr
+        elif kind == "short_recoil":
+            g_ext, r_ext = (fb + fr, 0.0) if carry else (fb, fr)
+        elif unlocked:
+            g_ext, r_ext = fb, fr
+        else:
+            g_ext, r_ext = 0.0, fb + fr
+
+        f_piston = 0.0
+        if kind == "gas":
+            if sealed:
+                vol = a.gas_volume + piston_area * s
+                p_c = (gamma - 1) * e_c / vol
+                t_c = p_c * vol / (m_c * r_gas)
+                if pp > p_c:
+                    flow = _orifice(port_area, pp, tp, p_c, gamma, r_gas, port_cd)
+                    enthalpy = cp * tp
+                else:
+                    flow = -_orifice(port_area, p_c, t_c, pp, gamma, r_gas, port_cd)
+                    enthalpy = cp * t_c
+                m_c = max(m_c + flow * dt, 1e-12)
+                e_c = max(e_c + (flow * enthalpy - p_c * piston_area * u) * dt, 1e-9)
+                f_piston = (p_c - AMBIENT) * piston_area
+                gas_peak = max(gas_peak, p_c)
+            else:
+                p_c = AMBIENT
+
+        # Forces between the bolt group and the gun (+ pushes the bolt back).
+        f_int = f_piston - (a.spring_preload + a.spring_rate * s)
+        if cyc["feeding"] and u < 0 and s < feed_at:
+            f_int += a.feed_force
+        f_sh = -(k_sh * x + c_sh * v)
+        acc_g = (g_ext + f_int) / m_g
+        acc_r = (r_ext - f_int + f_sh) / m_r
+        held = kind == "bolt" or (s <= 0 and u <= 0 and acc_g <= acc_r)
+        if held:  # the bolt is shut and stays shut: one body
+            acc_r = (g_ext + r_ext + f_sh) / (m_g + m_r)
+            axial = g_ext + r_ext
+            s = u = 0.0
+        else:
+            axial = r_ext - f_int
+        v += acc_r * dt
+        x += v * dt
+        w += (h * axial - k_th * th - c_th * w) / inertia * dt
+        th += w * dt
+        t_end = t + dt
+
+        if not held:
+            u += (acc_g - acc_r) * dt
+            s += u * dt
+            mu = m_g * m_r / (m_g + m_r)
+            if s >= stroke and u > 0:  # into the rear stop
+                if rear_speed is None:
+                    rear_speed = u
+                event(t_end, "bolt hits the rear stop", f"{u:.1f} m/s", u)
+                impulse = (1 + a.rear_restitution) * mu * u
+                v += impulse / m_r
+                w += h * impulse / inertia
+                s, u = stroke, -a.rear_restitution * u
+            elif s <= 0 and u < 0:  # closes
+                impulse = (1 + a.battery_restitution) * mu * -u
+                v -= impulse / m_r
+                w -= h * impulse / inertia
+                speed = -u
+                s, u = 0.0, -a.battery_restitution * u
+                if u < REST_SPEED:
+                    u = 0.0
+                if cyc["feeding"] and cyc["battery"] is None:
+                    cyc["battery"] = t_end
+                    first_battery = first_battery or t_end
+                    event(t_end, "back in battery", f"{speed:.1f} m/s", speed)
+                    if len(shot_times) < shots:
+                        next_shot = t_end + LOCK_TIME
+                elif cyc["ejected"] and not cyc["can_feed"] and cyc["battery"] is None:
+                    cyc["battery"] = -1.0
+                    event(t_end, "closes on an empty chamber", f"{speed:.1f} m/s", speed)
+            s_max = max(s_max, s)
+            cyc["s_max"] = max(cyc["s_max"], s)
+
+            if kind == "gas":
+                if not unlocked and s >= unlock:
+                    unlocked = True
+                    p_unlock = fb / loads.head_area + AMBIENT
+                    unlock_pressure = unlock_pressure or p_unlock
+                    event(t_end, "bolt unlocks", f"{p_unlock / 1e6:.1f} MPa in the chamber")
+                elif unlocked and s < unlock and u < 0:
+                    unlocked = False  # locks again on the way home
+                if sealed and s >= a.gas_stroke:
+                    sealed = False
+                    event(t_end, "gas cylinder vents")
+                elif not sealed and s < a.gas_stroke and u < 0:
+                    sealed = True  # the piston closes the cylinder again, on air
+                    m_c = AMBIENT * (a.gas_volume + piston_area * s) / (r_gas * AIR_TEMPERATURE)
+                    e_c = m_c * cv * AIR_TEMPERATURE
+            elif kind == "short_recoil":
+                if carry and s >= unlock and u > 0:  # the barrel stops against the frame
+                    m_r2 = m_r + m_bar
+                    v2 = (m_r * v + m_bar * (v + u)) / m_r2
+                    w += h * m_r * (v2 - v) / inertia
+                    u, v, carry = v + u - v2, v2, False
+                    p_unlock = fb / loads.head_area + AMBIENT
+                    unlock_pressure = unlock_pressure or p_unlock
+                    event(t_end, "barrel stops and unlocks", f"{p_unlock / 1e6:.1f} MPa in the chamber")
+                elif not carry and s < unlock and u < 0:  # the slide picks the barrel up
+                    u = (m_bolt * (v + u) + m_bar * v) / (m_bolt + m_bar) - v
+                    carry = True
+
+            if not cyc["ejected"] and s >= eject_at:
+                cyc["ejected"] = True
+                event(t_end, "case ejected", f"bolt at {u:.1f} m/s", u)
+            if not cyc["can_feed"] and s >= feed_at:
+                cyc["can_feed"] = True
+            if cyc["can_feed"] and not cyc["feeding"] and u < 0 and s < feed_at:
+                cyc["feeding"] = True
+                event(t_end, "strips the next round")
+
+            # How far the case has backed out of the chamber while still pressed into it.
+            free = s - unlock if kind in ("gas", "short_recoil") else s
+            if (unlocked or (kind == "short_recoil" and not carry)) and fb / loads.head_area > CASE_PRESSURE:
+                setback = max(setback, free)
+
+        if t >= next_out:
+            next_out += OUT_FAST if fast else OUT_SLOW
+            out["t"].append(t_end)
+            out["x"].append(x)
+            out["v"].append(v)
+            out["th"].append(th)
+            out["s"].append(s)
+            out["u"].append(u)
+            out["force"].append(fb + fr)
+            out["shoulder"].append(-f_sh)
+            out["gas"].append(p_c)
+        t = t_end
+
+        # Back in battery: fire the next shot of the burst.
+        if next_shot is not None and t >= next_shot:
+            next_shot = None
+            shot_times.append(t)
+            new_cycle()
+            event(t, "fires")
+            end = t + DURATION
+
+    status = "manual" if kind == "bolt" else "cycled"
+    if kind != "bolt":
+        n = len(shot_times)
+        which = f" on shot {n}" if shots > 1 else ""
+        if not cyc["ejected"]:
+            status = "failed to eject"
+            warnings.append(f"short stroke{which}: the bolt only came back {cyc['s_max'] * 1e3:.0f} mm, "
+                            f"and it needs {eject_at * 1e3:.0f} mm to eject the case")
+        elif not cyc["can_feed"]:
+            status = "failed to feed"
+            warnings.append(f"short stroke{which}: the bolt came back {cyc['s_max'] * 1e3:.0f} mm, ejecting "
+                            f"the case, but it needs {feed_at * 1e3:.0f} mm to pick up the next round")
+        elif cyc["battery"] is None or cyc["battery"] < 0:
+            status = "did not return to battery"
+            warnings.append(f"the return spring did not close the bolt on the new round{which}")
+        if status != "cycled" and n < shots:
+            warnings.append(f"the burst stopped after {n} of {shots} shots")
+    if rear_speed is not None and rear_speed > REAR_SPEED_WARNING:
+        cure = {"gas": "over-gassed; a smaller gas port, a heavier carrier or a stiffer spring would ease it",
+                "blowback": "a heavier bolt or a stiffer spring would slow it",
+                "short_recoil": "a heavier slide or a stiffer spring would slow it"}[kind]
+        warnings.append(f"the bolt hits the rear stop at {rear_speed:.1f} m/s, battering the gun: {cure}")
+    if unlock_pressure is not None and unlock_pressure > UNLOCK_PRESSURE_WARNING:
+        warnings.append(f"it unlocks with {unlock_pressure / 1e6:.0f} MPa still in the chamber, "
+                        "so the case is pulled while pressed into the chamber walls")
+    if setback > CASE_SETBACK_WARNING:
+        warnings.append(f"the case backs {setback * 1e3:.1f} mm out of the chamber while the chamber is still "
+                        f"above {CASE_PRESSURE / 1e6:.0f} MPa: its unsupported head may rupture")
+
+    impulse = loads.impulse
+    arr = {k: np.array(val) for k, val in out.items()}
+    shoulder_force = arr["shoulder"] if shoulder else np.zeros_like(arr["t"])
+    return ActionResult(
+        kind=kind, stance=sh.stance, time=arr["t"],
+        recoil=arr["x"], recoil_velocity=arr["v"], pitch=arr["th"],
+        bolt=arr["s"], bolt_velocity=arr["u"], force=arr["force"],
+        shoulder_force=shoulder_force, gas_pressure=arr["gas"],
+        impulse=impulse,
+        free_recoil_velocity=impulse / gun_mass,
+        free_recoil_energy=impulse**2 / (2 * gun_mass),
+        max_recoil=float(arr["x"].max()),
+        peak_recoil_velocity=float(arr["v"].max()),
+        peak_shoulder_force=float(shoulder_force.max()),
+        max_pitch=float(arr["th"].max()),
+        bolt_max_travel=s_max,
+        strokes=geo,
+        status=status,
+        gun_mass=gun_mass,
+        events=events,
+        warnings=warnings,
+        shot_times=shot_times,
+        rear_speed=rear_speed,
+        cycle_time=first_battery,
+        unlock_pressure=unlock_pressure,
+        gas_peak_pressure=gas_peak if kind == "gas" else None,
+        port_cd=port_cd,
+        port_cd_2d=port_2d,
+    )
