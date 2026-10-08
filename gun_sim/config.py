@@ -295,6 +295,9 @@ class SolverSettings:
     device_resolution: float = 4.0  # cells across the bore diameter
     device_time: float = 0.0025     # s after exit the muzzle device is solved in 2D (then a venting vessel)
     gas_port_2d: bool = True        # gas action: find the port's discharge coefficient in 2D
+    # Muzzle flash and smoke (gun_sim/plume.py): the gas leaving the muzzle solved in 2D out into the air.
+    plume_resolution: float = 2.0   # cells across the bore diameter at the muzzle (they grow further out)
+    plume_time: float = 0.002       # s after exit the plume is solved for
 
 
 DEVICE_TYPES = ("none", "brake", "suppressor")
@@ -471,6 +474,10 @@ class Gun:
             raise ValueError("solver.device_resolution must be between 2 and 12 cells across the bore")
         if not 2e-4 <= cfg.device_time <= 0.02:
             raise ValueError("solver.device_time must be between 0.2 and 20 ms")
+        if not 2 <= cfg.plume_resolution <= 8:
+            raise ValueError("solver.plume_resolution must be between 2 and 8 cells across the bore")
+        if not 2e-4 <= cfg.plume_time <= 0.01:
+            raise ValueError("solver.plume_time must be between 0.2 and 10 ms")
         if d.type == "none":
             return
         for name in ("length", "outer_diameter", "blast_chamber", "mass"):

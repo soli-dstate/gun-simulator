@@ -140,3 +140,14 @@ def test_desktop_bridge_trajectory():
     gun = bridge.schema()["presets"]["example_rifle"]
     assert bridge.trajectory({"gun": gun, "muzzle_velocity": 800.0})["table"]
     assert "error" in bridge.trajectory({"gun": gun})
+
+
+def test_plume_endpoint(base_url):
+    import base64
+
+    with urllib.request.urlopen(base_url + "/api/schema") as r:
+        gun = json.load(r)["presets"]["example_rifle"]
+    gun["solver"]["plume_time"] = 5e-4
+    data = post(base_url + "/api/plume", json.dumps({"gun": gun, "blowdown": 0.004}).encode())
+    assert len(base64.b64decode(data["frames"])) == data["nx"] * data["nr"] * data["layers"] * 2
+    assert data["afterburn"] >= 0 and data["bore"]["t"]

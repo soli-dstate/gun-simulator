@@ -119,6 +119,8 @@ export const META = {
   "solver.device_resolution": { min: 2, max: 12, step: 2, help: "2D cells across the bore (rounded to an even number). 4 takes a few seconds; each doubling takes about 8x longer." },
   "solver.device_time": { min: 0.5, max: 10, step: 0.1, help: "How long after exit the muzzle device is solved in 2D. After that it is a venting vessel." },
   "solver.gas_port_2d": { help: "Find the gas port's discharge coefficient from a 2D solution of the port (a second or two). Off: 0.8." },
+  "solver.plume_resolution": { min: 2, max: 8, step: 2, help: "2D cells across the bore at the muzzle for the flash and smoke (rounded to an even number; cells grow further out). 2 takes a few seconds; 4 matches the device grid and takes 4–5x longer." },
+  "solver.plume_time": { min: 0.5, max: 10, step: 0.1, help: "How long after exit the flash and smoke are solved in 2D. After that the cloud is carried on as a growing, thinning puff." },
   "shooter.stance": { help: "shoulder: held into a shoulder, which gives like a spring and damper, with some of the body moving with the gun. free: nothing holds it (free recoil, the standard comparison)." },
   "shooter.body_mass": { min: 0, max: 30, step: 0.1, help: "How much of the shooter moves with the gun: shoulder, arms and some torso." },
   "shooter.shoulder_stiffness": { min: 1, max: 100, step: 0.1, help: "How stiffly the shoulder pushes back as the gun drives into it." },

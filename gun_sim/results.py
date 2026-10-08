@@ -93,6 +93,9 @@ class ShotResult:
     heat_to_barrel: float | None = None  # J
     barrel_temperature_rise: float | None = None
     bore_temperature_rise: float | None = None
+    # Fluid model: gas temperature along the column over time, [(t, K at BORE_GAS_POINTS
+    # evenly spaced from the breech to the projectile base, or the muzzle after exit)].
+    bore_gas: list = field(default_factory=list)
 
     def summary(self) -> str:
         status = "left muzzle" if self.left_muzzle else "DID NOT leave muzzle"

@@ -704,26 +704,35 @@ async function fire(animate = true) {
   const btn = $("run");
   btn.disabled = true;
   btn.textContent = gun.muzzle_device?.type && gun.muzzle_device.type !== "none" ? "Simulating (2D)…" : "Simulating…";
+  // The sound's air and blowdown time, so the shot, its sound and its flash share one bore (and 2D device) run.
+  const request = { gun, models, burst: burstCount() };
   try {
-    // The sound's air and blowdown time, so the shot and its sound share one bore (and 2D device) run.
-    const request = { gun, models, burst: burstCount() };
-    try {
-      const snd = getSound();
-      request.blowdown = snd.blast_time;
-      request.ambient_pressure = snd.pressure;
-    } catch (e) { /* defaults */ }
+    const snd = getSound();
+    request.blowdown = snd.blast_time;
+    request.ambient_pressure = snd.pressure;
+  } catch (e) { /* defaults */ }
+  // The muzzle flash and smoke are solved in 2D alongside; the range waits for them.
+  const plume = range
+    ? backend.plume({ gun, blowdown: request.blowdown, ambient_pressure: request.ambient_pressure })
+      .catch((e) => { showError(`Flash and smoke: ${e.message}`); return null; })
+    : Promise.resolve(null);
+  try {
     lastResult = await backend.simulate(request);
     showCards(lastResult, gun);
     drawAll();
     lastGun = gun;
     updateTrajectory();
+    lastShot = lastResult.results.find((r) => r.model === "fluid") || lastResult.results[0];
+    if (lastShot.left_muzzle) {
+      btn.textContent = "Simulating flash (2D)…";
+      lastShot.plume = await plume;
+    }
   } catch (e) {
     showError(e.message);
     return;
   } finally {
     btn.disabled = false; btn.textContent = "Fire";
   }
-  lastShot = lastResult.results.find((r) => r.model === "fluid") || lastResult.results[0];
   $("replay").disabled = false;
   if (!range) return;
   const at = Number(params.get("at"));

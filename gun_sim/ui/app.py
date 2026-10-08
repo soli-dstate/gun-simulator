@@ -39,6 +39,9 @@ class Bridge:
     def synthesize(self, payload):
         return self._call(api.synthesize, payload)
 
+    def plume(self, payload):
+        return self._call(api.plume_field, payload)
+
     def trajectory(self, payload):
         return self._call(api.trajectory, payload)
 

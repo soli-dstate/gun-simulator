@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import action, devices, exterior, fluid, lumped, rifling, sound
+from .. import action, devices, exterior, fluid, lumped, plume, rifling, sound
 from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, STANCES, Gun
 from ..propellants import COMPOSITIONS, GRAINS
 from ..results import ShotResult
@@ -155,6 +155,8 @@ FIELDS = {
         ("device_resolution", "2D cells across the bore", "", 1),
         ("device_time", "2D muzzle device window after exit", "ms", 1e-3),
         ("gas_port_2d", "Gas port discharge coefficient from 2D", "flag", None),
+        ("plume_resolution", "Flash and smoke: 2D cells across the bore", "", 1),
+        ("plume_time", "Flash and smoke: 2D window after exit", "ms", 1e-3),
     ],
 }
 
@@ -359,6 +361,18 @@ def simulate(payload: dict) -> dict:
             raise ValueError(f"the {name} model went unstable (non-finite values); check the inputs")
         results.append(result_to_json(r, gun, burst))
     return {"results": results, "travel": gun.barrel.travel}
+
+
+def plume_field(payload: dict) -> dict:
+    """Muzzle flash and smoke for the firing range: the gas leaving the muzzle, solved in 2D.
+
+    payload: gun, and the blowdown and ambient_pressure the shot was simulated with (so the fluid run is shared).
+    """
+    gun = Gun.from_dict(payload["gun"])
+    blowdown = float(payload.get("blowdown", BLOWDOWN))
+    ambient = float(payload.get("ambient_pressure", fluid.ATMOSPHERE))
+    result, shot = plume.simulate_cached(gun, blowdown, ambient)
+    return plume.to_json(result, shot)
 
 
 def trajectory(payload: dict) -> dict:

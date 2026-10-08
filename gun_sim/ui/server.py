@@ -57,6 +57,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, api.simulate(json.loads(body)))
             elif self.path == "/api/synthesize":
                 self._json(200, api.synthesize(json.loads(body)))
+            elif self.path == "/api/plume":
+                self._json(200, api.plume_field(json.loads(body)))
             elif self.path == "/api/trajectory":
                 self._json(200, api.trajectory(json.loads(body)))
             elif self.path == "/api/parse":

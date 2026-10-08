@@ -97,32 +97,24 @@ class Grid:
     dims: dict = field(default_factory=dict)
 
 
-def device_grid(gun) -> Grid:
-    """The muzzle, the device and the air round them."""
+def draw(gun, X, Rr, h):
+    """The end of the barrel and the device on cells centred at X, Rr (2D arrays, m).
+
+    h is the size of the cells round the device, the thinnest a wall can be.
+    Returns solid, open_x, open_r, device (its steel), inside (gas cells in it) and the muzzle's radius.
+    """
     dims = dimensions(gun)
     bore = gun.barrel.bore_diameter
-    h = cell_size(gun)
     L, R, w = dims["length"], dims["outer_radius"], max(dims["wall"], h)
     rb, rh = bore / 2, dims["hole_radius"]
     r_muzzle = max(gun.barrel.muzzle_diameter / 2, rb + 2 * h)
-    # Room for the jets: a brake's go out sideways and back, a suppressor's forwards.
-    if dims["type"] == "brake":
-        back, front, r_top = max(4 * bore, 0.5 * L), max(5 * bore, 0.25 * L), R + max(3 * bore, R)
-    else:
-        back, front, r_top = 2 * bore, max(3 * bore, 0.15 * L), R + max(1.5 * bore, 0.4 * R)
-    nx = int(math.ceil((back + L + front) / h))
-    nr = int(math.ceil(r_top / h))
-    x0 = -math.ceil(back / h) * h
-    xc = x0 + (np.arange(nx) + 0.5) * h
-    rc = (np.arange(nr) + 0.5) * h
-    X, Rr = np.meshgrid(xc, rc, indexing="ij")
-
+    nx, nr = X.shape
     solid = (X < 0) & (Rr > rb) & (Rr < r_muzzle)          # the barrel
     dev = np.zeros_like(solid)
-    r_in = R - w
-    tube = (X >= 0) & (X < L) & (Rr >= r_in) & (Rr < R)
-    dev |= tube
     slots = []  # (x_start, x_end) of each brake vent
+    r_in = R - w
+    if dims["type"] != "none":
+        dev |= (X >= 0) & (X < L) & (Rr >= r_in) & (Rr < R)   # the tube
     if dims["type"] == "brake":
         n = dims["baffles"]
         pitch = L / n
@@ -131,7 +123,7 @@ def device_grid(gun) -> Grid:
             dev |= (X >= xb - w) & (X < xb) & (Rr >= rh) & (Rr < R)
             slots.append(((k - 1) * pitch + (w if k > 1 else 0.0) + w, xb - w - w))
         dev |= (X >= 0) & (X < w) & (Rr >= r_muzzle) & (Rr < R)   # rear ring round the muzzle
-    else:
+    elif dims["type"] == "suppressor":
         dev |= (X >= 0) & (X < w) & (Rr >= rb) & (Rr < R)          # rear cap
         dev |= (X >= L - w) & (X < L) & (Rr >= rh) & (Rr < R)      # front cap
         n = dims["baffles"]
@@ -161,7 +153,29 @@ def device_grid(gun) -> Grid:
             open_x[i, j] = min(open_x[i, j], dims["vent_fraction"])
             open_x[i + 1, j] = min(open_x[i + 1, j], dims["vent_fraction"])
     _shut(solid, open_x, open_r)
-    inside = (X >= 0) & (X < L) & (Rr < r_in) & ~solid
+    inside = (X >= 0) & (X < L) & (Rr < r_in) & ~solid if dims["type"] != "none" else np.zeros_like(solid)
+    return solid, open_x, open_r, dev, inside, r_muzzle
+
+
+def device_grid(gun) -> Grid:
+    """The muzzle, the device and the air round them."""
+    dims = dimensions(gun)
+    bore = gun.barrel.bore_diameter
+    h = cell_size(gun)
+    L, R = dims["length"], dims["outer_radius"]
+    # Room for the jets: a brake's go out sideways and back, a suppressor's forwards.
+    if dims["type"] == "brake":
+        back, front, r_top = max(4 * bore, 0.5 * L), max(5 * bore, 0.25 * L), R + max(3 * bore, R)
+    else:
+        back, front, r_top = 2 * bore, max(3 * bore, 0.15 * L), R + max(1.5 * bore, 0.4 * R)
+    nx = int(math.ceil((back + L + front) / h))
+    nr = int(math.ceil(r_top / h))
+    x0 = -math.ceil(back / h) * h
+    xc = x0 + (np.arange(nx) + 0.5) * h
+    rc = (np.arange(nr) + 0.5) * h
+    X, Rr = np.meshgrid(xc, rc, indexing="ij")
+    solid, open_x, open_r, dev, inside, r_muzzle = draw(gun, X, Rr, h)
+    rb = bore / 2
     inlet = (X < x0 + 2 * h) & (Rr < rb)
     probe = (X >= x0 + 2 * h) & (X < x0 + 3 * h) & (Rr < rb)
     dims.update(h=h, x0=x0, nx=nx, nr=nr, r_muzzle=r_muzzle)
@@ -232,7 +246,7 @@ class DeviceCoupling:
         self.start = None
         self.done = False
         rho_a = ambient_pressure / (287.05 * ambient_temperature)
-        self.ambient_mass = rho_a * float(np.sum(g.inside * self.solver.volume[None, :]))
+        self.ambient_mass = rho_a * float(np.sum(g.inside * self.solver.volume))
         self.cv_p = prop.gas_constant / (prop.gamma - 1)
         self.bore_area = gun.barrel.bore_area
         self.h_air = 1.4 / 0.4 * 287.05 * ambient_temperature
@@ -284,7 +298,7 @@ class DeviceCoupling:
     def _hand_over(self, t):
         s, g = self.solver, self.grid
         rho, u, v, p, Y, cv, rg = s.primitives()
-        vol = g.inside * s.volume[None, :]
+        vol = g.inside * s.volume
         V = float(vol.sum())
         m = float(np.sum(rho * vol, dtype=np.float64))
         e_int = float(np.sum(p / (rg / cv) * vol, dtype=np.float64))
@@ -424,7 +438,7 @@ def port_discharge(gun, loads, window: float = 1.2e-3) -> dict | None:
         s = Axisymmetric(g.h, g.x0, g.solid, g.open_x, g.open_r, prop.gas_constant, prop.gamma,
                          AMBIENT, AIR_TEMPERATURE, wall_heat=False, cfl=0.7)
         cv = prop.gas_constant / (prop.gamma - 1)
-        vol = float(np.sum(chamber * s.volume[None, :]))
+        vol = float(np.sum(chamber * s.volume))
         m0 = s.mass_in(chamber)
         times, masses, pressures = [t_open], [0.0], [AMBIENT]
         t = t_open

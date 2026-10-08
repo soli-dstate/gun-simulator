@@ -96,15 +96,21 @@ says: back into the shoulder, pitching muzzle-up about it, and settling again.
 1. The firing pin falls.
 2. The projectile moves down the bore along the solver's travel-vs-time
    curve, in slow motion (the **Slow motion** slider sets how many seconds one
-   simulated millisecond takes). The propellant gas behind it glows with the
-   breech pressure, which you can see with **Cutaway** on. The readout shows
-   time, travel, velocity and breech and base pressure as it goes.
-3. At muzzle exit, the volumetric (ray-marched) muzzle flash appears: the
-   under-expanded jet's shock bottle, the Mach disk (placed from the muzzle
-   exit pressure), and the turbulent secondary flash. The flash lights the
-   barrel and the smoke. The sound plays at this moment.
-4. The clock ramps up to real time and the smoke rolls out, slows, rises and
-   thins.
+   simulated millisecond takes). The propellant gas behind it glows as hot as
+   the fluid model says it is (and fades as the bore empties and cools after
+   exit), which you can see with **Cutaway** on. The readout shows time,
+   travel, velocity and breech and base pressure as it goes.
+3. At muzzle exit, the muzzle flash and smoke appear as the 2D plume solution
+   has them (see *Muzzle flash and smoke* below): the gas glows where it is
+   hot, so the primary flash, the jet's shock cell and Mach disk, and the
+   afterburning fireball come out of the flow rather than being drawn. A
+   brake throws them sideways; a suppressor holds them in (look inside with
+   **Cutaway**). The flash lights the barrel and the smoke, and the readout
+   shows the heat afterburning released. The sound plays at this moment. The
+   **Fire** button waits for the plume (a few seconds) before the shot plays.
+4. The clock ramps up to real time and the smoke cloud carries on from the
+   solution: it grows and thins as a puff, rises with its warmth, and whatever
+   gas was left in the bore or the device seeps out of the exit.
 5. A manual bolt is worked: it turns up, draws back extracting the spent
    case, which is flung out of the port, then strips a new round from the
    magazine and chambers it. A wisp of smoke leaves the open breech. Turn off
@@ -463,8 +469,10 @@ gas port turned down to suit.
 
 Not modelled: anything off the axis (brake ports are slots all round, side
 vents and asymmetric brakes average out), boundary layers (the grid is a few
-cells across the bore), the projectile passing through the device, first-round
-pop and secondary flash, and erosion. The suppressor's sound reduction comes
+cells across the bore), the projectile passing through the device, and
+erosion. Afterburning (first-round pop, secondary flash) is solved in the
+plume (below), not in the coupled device run, so it doesn't change the recoil
+or the sound. The suppressor's sound reduction comes
 out smaller than real cans manage, likely because of the coarse grid and the
 short 2D window.
 
@@ -590,7 +598,7 @@ with published measurements for 7.62 mm rifles.
 - The ground is a mirror image with a plane-wave reflection coefficient, with
   no ground wave at grazing angles.
 - Not modelled:
-  - secondary flash (afterburning of fuel-rich muzzle gas).
+  - the secondary flash's pop (the flash itself is solved, in gun_sim/plume.py, but not its sound).
   - subsonic bullet flight noise and impact sounds.
   - barrel ring.
 - Each shot in a burst is the same round.
@@ -611,6 +619,53 @@ gas port, coupled at their boundaries (see above). Still on the roadmap:
 - bottlenecked cartridge cases, shoulders and the forcing cone, in 2D
 - the free muzzle blast after exit in 2D (it is spherical now)
 
+### Muzzle flash and smoke (`gun_sim/plume.py`)
+
+The firing range's flash and smoke are solved, not drawn. After the shot, the
+bore's blowdown history (the gas at the muzzle, moment by moment) is fed into
+the 2D solver on a grid that holds the end of the barrel, the muzzle device
+(drawn exactly as `devices.py` draws it) and the air out to some 85 bores in
+front and 30 around.
+
+- **Stretched grid.** Cells are fine round the muzzle and device and grow by
+  7 % per cell away from them, up to 8 fine cells across, so the grid reaches
+  the fireball at little cost. `solver.plume_resolution` (cells across the
+  bore at the muzzle, default 2) and `solver.plume_time` (default 2 ms after
+  exit) set it; 2 runs in a few seconds, 4 matches the device grid and takes
+  4 to 5 times as long.
+- **Afterburning.** Gun propellant gas is fuel-rich: a third or more of it is
+  CO and H2 (`propellants.PRODUCTS`, by family). A sixth conserved scalar
+  carries the unburnt fuel. Where the gas has mixed with air and is hot
+  enough, it burns with the air's oxygen at a one-step Arrhenius rate (CO
+  oxidation's activation temperature; lights within tens of microseconds at
+  about 1100 K, hardly at all below 900 K) and releases its heat. Burning
+  stops at 2600 K, where the products come apart as fast as they form.
+- **What comes out.** Frames of the temperature and the propellant gas's
+  density (48 of them, densest just after exit). The 3D view spins them about
+  the bore axis and ray-marches them: gas glows by Wien's law with a blackbody
+  colour, and carries the smoke, which shows once it has mixed and cooled.
+  The flash's light on the scene is the total glow. Noise breaks up the
+  axisymmetry.
+- **After the window**, the cloud is a momentum puff (size ~ t^1/4,
+  Richards 1965): the view scales the last frame up about the exit at the rate
+  it was growing, thins and cools it as it takes in air, and lifts it by its
+  warmth. Gas still in the bore or the device then seeps out of the exit with
+  the time constant of the bore's (or the device's) outflow.
+
+For the example rifle (2 cells across the bore, 2 ms):
+
+| Device | Afterburning | Brightest glow | Smoke |
+| --- | --- | --- | --- |
+| None | 12 kJ, fireball 0.2 to 0.4 m out | 1 | thrown forwards, 0.6 g seeps out after |
+| Brake | 12 kJ, a ring sheet out of the vents | about 3 | spreads sideways, not forwards |
+| Suppressor | 0.3 kJ (the can's air burns away) | about 1/100 | 2.5 g seeps out of the front over ~8 ms |
+
+The fireball's size and timing look like high-speed footage of unsuppressed
+rifles, but the numbers are only as good as the one-step chemistry and a grid
+a couple of cells across the bore. The smoke's density (how much of the gas
+is particles and condensate) and the glow's brightness are scale factors in
+`volume.js`, not physics.
+
 ## Project layout
 
 ```
@@ -622,6 +677,7 @@ gun_sim/
   action.py      recoil and action cycling: gun, bolt, gas system, shooter, bursts
   axisym.py      2D axisymmetric compressible flow solver (face apertures for walls and ports)
   devices.py     muzzle brake/suppressor and gas port geometry, coupling to the bore, discharge coefficient
+  plume.py       muzzle flash and smoke: the bore's outflow solved in 2D into the air, with afterburning
   propellants.py propellant compositions and grain shapes -> form function
   exterior.py    point-mass trajectory solver: G1/G7 drag, atmosphere, zeroing, range tables
   rifling.py     engraving resistance vs travel, spin-up, moment of inertia, stability, spin drift
@@ -648,7 +704,7 @@ gun_sim/
       js/viewer3d/       WebGL 2 renderer, lathe (surface of revolution) mesher,
                          procedural case/primer/projectile profiles, cartridge viewer,
                          gun.js (barrel, receiver, bolt, stock), range.js (the animated shot and recoil),
-                         volume.js (ray-marched muzzle flash, smoke and bore gas)
+                         volume.js (ray-marched plume field, smoke and bore gas)
 configs/         example gun definitions (shown as presets in the UI)
 tests/           pytest suite (physics checks + UI server API)
 launcher.py      entry script for the exe build
@@ -684,6 +740,8 @@ build_exe.ps1    one-command Windows build
 - [x] Procedural 3D cartridge (case, primer, projectile) with cutaway
 - [x] Use the case geometry in the solver (chamber volume and area profile from `[case]`)
 - [x] 3D barrel, chamber and bolt action; animate the projectile, gas, flash, smoke and bolt cycle from a shot
+- [x] Muzzle flash and smoke solved in 2D from the bore's outflow, with afterburning, through brakes and suppressors
+- [ ] Flash hiders and flash-suppressant propellant additives; afterburning in the coupled device run (sound, recoil)
 - [x] Projectile variants: secant ogive, hollow point, cannelure, jacket/core section
 - [ ] Richer GUI: side-by-side gun comparison, parameter sweeps, live animation of the bore flow
 

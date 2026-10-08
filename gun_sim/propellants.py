@@ -88,6 +88,32 @@ COMPOSITIONS: dict[str, dict[str, float]] = {
     },
 }
 
+# What in each family's product gas can still burn in air: mass fractions of
+# CO and H2. Gun propellants are oxygen-poor, so their gas is fuel-rich; once it
+# mixes with air outside the muzzle it can reignite (the secondary flash).
+# Nitroglycerine adds oxygen, so double-base gas is leaner; nitroguanidine
+# adds hydrogen and nitrogen. Illustrative, like the families above.
+PRODUCTS: dict[str, dict[str, float]] = {
+    "single_base": {"co": 0.42, "h2": 0.012},
+    "double_base": {"co": 0.32, "h2": 0.008},
+    "triple_base": {"co": 0.26, "h2": 0.014},
+}
+_HEATING = {"co": 10.1e6, "h2": 120.0e6}  # J/kg, lower heating values
+_OXYGEN = {"co": 0.571, "h2": 7.94}       # kg O2 per kg burnt
+
+
+def combustibles(composition: str | None) -> tuple[float, float, float]:
+    """(fuel fraction of the gas, J released per kg of fuel, kg O2 needed per kg of fuel).
+
+    A propellant without a named composition burns like single-base.
+    """
+    gas = PRODUCTS.get(composition or "single_base", PRODUCTS["single_base"])
+    fuel = sum(gas.values())
+    heat = sum(gas[k] * _HEATING[k] for k in gas) / fuel
+    oxygen = sum(gas[k] * _OXYGEN[k] for k in gas) / fuel
+    return fuel, heat, oxygen
+
+
 # Grain shapes and a one-line description of each.
 GRAINS: dict[str, str] = {
     "tube": "single-perforation tube (web = wall thickness, grain_length = tube length)",

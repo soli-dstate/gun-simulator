@@ -5,11 +5,13 @@
 //   1. The firing pin falls (0.15 s).
 //   2. Ignition. From here the clock is the simulation's, slowed down so the
 //      ~1 ms in the bore takes a few seconds: the projectile follows the
-//      solver's travel-vs-time curve and the gas behind it glows with the
-//      breech pressure. In real-time mode the clock runs at real speed
+//      solver's travel-vs-time curve and the gas behind it glows as hot as the
+//      fluid model says it is. In real-time mode the clock runs at real speed
 //      throughout. The sound follows this clock (see onClock).
-//   3. Muzzle exit: flash and smoke. A couple of milliseconds later the clock
-//      ramps up to real time, so the smoke drifts and thins at its real pace.
+//   3. Muzzle exit: flash and smoke, as the 2D plume solution (gun_sim/plume.py)
+//      has them: the gas glows where it is hot and carries the smoke. A couple
+//      of milliseconds later the clock ramps up to real time, so the smoke
+//      drifts and thins at its real pace.
 //   4. The bolt cycles. A manual bolt turns up, draws back extracting the
 //      case, which is flung out of the port, then pushes a new round from the
 //      magazine into the chamber and turns down again. An automatic action
@@ -21,12 +23,12 @@
 //
 // A burst from a self-loading action is one action simulation with several
 // shots: each fires when the simulation says, with its own projectile, flash,
-// smoke and ejected case, while the recoil and muzzle climb build up. With a
-// muzzle device the flash comes out of the device (a suppressor keeps most of
-// it inside).
+// smoke and ejected case, while the recoil and muzzle climb build up. A muzzle
+// device is in the plume solution, so its flash and smoke come out of it as
+// they were solved to (a brake's sideways, a suppressor's late and dim).
 
 import { buildRifle } from "./gun.js";
-import { chain, lookAt, perspective, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
+import { chain, invert, lookAt, perspective, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { CORE_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
 import { VolumeEffects } from "./volume.js";
 
@@ -52,6 +54,12 @@ const RAMP_AUTO = 1.6;          // slower, so an automatic action's cycle can be
 const LUG_TURN = Math.PI / 8;   // a gas action's bolt turns this much to unlock
 const SETTLE = 0.6;             // s (sim) to ease the gun home after the recoil data ends
 const ATM = 101325;
+const T_AIR = 288;              // K
+const WIEN = 23980;             // K, as volume.js: glow ~ exp(-WIEN / T)
+const FLASH_LIGHT = 2e4;        // light from the flash per unit of the plume's glow
+const SEEP_DILUTION = 20;       // air taken in per volume of gas seeping out of the exit
+const SMOKE = 0.012;            // smoke extinction per mm per kg/m^3 of propellant gas (volume.js)
+const RISE_DRAG = 0.8;          // s, how fast the rising cloud comes to its terminal speed
 
 const smooth = (x) => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -69,6 +77,24 @@ function interp(xs, ys, x) {
   }
   const f = (x - xs[lo]) / (xs[hi] - xs[lo] || 1);
   return ys[lo] + (ys[hi] - ys[lo]) * f;
+}
+
+/**
+ * How far the cloud has risen (mm) t s after the solved window: its warmth lifts it, falling as
+ * the puff takes in air (excess temperature ~ scale^-3), against drag. Returns {t, h}.
+ */
+function riseTable(cloud) {
+  const t = [0], h = [0];
+  let v = 0, z = 0, prev = 0;
+  for (let i = 0; i <= 300; i++) {
+    const now = 1e-5 * Math.pow(8 / 1e-5, i / 300), dt = now - prev;
+    const scale = Math.pow((cloud.age + now) / cloud.age, 0.25);
+    v += dt * (9810 * cloud.warmth * scale ** -3 - v / RISE_DRAG);
+    z += dt * v;
+    t.push(now); h.push(z);
+    prev = now;
+  }
+  return { t, h };
 }
 
 export class FiringRange {
@@ -154,6 +180,8 @@ export class FiringRange {
     const pe = result.base_pressure[result.base_pressure.length - 1] || ATM;
     this.shot = {
       result,
+      plume: result.plume ?? null,
+      rise: result.plume ? riseTable(result.plume.cloud) : null,
       peak: Math.max(...result.breech_pressure, 1),
       exitPressure: pe,
       exited: false,
@@ -452,15 +480,61 @@ export class FiringRange {
     return out;
   }
 
+  /** Gas temperatures along the column at a shot's local time, from the fluid model (K), or null when it's cold. */
+  _boreTemps(P, local, exitLocal) {
+    // The plume comes from the fluid model; another model's shot is lined up on it at exit.
+    const tf = local < exitLocal ? local * P.muzzle_time / exitLocal : P.muzzle_time + (local - exitLocal);
+    const ts = P.bore.t;
+    let k = 0;
+    while (k < ts.length - 2 && ts[k + 1] <= tf) k++;
+    const w = clamp((tf - ts[k]) / (ts[k + 1] - ts[k] || 1), 0, 1);
+    const a = P.bore.T[k], b = P.bore.T[k + 1] ?? a;
+    const temps = a.map((v, i) => v + (b[i] - v) * w);
+    return Math.max(...temps) > 700 ? temps : null;
+  }
+
+  /**
+   * One shot's plume tau s after its exit, in the gun's frame at exit (gT). Within the solved
+   * window it's the frames; after it, the last frame (the cloud) carried on as a puff that
+   * grows as age^(1/4), thins and cools as it takes in air, and rises with its warmth.
+   */
+  _plumeAt(P, rise, tau, gT, thick, seed) {
+    const L = this.layout, n = P.times.length, last = P.times[n - 1], c = P.cloud;
+    let frame, scale = 1, height = 0, extent;
+    if (tau < last) {
+      let k = 0;
+      while (k < n - 2 && P.times[k + 1] <= tau) k++;
+      frame = k + clamp((tau - P.times[k]) / (P.times[k + 1] - P.times[k]), 0, 1);
+      extent = P.extent[Math.min(Math.ceil(frame), n - 1)];
+    } else {
+      frame = n;   // the cloud layer
+      scale = Math.pow((c.age + tau - last) / c.age, 0.25);
+      height = interp(rise.t, rise.h, tau - last);
+      const [x0, x1, r] = P.extent[n - 1];
+      extent = [c.origin + (x0 - c.origin) * scale, c.origin + (x1 - c.origin) * scale, r * scale];
+    }
+    const dilute = scale ** -3;
+    const m = chain(translation(0, height, 0), gT);
+    const cx = L.muzzleX + (extent[0] + extent[1]) / 2;
+    const centre = [m[0] * cx + m[12], m[1] * cx + m[13], m[2] * cx + m[14]];
+    return {
+      inverse: chain(translation(-L.muzzleX, 0, 0), invert(m)),
+      frame: (frame + 0.5) / P.layers, scale, density: thick * dilute, temperature: dilute,
+      origin: c.origin, seed,
+      bound: [...centre, Math.hypot((extent[1] - extent[0]) / 2, extent[2]) + 10],
+      // The flash's light: the solved glow, then the cloud's, falling with its temperature.
+      glow: tau < last ? interp(P.times, P.glow, tau)
+        : P.glow[n - 1] * Math.exp(-WIEN * (1 / (T_AIR * (1 + c.warmth * dilute)) - 1 / (T_AIR * (1 + c.warmth)))),
+      glowX: L.muzzleX + (tau < last ? interp(P.times, P.glow_x, tau) : c.origin + (P.glow_x[n - 1] - c.origin) * scale),
+      size: Math.max(extent[1] - extent[0], extent[2], 20),
+    };
+  }
+
   _effects() {
     const L = this.layout, s = this.shot;
     const bore = L.bore;
-    const state = { smoke: [], flash: null, gas: null, flashLight: [0, 0, 0] };
+    const state = { smoke: [], fields: [], gas: null, plume: null, light: null, time: 0 };
     let light = null;
-    const dev = L.device?.type;
-    // A suppressor keeps the flash inside; a brake throws it out of its vents.
-    const flashScale = dev === "suppressor" ? [0.03, 0.08] : dev === "brake" ? [0.6, 0.8] : [1, 1];
-    const fx = L.flashX;
     // The rifle's model matrix at a sim time (recoil, then pitch about the pivot), and its action on points.
     const gunAtT = (t) => {
       const rc = this._actionAt("recoil", t) * 1e3, pc = this._actionAt("pitch", t);
@@ -469,83 +543,45 @@ export class FiringRange {
       return chain(translation(-rc, 0, 0), translation(px, py, 0), rotationZ(pc), translation(-px, -py, 0));
     };
     const at = (m, x, y, z) => [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
-    const gm = this._gunMatrix();
-    state.gunModel = gm;
-    if (s && this.T >= PIN_FALL) {
-      const r = s.result;
+    state.gunModel = this._gunMatrix();
+    if (s && this.T >= PIN_FALL && s.plume) {
+      const r = s.result, P = s.plume;
       const times = this._shotTimes;
       const k = this._shotAt(this.tSim);
       const local = this.tSim - times[k - 1];
       const exitLocal = r.left_muzzle ? r.muzzle_time : r.time[r.time.length - 1];
-      const pressure = interp(r.time, r.breech_pressure, Math.min(Math.max(local, 0), r.time[r.time.length - 1]));
-      let emission = clamp(pressure / s.peak, 0, 1);
-      // With a device the projectile runs on through it (gun frame, mm); the flash waits for it to leave the front.
-      const v = r.muzzle_velocity, dd = L.device;
-      const inDev = !!dd && r.left_muzzle && v > 0;
-      const devDelay = inDev ? L.deviceLength / (v * 1e3) : 0;
-      const gasEnd = inDev ? L.flashX : L.muzzleX;
-      const decayFrom = exitLocal + devDelay;
-      let x1 = local < exitLocal ? L.seat + interp(r.time, r.travel, local) * 1e3
-        : inDev ? L.muzzleX + v * (local - exitLocal) * 1e3 : L.muzzleX;
-      const pExit = clamp(interp(r.time, r.breech_pressure, Math.min(exitLocal, r.time[r.time.length - 1])) / s.peak, 0, 1);
-      if (local >= decayFrom) emission *= Math.exp(-(local - decayFrom) / 0.0008);
-      if (inDev && local >= exitLocal) {
-        // The device fills with gas behind the projectile, front-ward, and holds it (a suppressor much longer than a brake).
-        const age = local - exitLocal, tau = dd.type === "suppressor" ? 0.003 : 0.0005;
-        const ri = dd.R - dd.w, e = pExit * Math.exp(-age / tau);
-        if (e > 0.01) {
-          state.dev = { x0: L.muzzleX + dd.w, x1: Math.min(x1, L.flashX), radius: ri, emission: e * (dd.type === "suppressor" ? 0.5 : 0.35) / ri };
-        }
-      }
-      if (emission > 0.01 && local >= 0) {
-        state.gas = { x0: L.head, x1: Math.min(x1, gasEnd), emission: emission * 0.7 / L.boreR, boreR: L.boreR, caseR: L.caseInnerR, neckX: L.neckX };
-      }
-      const exited = times.map((t0) => t0 + decayFrom).filter((te) => r.left_muzzle && this.tSim >= te);
+      // The gas behind the projectile, then the bore emptying.
+      const x1 = local < exitLocal ? L.seat + interp(r.time, r.travel, local) * 1e3 : L.muzzleX;
+      const temps = local >= 0 ? this._boreTemps(P, local, exitLocal) : null;
+      if (temps) state.gas = { x0: L.head, x1: Math.min(x1, L.muzzleX), temps, boreR: L.boreR, caseR: L.caseInnerR, neckX: L.neckX };
+
+      const exited = times.map((t0) => t0 + exitLocal).filter((te) => r.left_muzzle && this.tSim >= te);
       if (exited.length) {
-        const ratio = Math.max(s.exitPressure / ATM, 1);
-        const xm = clamp(0.67 * bore * Math.sqrt(ratio), 3 * bore, 22 * bore) * (dev ? 0.5 : 1);
-        const unburnt = clamp(1 - r.burnt_at_muzzle, 0, 1);
-        const ms = (this.tSim - exited[exited.length - 1]) * 1e3;   // the latest shot's flash
-        const primary = flashScale[0] * smooth(ms / 0.015) * Math.exp(-ms / 0.25) * clamp(Math.sqrt(ratio / 300), 0.3, 1.5);
-        const secondary = flashScale[1] * clamp(0.15 + ratio / 2000 + 2 * unburnt, 0.1, 1.2) * smooth((ms - 0.04) / 0.25) * Math.exp(-Math.max(ms - 0.3, 0) / 0.55);
-        if (primary + secondary > 0.003) {
-          state.flash = { muzzle: at(gm, fx, 0, 0), dir: [gm[0], gm[1], gm[2]], primary, secondary, machDisk: xm, boreR: bore / 2, age: ms };
-          const glow = primary * 2 + secondary * 1.4;
-          state.flashLight = [1.0 * glow, 0.5 * glow, 0.18 * glow].map((v) => v * 0.6);
-          light = { position: at(gm, fx + xm, 0, 0), color: [14 * glow, 7 * glow, 2.6 * glow], range: xm * 1.5 };
+        state.plume = P;
+        const latest = exited[exited.length - 1];
+        state.time = this.tSim - latest;
+        // The first shot's cloud (thicker for each shot after it) and the latest shot's plume.
+        const shown = exited.length > 1 ? [exited[0], latest] : [latest];
+        for (const te of shown) {
+          const thick = te === latest ? 1 : Math.sqrt(Math.min(exited.length - 1, 4));
+          state.fields.push(this._plumeAt(P, s.rise, this.tSim - te, gunAtT(te), thick, 3.1 + te * 1e3));
         }
-        // Smoke: the first shot's cloud (thicker for each shot after it) and the latest shot's puffs.
-        const pf = clamp(Math.sqrt(s.exitPressure / 50e6), 0.4, 2) * (dev === "suppressor" ? 0.5 : 1);
-        const puff = (age, thick, main, rising, te) => {
-          const gT = gunAtT(te), o = at(gT, fx, 0, 0);   // where the muzzle was when it was emitted
-          const msA = age * 1e3;
-          if (main) {
-            const reach = clamp(22 * bore * pf, 60, 600), R0 = clamp(5 * bore * pf, 15, 150);
-            const grow = 1 - Math.exp(-age / 0.012);
-            const radius = R0 * (0.3 + 0.7 * grow + 0.4 * age);
-            const fade = Math.exp(-age / 1.8) * smooth(msA / 0.3);
-            if (fade > 0.01) {
-              state.smoke.push({
-                origin: o, dir: [gT[0], gT[1], gT[2]], reach: reach * grow + 25 * age, radius,
-                extinction: 1.4 * thick * fade / radius, rise: 45 * Math.pow(age, 1.5), age, group: 0, seed: 3.1, trail: 0.7,
-              });
-            }
-          }
-          const a2 = age - 0.06;
-          if (rising && a2 > 0 && a2 < SMOKE_LIFE) {
-            const r2 = 1.6 * bore + 12 * a2;
-            state.smoke.push({
-              origin: o, dir: [0, 1, 0], reach: 2 * bore + 45 * a2, radius: r2,
-              extinction: 0.7 * Math.exp(-a2 / 2.2) * smooth(a2 / 0.2) / r2, rise: 0, age: a2, group: 0, seed: 7.7, trail: 1,
-            });
-          }
-        };
-        const first = this.tSim - exited[0];
-        if (exited.length === 1) puff(first, 1, true, true, exited[0]);
-        else {
-          puff(first, Math.sqrt(Math.min(exited.length, 4)), true, false, exited[0]);
-          const latest = this.tSim - exited[exited.length - 1];
-          puff(latest, 1, true, true, exited[exited.length - 1]);
+        const f = state.fields[state.fields.length - 1], gT = gunAtT(latest);
+        const g = FLASH_LIGHT * f.glow;
+        if (g > 0.003) {
+          light = { position: at(gT, f.glowX, 0, 0), color: [14 * g, 7 * g, 2.6 * g], range: f.size };
+          state.light = { position: light.position, color: [0.6 * g, 0.3 * g, 0.11 * g], range: f.size };
+        }
+        // What was left in the bore and the device seeps out of the exit afterwards and rises.
+        const age = this.tSim - latest - P.times[P.times.length - 1], tr = P.trickle;
+        if (age > 0 && age < SMOKE_LIFE && tr.mass > 0) {
+          const out = tr.mass * (1 - Math.exp(-age / tr.tau));
+          const R = Math.cbrt(3 * out * SEEP_DILUTION / (4 * Math.PI * 1.2)) * 1e3 + 1.5 * bore + 15 * age;
+          const density = out / (4 / 3 * Math.PI * (R * 1e-3) ** 3);
+          state.smoke.push({
+            origin: at(gT, L.muzzleX + tr.x, 0, 0), dir: [0.35, 0.94, 0], reach: R * 0.5 + 40 * age, radius: R,
+            extinction: SMOKE * density * Math.exp(-age / 2.5), rise: 0, age, group: 0, seed: 7.7, trail: 1,
+          });
         }
       }
     }
@@ -569,7 +605,7 @@ export class FiringRange {
       // The butt is nearest the default camera, so the frame leans towards it.
       rifle: { x: (rear + front) / 2 - 0.06 * (front - rear), y: -L.recR * 1.5, width: (front - rear) * 1.3 },
       breech: { x: (L.portRear - 40 + L.caseLength + 30) / 2, y: -L.recR * 0.3, width: (L.caseLength + 70 - L.portRear) * 1.25 },
-      muzzle: { x: L.flashX + 16 * L.bore - 0.3 * L.deviceLength, y: 0, width: Math.max(70 * L.bore, 200) + L.deviceLength },
+      muzzle: { x: L.flashX + 24 * L.bore - 0.3 * L.deviceLength, y: 0, width: Math.max(95 * L.bore, 260) + L.deviceLength },
       follow: null,
     };
     const projX = this._projectileX();
@@ -725,7 +761,7 @@ export class FiringRange {
     if (this.T < PIN_FALL) phase = "Firing pin falls";
     else if (this.exitT === null) phase = this.tSim < 0.05 * r.muzzle_time ? "Ignition" : "Projectile in the bore";
     else if (!s.exited) phase = "Projectile stuck in the bore";
-    else if (this.tSim - this.exitT < 0.003) phase = "Muzzle exit: flash";
+    else if (this.tSim - this.exitT < 0.003) phase = s.plume ? "Muzzle exit: flash" : "Muzzle exit (flash not solved)";
     else if (this._auto) {
       const a = this._action;
       // The latest step of the cycle; the first shot's firing is the flash above.
@@ -757,6 +793,10 @@ export class FiringRange {
     } else if (s.exited) {
       rows.push(["muzzle velocity", `${r.muzzle_velocity.toFixed(0)} m/s`],
                 ["exit pressure", `${(s.exitPressure / 1e6).toFixed(1)} MPa`]);
+      if (s.plume) {
+        rows.push(["afterburning", `${(s.plume.afterburn / 1e3).toFixed(1)} kJ`],
+                  ["hottest gas", `${s.plume.peak_temperature.toFixed(0)} K`]);
+      }
     }
     if (this._action && this.T >= PIN_FALL) {
       const { recoil, pitch } = this._gunPose();

@@ -14,6 +14,7 @@ function desktopBackend(api) {
     schema: () => unwrap(api.schema()),
     simulate: (payload) => unwrap(api.simulate(payload)),
     synthesize: (payload) => unwrap(api.synthesize(payload)),
+    plume: (payload) => unwrap(api.plume(payload)),
     trajectory: (payload) => unwrap(api.trajectory(payload)),
     parse: (text) => unwrap(api.parse(text)),
     /** Returns the saved path, or null if the user cancelled. */
@@ -33,6 +34,7 @@ const httpBackend = {
   schema: () => http("api/schema"),
   simulate: (payload) => http("api/simulate", JSON.stringify(payload)),
   synthesize: (payload) => http("api/synthesize", JSON.stringify(payload)),
+  plume: (payload) => http("api/plume", JSON.stringify(payload)),
   trajectory: (payload) => http("api/trajectory", JSON.stringify(payload)),
   parse: (text) => http("api/parse", text),
   saveToml: async (text, filename) => {

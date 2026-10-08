@@ -49,8 +49,12 @@ the quasi-1D compressible Euler equations on a finite-volume mesh:
 * Blowdown (optional): once the projectile leaves, the mesh freezes and the
   muzzle becomes an open end. The gas empties into the atmosphere and the bore
   rings as a closed-open pipe. The fluxes through the muzzle are recorded; they
-  drive the muzzle blast model in gun_sim.sound. The wall losses damp the
-  ringing and let the cooling gas draw air back in, as in a real barrel.
+  drive the muzzle blast model in gun_sim.sound and the muzzle flash and smoke
+  in gun_sim.plume. The wall losses damp the ringing and let the cooling gas
+  draw air back in, as in a real barrel.
+* The gas temperature along the column is recorded too (bore_gas), so the
+  3D view can show it glowing as hot as it is, and fading as it expands
+  and cools on the steel.
 
 Each cell stores totals: gas mass M, momentum P and total energy E. The flux
 treats M / V (gas mass per unit of cell volume, grains included) as the
@@ -71,6 +75,7 @@ from .config import Gun
 from .results import GunLoads, MuzzleFlow, ShotResult
 
 ATMOSPHERE = 101325.0  # Pa
+BORE_GAS_POINTS = 24   # temperatures recorded along the gas column
 WALL_FRICTION = 0.03   # Darcy friction factor of a rifled bore
 WALL_TEMPERATURE = 300.0  # K, the barrel is cold (one shot) and stays so in bulk
 GAS_VISCOSITY = 8e-5   # Pa s, propellant gas at ~2500 K
@@ -209,6 +214,8 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
     step = 0
 
     hist = {k: [] for k in ("t", "x", "v", "pb", "pbase")}
+    bore_gas = []      # (t, temperatures along the column, breech to base/muzzle)
+    gas_points = (np.arange(BORE_GAS_POINTS) + 0.5) / BORE_GAS_POINTS
     profiles = []
     next_profile_x = 0.0
     peak_breech = 0.0
@@ -259,6 +266,10 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         loads["port_p"].append(p)
         loads["port_t"].append(p * (1 - b * rho) / (rho * prop.gas_constant))
         loads["port_u"].append(float(np.interp(x, centres, diag["u"])))
+
+    def record_gas(t, diag):
+        temps = diag["p"] * (1 - b * diag["rho"]) / (diag["rho"] * prop.gas_constant)
+        bore_gas.append((t, np.interp(gas_points, xi_c, temps).astype(np.float32)))
 
     def primitives(mass, mom, energy, x_p):
         nodes = xi * (l0 + x_p)
@@ -406,6 +417,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
             hist["pb"].append(p_breech)
             hist["pbase"].append(p_base)
             record_loads(t, d1, x_p)
+            record_gas(t, d1)
         if x_p >= next_profile_x and len(profiles) < profile_count:
             dx = (l0 + x_p) / n
             centres = (np.arange(n) + 0.5) * dx - l0  # measured from the seated base
@@ -447,6 +459,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
             c_g = np.sqrt(gamma * p_out / (q_g * (1 - b * r_g)))
             return (q_g, u_g, p_out, e_g, c_g)
 
+        record_gas(t, d0)
         while t < end:
             (mass, mom, energy, _, _), dt, d1, d2 = rk2([mass, mom, energy, x_p, 0.0], False, outlet)
             burn(dt, d1["p"], d1["nodes"], x_p, 0.0)
@@ -466,6 +479,9 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
             rec["u_exit"].append(d1["u"][-1])
             rec["rho_exit"].append(d1["rho"][-1])
             rec["p_breech"].append(d1["p_breech"])
+            step += 1
+            if step % cfg.record_every == 0:
+                record_gas(t, d1)
         if coupling is not None:
             device_result = coupling.result()
         muzzle_flow = MuzzleFlow(
@@ -510,4 +526,5 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         heat_to_barrel=heat["total"],
         barrel_temperature_rise=heat["total"] / (STEEL_DENSITY * steel * STEEL_HEAT_CAPACITY),
         bore_temperature_rise=surface_rise,
+        bore_gas=bore_gas,
     )

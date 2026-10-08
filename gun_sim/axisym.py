@@ -9,10 +9,13 @@ boundary.
   and r its distance from the axis, for a mixture of air and propellant gas
   (both ideal, each with its own R and gamma). A conserved mass fraction Y
   tracks the propellant gas.
-* Finite volumes on a uniform grid of square cells, h on a side. A cell's
-  volume is its ring, pi (r_out^2 - r_in^2) h, and its faces are rings and
-  cylinders; the hoop term p dA/dr in the radial momentum equation keeps a gas
-  at rest at rest.
+* Finite volumes on a grid of rectangular cells: uniform squares h on a side,
+  or, given the face positions, cells that stretch away from a fine region (the
+  muzzle plume, plume.py, reaches far out at little cost). A cell's volume is
+  its ring, pi (r_out^2 - r_in^2) dx, and its faces are rings and cylinders;
+  the hoop term p dA/dr in the radial momentum equation keeps a gas at rest at
+  rest. The slopes are taken per cell, not per length, which is first-order
+  accurate where the cells grow, so the stretching should be gentle.
 * Walls: every face has an aperture, the share of it that is open. Solid cells
   have all their faces shut. A partly open face is a perforated plate: the flux
   passes through the open part, and the shut part is a wall that each side
@@ -28,6 +31,11 @@ boundary.
 * Boundaries: the axis is a mirror. The outer edges let the flow leave (zero
   gradient). "Fixed" cells hold a state given from outside: the bore solver's
   gas, entering the device.
+* Afterburning (optional): propellant gas is fuel-rich (CO and H2). A sixth
+  conserved scalar carries the fuel still unburnt. Where the gas has mixed with
+  air and is hot enough, the fuel burns with the air's oxygen at a one-step
+  Arrhenius rate and releases its heat: the secondary muzzle flash, or the
+  "first-round pop" of the air in a suppressor. See Afterburn.
 * Heat loss: gas next to a wall gives heat to the cold steel at Stanton number
   WALL_STANTON (rough, turbulent), with the gas speed plus a tenth of its sound
   speed standing in for the turbulence in a chamber. In a suppressor this is a
@@ -40,6 +48,8 @@ its boundary layers.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 DTYPE = np.float32  # half the memory traffic of float64; plenty for a few cells across a bore
@@ -47,6 +57,29 @@ R_AIR = 287.05
 GAMMA_AIR = 1.4
 WALL_STANTON = 0.004
 WALL_TEMPERATURE = 300.0
+O2_IN_AIR = 0.232  # mass fraction
+
+
+@dataclass
+class Afterburn:
+    """Combustion of the propellant gas's fuel (CO, H2) with the air's oxygen.
+
+    fuel: kg of fuel per kg of propellant gas; heat: J released per kg of fuel
+    burnt; oxygen: kg of O2 it needs per kg. The rate is one-step Arrhenius,
+    first order in whichever of fuel and oxygen runs out first:
+    d(fuel)/dt = -min(fuel, O2 / oxygen) * rate * exp(-activation / T).
+    activation is that of CO oxidation; rate is set so a stoichiometric mix
+    lights within tens of microseconds at about 1100 K and hardly at all below
+    900 K, which is where muzzle gas is found to reignite. Above ceiling the
+    products (CO2, H2O) come apart as fast as they form, so burning stops
+    there and goes on as the gas cools.
+    """
+    fuel: float
+    heat: float
+    oxygen: float
+    rate: float = 2e10           # 1/s
+    activation: float = 15000.0  # K
+    ceiling: float = 2600.0      # K
 
 
 def _minmod(a, b):
@@ -55,50 +88,59 @@ def _minmod(a, b):
 
 
 class Axisymmetric:
-    """Gas in an axisymmetric region of nx by nr square cells of size h; x from x0, r from 0.
+    """Gas in an axisymmetric region of nx by nr cells; x from x0, r from 0.
 
-    open_x (nx+1, nr) and open_r (nx, nr+1) are the face apertures in [0, 1];
-    solid (nx, nr) marks cells that are not gas (all their faces must be shut).
-    force_from: x (m) from which the pressure on shut x-faces counts towards the
-    device's force.
+    The cells are squares of size h, unless x_edges (nx+1) and r_edges (nr+1, from 0)
+    give the face positions. open_x (nx+1, nr) and open_r (nx, nr+1) are the face
+    apertures in [0, 1]; solid (nx, nr) marks cells that are not gas (all their
+    faces must be shut). force_from: x (m) from which the pressure on shut
+    x-faces counts towards the device's force. afterburn: burn the propellant
+    gas's fuel with the air (adds a sixth conserved variable).
     """
 
     def __init__(self, h: float, x0: float, solid: np.ndarray, open_x: np.ndarray, open_r: np.ndarray,
                  gas_constant: float, gas_gamma: float, ambient_pressure: float, ambient_temperature: float,
-                 force_from: float = 0.0, cfl: float = 0.8, wall_heat: bool = True):
-        self.h, self.x0 = h, x0
+                 force_from: float = 0.0, cfl: float = 0.8, wall_heat: bool = True,
+                 x_edges: np.ndarray | None = None, r_edges: np.ndarray | None = None,
+                 afterburn: Afterburn | None = None):
         self.solid = np.asarray(solid, bool)
         self.nx, self.nr = nx, nr = self.solid.shape
+        xf = np.asarray(x_edges, float) if x_edges is not None else x0 + np.arange(nx + 1) * h
+        r = np.asarray(r_edges, float) if r_edges is not None else np.arange(nr + 1) * h
+        self.h, self.x0 = h, float(xf[0])
         self.fluid = ~self.solid
         self.open_x = np.asarray(open_x, DTYPE)
         self.open_r = np.asarray(open_r, DTYPE)
         self.cfl = cfl
         self.wall_heat = wall_heat
         self.p0, self.T0 = ambient_pressure, ambient_temperature
-        r = np.arange(nr + 1) * h
-        self.xc = x0 + (np.arange(nx) + 0.5) * h
-        self.rc = (np.arange(nr) + 0.5) * h
+        self.x_edges, self.r_edges = xf, r
+        hx, hr = np.diff(xf), np.diff(r)
+        self.xc = 0.5 * (xf[:-1] + xf[1:])
+        self.rc = 0.5 * (r[:-1] + r[1:])
         self.area_x = (np.pi * (r[1:] ** 2 - r[:-1] ** 2)).astype(DTYPE)   # (nr,) ring faces
-        self.area_r = (2 * np.pi * r * h).astype(DTYPE)                    # (nr+1,) cylinder faces
-        self.volume = (self.area_x * h).astype(DTYPE)                      # (nr,)
-        self.d_area_r = np.diff(self.area_r)
-        xf = x0 + np.arange(nx + 1) * h
+        self.area_r = (2 * np.pi * r[None, :] * hx[:, None]).astype(DTYPE)  # (nx, nr+1) cylinder faces
+        self.volume = (self.area_x[None, :] * hx[:, None]).astype(DTYPE)   # (nx, nr)
+        self.d_area_r = np.diff(self.area_r, axis=1)
+        self.size = np.minimum(hx[:, None], hr[None, :]).astype(DTYPE)     # (nx, nr), for the time step
         self.force_faces = (((xf >= force_from - 1e-12)[:, None] * (1 - self.open_x)) * self.area_x[None, :]).astype(DTYPE)
         shut_x = (1 - self.open_x) * self.area_x[None, :]
-        shut_r = (1 - self.open_r) * self.area_r[None, :]
+        shut_r = (1 - self.open_r) * self.area_r
         wall = shut_x[:-1] + shut_x[1:] + shut_r[:, :-1] + shut_r[:, 1:]
-        self.wall_ratio = np.where(self.fluid, wall / self.volume[None, :], 0.0).astype(DTYPE)  # wall area / volume
+        self.wall_ratio = np.where(self.fluid, wall / self.volume, 0.0).astype(DTYPE)  # wall area / volume
         self._open_x = (self.open_x > 0).astype(DTYPE)[None]
         self._open_r = (self.open_r > 0).astype(DTYPE)[None]
         self._open_r[0, :, 0] = 1.0  # the axis: slopes see the mirror image
         self.out_right = self.open_x[-1] * self.area_x
         self.out_left = self.open_x[0] * self.area_x
-        self.out_top = self.open_r[:, -1] * self.area_r[-1]
+        self.out_top = self.open_r[:, -1] * self.area_r[:, -1]
 
+        self.afterburn = afterburn
+        self.nv = 6 if afterburn else 5   # conserved: rho, rho u, rho v, E, rho Y (, rho fuel)
         self.rp, self.gp = gas_constant, gas_gamma
         self.cva, self.cvp = R_AIR / (GAMMA_AIR - 1), gas_constant / (gas_gamma - 1)
         rho_a = ambient_pressure / (R_AIR * ambient_temperature)
-        self.U = np.zeros((5, nx, nr), DTYPE)
+        self.U = np.zeros((self.nv, nx, nr), DTYPE)
         self.U[0] = rho_a
         self.U[3] = ambient_pressure / (GAMMA_AIR - 1)
         self.fixed = np.zeros((nx, nr), bool)
@@ -106,10 +148,11 @@ class Axisymmetric:
         self.t = 0.0
         self.steps = 0
         # Running totals: what has left through the outer edges, the impulse on the device
-        # (+x forwards) and the heat given to the walls.
-        self.out = np.zeros(5)   # mass, x-momentum (gauge), -, energy (total enthalpy), propellant
+        # (+x forwards), the heat given to the walls and the heat afterburning released.
+        self.out = np.zeros(self.nv)   # mass, x-momentum (gauge), -, energy (total enthalpy), propellant (, fuel)
         self.impulse = 0.0
         self.heat = 0.0
+        self.burnt = 0.0
 
     # ---------- state ----------
 
@@ -120,8 +163,11 @@ class Axisymmetric:
             # Faces of held cells are inflow, not flow leaving the domain.
             self.out_left = self.open_x[0] * self.area_x * ~self.fixed[0]
             self.out_right = self.open_x[-1] * self.area_x * ~self.fixed[-1]
-            self.out_top = self.open_r[:, -1] * self.area_r[-1] * ~self.fixed[:, -1]
-        self.fixed_state = np.array([rho, rho * u, 0.0, rho * (e + 0.5 * u * u), rho * Y], DTYPE)
+            self.out_top = self.open_r[:, -1] * self.area_r[:, -1] * ~self.fixed[:, -1]
+        state = [rho, rho * u, 0.0, rho * (e + 0.5 * u * u), rho * Y]
+        if self.afterburn:
+            state.append(rho * Y * self.afterburn.fuel)
+        self.fixed_state = np.array(state, DTYPE)
         self._apply_fixed(self.U)
 
     def _apply_fixed(self, U):
@@ -151,22 +197,23 @@ class Axisymmetric:
 
     def mass_in(self, mask: np.ndarray) -> float:
         """Gas mass in the cells of mask."""
-        return float(np.sum(self.U[0] * mask * self.volume[None, :], dtype=np.float64))
+        return float(np.sum(self.U[0] * mask * self.volume, dtype=np.float64))
 
     # ---------- fluxes ----------
 
     def _hll(self, WL, WR):
-        """HLL flux, with the first velocity component normal to the face. W = (rho, un, ut, p, Y)."""
+        """HLL flux, with the first velocity component normal to the face. W = (rho, un, ut, p, Y(, fuel))."""
         F = []
         cons = []
         speeds = []
-        for rho, un, ut, p, Y in (WL, WR):
+        for W in (WL, WR):
+            rho, un, ut, p, Y = W[:5]
             cv, rg = self._mix(Y)
             g1 = rg / cv                      # gamma - 1
             E = p / g1 + 0.5 * rho * (un * un + ut * ut)
             m = rho * un
-            cons.append((rho, m, rho * ut, E, rho * Y))
-            F.append((m, m * un + p, m * ut, (E + p) * un, m * Y))
+            cons.append((rho, m, rho * ut, E) + tuple(rho * z for z in W[4:]))
+            F.append((m, m * un + p, m * ut, (E + p) * un) + tuple(m * z for z in W[4:]))
             c = np.sqrt((1 + g1) * p / rho)
             speeds.append((un - c, un + c))
         (a1, b1), (a2, b2) = speeds
@@ -174,8 +221,8 @@ class Axisymmetric:
         sr = np.maximum(np.maximum(b1, b2), 0.0)
         inv = 1.0 / (sr - sl + 1e-30)
         wl, wr, wd = sr * inv, -sl * inv, sl * sr * inv
-        out = np.empty((5,) + sl.shape, DTYPE)
-        for k in range(5):
+        out = np.empty((self.nv,) + sl.shape, DTYPE)
+        for k in range(self.nv):
             out[k] = wl * F[0][k] + wr * F[1][k] + wd * (cons[1][k] - cons[0][k])
         return out
 
@@ -187,7 +234,7 @@ class Axisymmetric:
         """
         if axis == 1:
             n = self.nx
-            d = np.zeros((5, n + 1, self.nr), DTYPE)
+            d = np.zeros((self.nv, n + 1, self.nr), DTYPE)
             d[:, 1:-1] = W[:, 1:] - W[:, :-1]
             d *= self._open_x
             slope = _minmod(d[:, :-1], d[:, 1:])
@@ -199,7 +246,7 @@ class Axisymmetric:
             right[:, -1] = W[:, -1]
             return left, right
         n = self.nr
-        d = np.zeros((5, self.nx, n + 1), DTYPE)
+        d = np.zeros((self.nv, self.nx, n + 1), DTYPE)
         d[:, :, 1:-1] = W[:, :, 1:] - W[:, :, :-1]
         d[2, :, 0] = 2 * W[2, :, 0]   # v against its mirror image
         d *= self._open_r
@@ -215,7 +262,7 @@ class Axisymmetric:
 
     def _rhs(self, U):
         rho, u, v, p, Y, cv, rg = self.primitives(U)
-        W = np.stack((rho, u, v, p, Y))
+        W = np.stack((rho, u, v, p, Y) + ((np.clip(U[5] / rho, 0.0, 1.0),) if self.afterburn else ()))
         # x faces: normal u, tangential v.
         WL, WR = self._faces(W, 1)
         F = self._hll(WL, WR)
@@ -226,7 +273,7 @@ class Axisymmetric:
         FxR[1] += (1 - a) * WR[3]
         force = float(np.sum(self.force_faces * (WL[3] - WR[3])))
         # r faces: normal v, tangential u.
-        swap = [0, 2, 1, 3, 4]
+        swap = [0, 2, 1, 3, 4, 5][:self.nv]
         WL, WR = self._faces(W, 2)
         WL, WR = WL[swap], WR[swap]
         G = self._hll(WL, WR)[swap]
@@ -236,10 +283,10 @@ class Axisymmetric:
         GL[2] += (1 - b) * WL[3]
         GR[2] += (1 - b) * WR[3]
 
-        ax, ar = self.area_x[None, None, :], self.area_r
-        dU = -((FxL[:, 1:] - FxR[:, :-1]) * ax + (GL[:, :, 1:] * ar[1:] - GR[:, :, :-1] * ar[:-1]))
-        dU[2] += p * self.d_area_r[None, :]
-        dU /= self.volume[None, None, :]
+        ax, ar = self.area_x[None, None, :], self.area_r[None]
+        dU = -((FxL[:, 1:] - FxR[:, :-1]) * ax + (GL[:, :, 1:] * ar[:, :, 1:] - GR[:, :, :-1] * ar[:, :, :-1]))
+        dU[2] += p * self.d_area_r
+        dU /= self.volume[None]
         dU[:, self.solid] = 0.0
         dU[:, self.fixed] = 0.0
         flows = F[:, -1] @ self.out_right - F[:, 0] @ self.out_left + G[:, :, -1] @ self.out_top
@@ -249,8 +296,8 @@ class Axisymmetric:
 
     def max_dt(self, prims=None) -> float:
         u, v, c = (prims if prims is not None else self._speeds())[:3]
-        speed = np.where(self.fluid, np.abs(u) + np.abs(v) + 2 * c, 0.0)
-        return self.cfl * self.h / max(float(speed.max()), 1e-9)
+        rate = np.where(self.fluid, (np.abs(u) + np.abs(v) + 2 * c) / self.size, 0.0)
+        return self.cfl / max(float(rate.max()), 1e-9)
 
     def _speeds(self):
         rho, u, v, p, Y, cv, rg = self.primitives()
@@ -269,6 +316,8 @@ class Axisymmetric:
         self._apply_fixed(U)
         if self.wall_heat:
             self._cool(U, dt)
+        if self.afterburn:
+            self._burn(U, dt)
         self.U = U
         self.out += 0.5 * dt * (f1 + f2)
         self.impulse += 0.5 * dt * (force1 + force2)
@@ -293,4 +342,29 @@ class Axisymmetric:
         q = rho * cv * np.maximum(T - WALL_TEMPERATURE, 0.0) * (1 - np.exp(-k * dt))
         q[self.fixed] = 0.0
         U[3] -= q
-        self.heat += float(np.sum(q * self.volume[None, :]))
+        self.heat += float(np.sum(q * self.volume))
+
+    def fuel_oxygen(self, U=None):
+        """Mass fractions of the unburnt fuel and of the oxygen left in each cell (afterburn only)."""
+        U = self.U if U is None else U
+        a = self.afterburn
+        rho = U[0]
+        Y = np.clip(U[4] / rho, 0.0, 1.0)
+        fuel = np.clip(U[5] / rho, 0.0, a.fuel)
+        # The air's oxygen, less what the burnt fuel (fuel * Y at birth, less what's left) took.
+        o2 = np.maximum(O2_IN_AIR * (1 - Y) - a.oxygen * (a.fuel * Y - fuel), 0.0)
+        return fuel, o2
+
+    def _burn(self, U, dt):
+        """Afterburning: the fuel burns with the oxygen it has mixed with, exactly over dt at fixed T."""
+        a = self.afterburn
+        rho, _, _, p, _, cv, rg = self.primitives(U)
+        T = p / (rho * rg)
+        fuel, o2 = self.fuel_oxygen(U)
+        k = a.rate * np.exp(-a.activation / np.maximum(T, 200.0))
+        burnt = np.minimum(fuel, o2 / a.oxygen) * (1 - np.exp(-k * dt))
+        burnt = np.minimum(burnt, np.maximum(cv * (a.ceiling - T), 0.0) / a.heat)
+        burnt[self.fixed | self.solid] = 0.0
+        U[5] -= rho * burnt
+        U[3] += rho * burnt * a.heat
+        self.burnt += float(np.sum(rho * burnt * self.volume, dtype=np.float64)) * a.heat
