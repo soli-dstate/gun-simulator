@@ -7,7 +7,7 @@ export const SECTIONS = [
   { id: "case", group: "Gun", title: "Cartridge case", blurb: "The case is measured from its head. Watch the 3D preview and the capacity readout as you go." },
   { id: "projectile", group: "Gun", title: "Projectile", blurb: "Mass and engraving drive the ballistics; the shape is used by the 3D model." },
   { id: "propellant", group: "Gun", title: "Propellant", blurb: "How much powder, how energetic, and how fast it burns." },
-  { id: "ignition", group: "Gun", title: "Ignition", blurb: "The primer's kick that starts the burn." },
+  { id: "ignition", group: "Gun", title: "Ignition", blurb: "The primer's kick that starts the burn. The flash and ignition temperature only matter with the two-phase grain bed (Advanced › Solver)." },
   { id: "action", group: "Gun", title: "Action and recoil", blurb: "How the gun reloads, and the masses that set how it recoils. Blank values are worked out from the cartridge." },
   { id: "muzzle_device", group: "Gun", title: "Muzzle device", blurb: "A brake or suppressor on the muzzle, solved in 2D. It changes the recoil, the muzzle blast and the back-pressure on the bore (and so the gas port)." },
   { id: "shooter", group: "Gun", title: "Shooter", blurb: "What holds the gun: a shoulder (spring and damper) or nothing at all (free recoil)." },
@@ -84,7 +84,9 @@ export const META = {
   "propellant.perforation_diameter": { min: 0, max: 1, step: 0.01, help: "Bore of each perforation in a multi-perforated grain. 0 if unused." },
   "propellant.molar_mass": { min: 18, max: 32, step: 0.1, help: "Molar mass of the product gas (muzzle blast only)." },
 
-  "ignition.pressure": { min: 1, max: 20, help: "Chamber pressure the primer produces." },
+  "ignition.pressure": { min: 0, max: 20, help: "Chamber pressure the primer produces. With the two-phase grain bed, it sets how much hot gas the primer jets in." },
+  "ignition.duration": { min: 0.01, max: 2, step: 0.01, help: "Two-phase grain bed: how long the primer's flash lasts as it jets through the flash hole." },
+  "ignition.grain_ignition_temperature": { min: 350, max: 900, step: 1, help: "Two-phase grain bed: the surface temperature at which a grain lights. Higher spreads the flame more slowly." },
 
   "action.type": { help: "bolt: worked by hand. gas: gas tapped from the barrel drives a piston and the bolt carrier. blowback: an unlocked bolt held shut only by its mass and spring. short_recoil: barrel and slide recoil locked together until the barrel stops (most pistols). roller_delayed / lever_delayed: a light bolt head that has to drive a heavy carrier several times faster through rollers or a lever, so it opens slowly. gas_delayed: gas from a port by the chamber pushes a piston on the slide forwards, holding it shut until the pressure falls." },
   "action.gun_mass": { min: 0.5, max: 15, step: 0.01, help: "The whole gun unloaded, bolt included. Heavier recoils slower and softer." },
@@ -135,6 +137,7 @@ export const META = {
   "solver.max_time": { min: 1, max: 200, help: "Give up if the projectile hasn't left by then." },
   "solver.record_every": { min: 1, max: 50, step: 1, help: "Fluid steps between recorded samples." },
   "solver.wall_losses": { help: "Friction and heat loss to the barrel while the projectile is in the bore (always on during blowdown). Lowers velocity a few %; reports barrel heating." },
+  "solver.two_phase": { help: "Fluid model: the grains move with the gas, drag on it and pack against the projectile, and they light only as the primer's hot gas reaches and heats them. Off: every grain is alight from the start and stays where it was loaded." },
   "solver.lumped_dt": { min: 0.01, max: 1, step: 0.01, help: "Fixed time step of the lumped model." },
 
   "sound.distance": { min: 0, max: 200, step: 0.1, help: "0 puts you at the shooter's ear." },

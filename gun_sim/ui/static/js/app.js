@@ -535,6 +535,15 @@ function drawAll() {
   drawChart($("c-pressure"), { series: pressure, xlabel: "time (ms)", ylabel: "pressure (MPa)" });
   drawChart($("c-velocity"), { series: velocity, xlabel: "travel (mm)", ylabel: "velocity (m/s)", legendBottom: true });
   drawChart($("c-profile"), { series: profile, xlabel: "position from seated base (mm)", ylabel: "pressure (MPa)" });
+  const bed = results.find((r) => r.grain_bed)?.grain_bed;
+  $("bed-panel").hidden = !bed;
+  if (bed) {
+    const t = bed.t.map((v) => v * 1e3);
+    drawChart($("c-bed"), { xlabel: "time (ms)", ylabel: "share of the charge (%)", series: [
+      { label: "alight", color: colors[0], x: t, y: bed.lit.map((v) => v * 100) },
+      { label: "burnt", color: colors[1], x: t, y: bed.burnt.map((v) => v * 100) },
+    ] });
+  }
 
   // Recoil: the animated result's (fluid if run), plus the other model's shoulder force for comparison.
   const motion = [], shoulder = [];
@@ -620,10 +629,22 @@ function showCards(data, gun) {
       <span>Muzzle energy</span><span>${(0.5 * gun.projectile.mass * r.muzzle_velocity ** 2).toFixed(0)} J</span>
       <span>Time in barrel</span><span>${(r.muzzle_time * 1e3).toFixed(3)} ms</span>
       <span>Peak breech pressure</span><span>${(r.peak_breech_pressure / 1e6).toFixed(1)} MPa</span>
-      <span>Charge burnt at exit</span><span>${(r.burnt_at_muzzle * 100).toFixed(1)} %</span>${spinRows(r.spin)}${actionRows(r.action)}${deviceRows(r.device)}</div>
+      <span>Charge burnt at exit</span><span>${(r.burnt_at_muzzle * 100).toFixed(1)} %</span>${bedRows(r.grain_bed)}${spinRows(r.spin)}${actionRows(r.action)}${deviceRows(r.device)}</div>
       ${(r.action?.warnings ?? []).map((w) => `<div class="bad">${w}</div>`).join("")}`;
     cards.appendChild(card);
   }
+}
+
+/** Card rows for a two-phase grain bed. */
+function bedRows(b) {
+  if (!b) return "";
+  const spread = b.flame_spread_time !== null
+    ? `${(b.flame_spread_time * 1e3).toFixed(3)} ms after the primer`
+    : `<span class="bad">only ${(b.lit.at(-1) * 100).toFixed(0)} % by exit</span>`;
+  let rows = `
+      <span>Whole charge alight</span><span>${spread}</span>`;
+  if (b.ejected > 1e-7) rows += `<span>Blown out unburnt</span><span>${(b.ejected * 1e6).toFixed(1)} mg</span>`;
+  return rows;
 }
 
 /** Card rows for the projectile's spin, if the barrel is rifled. */

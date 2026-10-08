@@ -25,8 +25,13 @@ the quasi-1D compressible Euler equations on a finite-volume mesh:
   kilogram. In a cylindrical chamber the grains move with the mesh (as in
   the Lagrange gradient of the lumped model). In a case-shaped chamber they
   stay where they are: grains that followed the stretching mesh would be
-  squeezed through the shoulder into the neck. (A real grain bed is carried
-  forward by the gas; that is the two-phase item on the roadmap.)
+  squeezed through the shoulder into the neck. The igniter's gas fills the
+  chamber at the start and every grain is alight.
+* Two-phase grain bed (solver.two_phase, see grainbed.py): instead, the grains
+  are a second phase on the same mesh, with their own velocity. The gas's
+  pressure and drag carry them forwards, a packed bed pushes back, and they
+  light one cell at a time as the primer's hot gas reaches and heats them.
+  The chamber starts full of cold gas at ambient pressure.
 * Recoil: the gun is pushed by the pressure on the breech face and on the
   chamber walls, and pulled forwards by the projectile's drag on the bore.
   Grains that move with the mesh are carried rather than pushed, so the
@@ -72,6 +77,7 @@ import numpy as np
 from . import action, devices, rifling
 from .chamber import chamber_profile
 from .config import Gun
+from .grainbed import GrainBed
 from .results import GunLoads, MuzzleFlow, ShotResult
 
 ATMOSPHERE = 101325.0  # Pa
@@ -179,14 +185,17 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
     m_eff = rifling.effective_mass(gun)
 
     # Grains: one slice of the charge per initial cell, sized by volume. Slices
-    # either move with the mesh (cylinder) or stay put (case).
-    grains_move = bar.chamber_shape == "cylinder"
+    # either move with the mesh (cylinder) or stay put (case), unless they are a
+    # two-phase bed that moves by itself.
+    two_phase = cfg.two_phase
+    grains_move = bar.chamber_shape == "cylinder" and not two_phase
     xi = np.arange(n + 1) / n            # node positions as a fraction of L
     grain_x0 = xi * l0
     v0 = np.diff(chamber.volume_at(grain_x0))
     omega = prop.charge_mass * v0 / v0.sum()
     z = np.zeros(n)                    # burnt web fraction per slice
     burnt = np.zeros(n)                # burnt mass per slice
+    bed = GrainBed(gun, omega, chamber.volume) if two_phase else None
 
     def grain_edges(x_p):
         return xi * (l0 + x_p) if grains_move else grain_x0
@@ -198,15 +207,20 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
             return amounts
         return np.diff(np.interp(chamber.volume_at(nodes), chamber.volume_at(edges), acc))
 
-    # --- initial state: igniter gas at rest filling the space around the grains
+    # --- initial state: igniter gas at rest filling the space around the grains,
+    # or (two-phase) cold gas at ambient pressure, the primer's gas still to come
     p_ign = gun.ignition.pressure
-    rho0 = p_ign / (f + b * p_ign)
+    if two_phase:
+        rho0, e0 = GrainBed.cold_gas(prop, ambient_pressure)
+        p_base = ambient_pressure
+    else:
+        rho0, e0 = p_ign / (f + b * p_ign), e_release
+        p_base = p_ign
     mass = rho0 * (v0 - omega / prop.density)
     mom = np.zeros(n)
-    energy = mass * e_release
+    energy = mass * e0
     m_ign = mass.sum()
 
-    p_base = p_ign
     x_p = 0.0   # projectile travel
     v_p = 0.0   # projectile velocity
     moving = False
@@ -242,7 +256,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         total = dt * (0.5 * (d1["force"] + d2["force"]) - device_force) - friction + grains
         acc["t"] += dt
         acc["total"] += total
-        acc["breech"] += dt * (0.5 * (d1["p_breech"] + d2["p_breech"]) - ambient_pressure) * head_area + grains
+        acc["breech"] += dt * (0.5 * (d1["breech_push"] + d2["breech_push"]) - ambient_pressure) * head_area + grains
         return total
 
     def record_loads(t, diag, x_p):
@@ -271,11 +285,13 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         temps = diag["p"] * (1 - b * diag["rho"]) / (diag["rho"] * prop.gas_constant)
         bore_gas.append((t, np.interp(gas_points, xi_c, temps).astype(np.float32)))
 
-    def primitives(mass, mom, energy, x_p):
+    def primitives(mass, mom, energy, x_p, grains=None):
         nodes = xi * (l0 + x_p)
         v_cell = np.diff(chamber.volume_at(nodes))
-        solid = per_cell(nodes, grain_edges(x_p), (omega - burnt) / prop.density)
-        rho = mass / (v_cell - solid)
+        if two_phase:  # a bed squeezed nearly solid still leaves the gas a little room
+            rho = mass / np.maximum(v_cell - bed.solid_volume(grains), 0.02 * v_cell)
+        else:
+            rho = mass / (v_cell - per_cell(nodes, grain_edges(x_p), (omega - burnt) / prop.density))
         u = mom / mass
         e = energy / mass - 0.5 * u**2
         p = (gamma - 1) * rho * e / (1 - b * rho)
@@ -311,9 +327,11 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         rght = np.concatenate((lo, edge), axis=1)
         return _hllc(*left, *rght, w)
 
-    def rhs(mass, mom, energy, x_p, v_p, moving, right):
-        """Time derivatives of the cell totals and the projectile, plus diagnostics."""
-        nodes, v_cell, rho, u, e, p, c = primitives(mass, mom, energy, x_p)
+    def rhs(state, moving, right):
+        """Time derivatives of the state (cell totals, the projectile, and a two-phase bed's grains), plus diagnostics."""
+        mass, mom, energy, x_p, v_p = state[:5]
+        grains = state[5] if two_phase else None
+        nodes, v_cell, rho, u, e, p, c = primitives(mass, mom, energy, x_p, grains)
         area = chamber.area_at(nodes)
         area[-1] = bore
         w = xi * v_p
@@ -324,27 +342,43 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         d_energy = -np.diff(area * fe)
         p_breech = p_star[0]
         p_base = p_star[-1] if right == "wall" else p[-1]
+        rates = [d_mass, d_mom, d_energy, v_p, 0.0]
+        # A two-phase bed takes its share of the gas's push, and pushes the walls and projectile itself.
+        bed_breech = bed_base = bed_walls = outflow = 0.0
+        dt_bed = np.inf
+        if two_phase:
+            d_bed, push, work, bed_breech, bed_base, bed_walls, outflow, dt_bed = bed.rhs(
+                grains, nodes, area, w, v_cell, p, p_star, right != "wall")
+            d_mom -= push
+            d_energy -= work
+            rates.append(d_bed)
+        p_base += bed_base
         resist = rifling.resistance(gun, x_p) if moving else 0.0
-        accel = bore * (p_base - resist) / m_eff if moving else 0.0
-        force = ((p_breech - ambient_pressure) * area[0]
-                 + np.sum((p - ambient_pressure) * d_area)
-                 - bore * resist)
-        dt_max = cfg.cfl * (nodes[1] - nodes[0]) / np.max(np.abs(u - 0.5 * (w[:-1] + w[1:])) + c)
+        rates[4] = bore * (p_base - resist) / m_eff if moving else 0.0
+        # Until shot start the case neck holds the projectile, so its push comes back to the barrel.
+        held = 0.0 if moving or right != "wall" else bore * (p_base - ambient_pressure)
+        force = ((p_breech + bed_breech - ambient_pressure) * area[0]
+                 + np.sum((p - ambient_pressure) * d_area) + bed_walls
+                 - bore * resist - held)
+        dt_max = cfg.cfl * min((nodes[1] - nodes[0]) / np.max(np.abs(u - 0.5 * (w[:-1] + w[1:])) + c), dt_bed)
         diag = {"p": p, "u": u, "rho": rho, "c": c, "e": e, "p_breech": p_breech, "p_base": p_base,
-                "force": force, "dt_max": dt_max, "flux": (fm, fp, fe),
-                "v_cell": v_cell, "nodes": nodes}
-        return (d_mass, d_mom, d_energy, v_p, accel), diag
+                "breech_push": p_breech + bed_breech, "force": force, "dt_max": dt_max, "flux": (fm, fp, fe),
+                "v_cell": v_cell, "nodes": nodes, "outflow": outflow}
+        return rates, diag
 
     def rk2(state, moving, right):
         """One SSP-RK2 step. Returns the new state, dt, and the two stages' diagnostics."""
-        k1, d1 = rhs(*state, moving, right)
+        k1, d1 = rhs(state, moving, right)
         dt = d1["dt_max"]
         s1 = [a + dt * da for a, da in zip(state, k1)]
         s1[4] = max(s1[4], 0.0)
-        k2, d2 = rhs(*s1, moving, right)
+        k2, d2 = rhs(s1, moving, right)
         new = [0.5 * a + 0.5 * (a1 + dt * da) for a, a1, da in zip(state, s1, k2)]
         new[4] = max(new[4], 0.0)
         return new, dt, d1, d2
+
+    def pack(x_p, v_p):
+        return [mass, mom, energy, x_p, v_p] + ([bed.U] if two_phase else [])
 
     def burn(dt, p, nodes, x_p, v_p):
         """Burn each slice at the pressure of the cell it lies in; put the gas into the cells."""
@@ -396,12 +430,39 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         heat["flux"].append(q[j] / (np.pi * diameter[j] * dx * dt) if j < n else 0.0)
         return np.sum(mass * (u_old - u_new))
 
+    def exchange(dt, new):
+        """Unpack a step's new state and, for a two-phase bed, let the grains and the gas trade over it.
+        Returns the momentum the primer's jet gave the breech."""
+        nonlocal mass, mom, energy
+        mass, mom, energy = new[:3]
+        if not two_phase:
+            return 0.0
+        bed.U = new[5]
+        bed.U[0] = np.maximum(bed.U[0], 0.0)
+        v_cell = np.diff(chamber.volume_at(xi * (l0 + new[3])))
+        mass, mom, energy, kick = bed.exchange(t, dt, mass, mom, energy, v_cell)
+        return kick
+
+    bed_hist = {"t": [], "lit": [], "burnt": []}
+    bed_profiles = []   # two-phase: (t, centres, solid fraction, grain velocity), with the pressure profiles
+
+    def record_bed(t, nodes, v_cell):
+        u_g, solid = bed.unpack(bed.U)[3:6:2]
+        bed_hist["t"].append(t)
+        bed_hist["lit"].append(bed.lit_share())
+        bed_hist["burnt"].append(bed.burnt() / prop.charge_mass)
+        return solid / prop.density / v_cell, u_g
+
     while x_p < bar.travel and t < cfg.max_time:
-        # Shot start: the projectile moves once the gas pushes hard enough.
+        # Shot start: the projectile moves once the gas (and a two-phase bed) pushes hard enough.
         moving = moving or p_base >= proj.shot_start_pressure
         grains = -grain_momentum(v_p)
-        (mass, mom, energy, x_p, v_p), dt, d1, d2 = rk2([mass, mom, energy, x_p, v_p], moving, "wall")
-        grains += burn(dt, d1["p"], xi * (l0 + x_p), x_p, v_p) + grain_momentum(v_p)
+        new, dt, d1, d2 = rk2(pack(x_p, v_p), moving, "wall")
+        grains += exchange(dt, new)
+        x_p, v_p = new[3], new[4]
+        if not two_phase:
+            grains += burn(dt, d1["p"], xi * (l0 + x_p), x_p, v_p)
+        grains += grain_momentum(v_p)
         friction = wall_losses(dt, xi * (l0 + x_p), d2["rho"]) if cfg.wall_losses else 0.0
         impulse += accumulate(dt, d1, d2, friction, grains)
 
@@ -418,17 +479,21 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
             hist["pbase"].append(p_base)
             record_loads(t, d1, x_p)
             record_gas(t, d1)
+            if two_phase:
+                record_bed(t, d1["nodes"], d1["v_cell"])
         if x_p >= next_profile_x and len(profiles) < profile_count:
             dx = (l0 + x_p) / n
             centres = (np.arange(n) + 0.5) * dx - l0  # measured from the seated base
             profiles.append((t, centres, d1["p"].copy()))
+            if two_phase:
+                bed_profiles.append((t, centres, *record_bed(t, d1["nodes"], d1["v_cell"])))
             next_profile_x += bar.travel / profile_count
 
     left = x_p >= bar.travel
     record_loads(t, d1, x_p)
     muzzle_time = t
     muzzle_velocity = v_p
-    burnt_mass = mass.sum() - m_ign
+    burnt_mass = bed.burnt() if two_phase else mass.sum() - m_ign
 
     muzzle_flow = None
     device_result = None
@@ -437,7 +502,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         rec = {k: [] for k in ("t", "mdot", "edot", "thrust", "p_exit", "u_exit", "rho_exit", "p_breech")}
         end = t + blowdown_time
 
-        _, d0 = rhs(mass, mom, energy, x_p, 0.0, False, "wall")
+        _, d0 = rhs(pack(x_p, 0.0), False, "wall")
         exit_state = (float(d0["p"][-1]), float(d0["u"][-1]), float(d0["rho"][-1]))
         porosity = float(mass[-1] / d0["rho"][-1] / d0["v_cell"][-1])  # gas share of the last cell
 
@@ -461,13 +526,17 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
 
         record_gas(t, d0)
         while t < end:
-            (mass, mom, energy, _, _), dt, d1, d2 = rk2([mass, mom, energy, x_p, 0.0], False, outlet)
-            burn(dt, d1["p"], d1["nodes"], x_p, 0.0)
+            new, dt, d1, d2 = rk2(pack(x_p, 0.0), False, outlet)
+            kick = exchange(dt, new)
+            if two_phase:
+                bed.ejected += 0.5 * dt * (d1["outflow"] + d2["outflow"])
+            else:
+                burn(dt, d1["p"], d1["nodes"], x_p, 0.0)
             friction = wall_losses(dt, d1["nodes"], d2["rho"])
             if coupling is not None:
                 outside["state"] = coupling.step(t, dt, float(d1["rho"][-1]), float(d1["u"][-1]), float(d1["e"][-1]))
                 outside["force"] = coupling.rec["force"][-1]
-            impulse += accumulate(dt, d1, d2, friction, device_force=outside["force"])
+            impulse += accumulate(dt, d1, d2, friction, kick, device_force=outside["force"])
             t += dt
             record_loads(t, d1, x_p)
             fm, fp, fe = (0.5 * (a[-1] + b_[-1]) for a, b_ in zip(d1["flux"], d2["flux"]))
@@ -503,6 +572,19 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         at = np.linspace(heat["t"][0], heat["t"][-1], 200)
         surface_rise = float(_surface_temperature_rise(heat["t"], heat["flux"], at).max())
 
+    grain_bed = None
+    if two_phase:
+        lit = np.array(bed_hist["lit"])
+        alight = np.nonzero(lit >= 0.99)[0]
+        grain_bed = {
+            "t": np.array(bed_hist["t"]), "lit": lit, "burnt": np.array(bed_hist["burnt"]),
+            "flame_spread_time": float(bed_hist["t"][alight[0]]) if alight.size else None,
+            "lit_time": bed.lit_time.copy(),
+            "cell_x": 0.5 * (grain_x0[:-1] + grain_x0[1:]),   # where each cell was at the start, from the breech
+            "ejected": bed.ejected, "primer_mass": bed.primer_mass,
+            "profiles": bed_profiles,
+        }
+
     return ShotResult(
         model="fluid",
         left_muzzle=left,
@@ -527,4 +609,5 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         barrel_temperature_rise=heat["total"] / (STEEL_DENSITY * steel * STEEL_HEAT_CAPACITY),
         bore_temperature_rise=surface_rise,
         bore_gas=bore_gas,
+        grain_bed=grain_bed,
     )

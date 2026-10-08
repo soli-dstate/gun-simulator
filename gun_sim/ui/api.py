@@ -103,6 +103,8 @@ FIELDS = {
     ],
     "ignition": [
         ("pressure", "Igniter pressure", "MPa", 1e6),
+        ("duration", "Primer flash duration (two-phase)", "ms", 1e-3),
+        ("grain_ignition_temperature", "Grain ignition temperature (two-phase)", "K", 1),
     ],
     "action": [
         ("type", "Action", "choice", list(ACTION_TYPES)),
@@ -154,6 +156,7 @@ FIELDS = {
         ("record_every", "Record every N steps", "", 1),
         ("lumped_dt", "Lumped time step", "µs", 1e-6),
         ("wall_losses", "Wall friction and heat loss in the bore", "flag", None),
+        ("two_phase", "Two-phase grain bed (grains move, flame spreads)", "flag", None),
         ("device_resolution", "2D cells across the bore", "", 1),
         ("device_time", "2D muzzle device window after exit", "ms", 1e-3),
         ("gas_port_2d", "Gas port discharge coefficient from 2D", "flag", None),
@@ -327,7 +330,14 @@ def result_to_json(r: ShotResult, gun: Gun | None = None, burst: int = 1) -> dic
         "action": recoil,
         "recoil_impulse": None if r.recoil_impulse is None else float(r.recoil_impulse),
         "device": devices.to_json(r.device) if r.device is not None else None,
+        "grain_bed": _bed_to_json(r.grain_bed) if r.grain_bed else None,
     }
+
+
+def _bed_to_json(bed: dict) -> dict:
+    t, lit, burnt = _downsample(bed["t"], bed["lit"], bed["burnt"])
+    return {"t": t, "lit": lit, "burnt": burnt, "flame_spread_time": bed["flame_spread_time"],
+            "ejected": float(bed["ejected"]), "primer_mass": float(bed["primer_mass"])}
 
 
 def simulate(payload: dict) -> dict:

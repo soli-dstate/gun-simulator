@@ -96,6 +96,13 @@ class ShotResult:
     # Fluid model: gas temperature along the column over time, [(t, K at BORE_GAS_POINTS
     # evenly spaced from the breech to the projectile base, or the muzzle after exit)].
     bore_gas: list = field(default_factory=list)
+    # Fluid model with solver.two_phase (gun_sim/grainbed.py): the grain bed. Histories "t", "lit"
+    # (share of the charge alight) and "burnt" (share burnt); "flame_spread_time" (s, until 99 % is
+    # alight; None if it never was); "lit_time" (s, when the grains in each cell first lit) at
+    # "cell_x" (m from the breech, where the cell started); "ejected" (kg of unburnt grain blown out
+    # of the muzzle); "primer_mass" (kg); "profiles" [(t, x from the seated base, solid fraction,
+    # grain velocity)] at the times of `profiles`.
+    grain_bed: dict | None = None
 
     def summary(self) -> str:
         status = "left muzzle" if self.left_muzzle else "DID NOT leave muzzle"
@@ -108,4 +115,14 @@ class ShotResult:
             + (f"\n  heat to the barrel   {self.heat_to_barrel:9.1f} J"
                f" (+{self.barrel_temperature_rise:.2f} K bulk, +{self.bore_temperature_rise:.0f} K at the throat surface)"
                if self.heat_to_barrel else "")
+            + (self._bed_summary() if self.grain_bed else "")
         )
+
+    def _bed_summary(self) -> str:
+        g = self.grain_bed
+        spread = (f"all alight {g['flame_spread_time'] * 1e3:.3f} ms after the primer" if g["flame_spread_time"]
+                  else f"only {g['lit'][-1] * 100:.0f} % alight at exit")
+        line = f"\n  grain bed (2-phase)  {spread}"
+        if g["ejected"] > 1e-7:
+            line += f"; {g['ejected'] * 1e6:.0f} mg blown out unburnt"
+        return line

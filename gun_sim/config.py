@@ -278,6 +278,10 @@ class Case:
 @dataclass
 class Ignition:
     pressure: float = 5e6  # Pa, chamber pressure produced by the igniter/primer
+    # Two-phase grain bed only (solver.two_phase; gun_sim/grainbed.py): the primer's gas comes out
+    # of the flash hole over `duration`, and a grain lights when its surface reaches this temperature.
+    duration: float = 2e-4                     # s
+    grain_ignition_temperature: float = 480.0  # K
 
 
 @dataclass
@@ -291,6 +295,9 @@ class SolverSettings:
     # is in the bore too (they always act during blowdown). Off by default so
     # the fluid model stays comparable with the lumped one, which has neither.
     wall_losses: bool = False
+    # Fluid model: a two-phase grain bed (gun_sim/grainbed.py). The grains move, drag on the gas and
+    # light as the primer's flame reaches them, instead of all lighting at once where they were loaded.
+    two_phase: bool = False
     # 2D axisymmetric solver (gun_sim/axisym.py) for the muzzle device and the gas port.
     device_resolution: float = 4.0  # cells across the bore diameter
     device_time: float = 0.0025     # s after exit the muzzle device is solved in 2D (then a venting vessel)
@@ -436,6 +443,11 @@ class Gun:
             raise ValueError("barrel.leade_angle must be between 0.1 and 45 degrees")
         if self.barrel.chamber_shape not in ("cylinder", "case"):
             raise ValueError(f"barrel.chamber_shape must be 'cylinder' or 'case', not {self.barrel.chamber_shape!r}")
+        ig = self.ignition
+        if ig.pressure < 0 or not 1e-6 <= ig.duration <= 5e-3:
+            raise ValueError("ignition.pressure cannot be negative and ignition.duration must be between 1 µs and 5 ms")
+        if not 320 <= ig.grain_ignition_temperature <= 1500:
+            raise ValueError("ignition.grain_ignition_temperature must be between 320 and 1500 K")
         self._validate_action()
         self._validate_device()
         solid_volume = p.charge_mass / p.density

@@ -1,0 +1,91 @@
+# The example rifle with a two-phase grain bed: the grains are carried forwards by
+# the gas, pack against the projectile and light one after another as the
+# primer's flame spreads through them, in the real inside of the case.
+# These are illustrative values, not data for any specific load.
+# All units are SI (m, kg, s, Pa, J).
+
+name = "Example 7.62 mm rifle, two-phase grain bed"
+
+[barrel]
+bore_diameter  = 7.82e-3   # m
+travel         = 0.56      # m, seated base to muzzle
+chamber_volume = 3.6e-6    # m^3 (ignored: the case is used)
+chamber_shape  = "case"    # solve inside the real case, shoulder and neck included
+# Outside shape, used by the 3D view only.
+breech_diameter = 30.0e-3  # m
+muzzle_diameter = 16.0e-3  # m
+# Rifling: spin, stability and spin drift, and where engraving happens.
+twist        = 0.2794      # m per turn (1 in 11"); negative = left-hand, 0 = smooth bore
+groove_depth = 0.1e-3      # m, land height
+freebore     = 0.0         # m, travel before the projectile meets the lands
+leade_angle  = 1.5         # degrees, forcing-cone half-angle
+
+[projectile]
+mass                = 9.7e-3  # kg
+shot_start_pressure = 30e6    # Pa
+bore_resistance     = 5e6     # Pa
+engraving_pressure  = 0.0     # Pa, peak extra resistance while engraving (0 = none)
+# Shape, used by the 3D view (diameter = bore diameter). Any value left out is
+# taken from a reference shape scaled to the bore.
+length           = 28.6e-3  # m, base to tip
+ogive_length     = 15.5e-3  # m, tangent-ogive nose
+meplat_diameter  = 1.0e-3   # m, flat tip
+boat_tail_length = 4.0e-3   # m, 0 for a flat base
+boat_tail_angle  = 9.0      # degrees
+
+[case]
+# Cartridge case geometry, measured from the case head. Used by the 3D view;
+# the solvers use it with chamber_shape = "case" in [barrel].
+length            = 51.2e-3   # m, head to mouth
+overall_length    = 71.0e-3   # m, head to projectile tip
+rim_diameter      = 11.94e-3  # m
+rim_thickness     = 1.27e-3   # m
+groove_diameter   = 10.0e-3   # m, extractor groove (>= base_diameter for none)
+groove_width      = 1.2e-3    # m
+base_diameter     = 11.94e-3  # m
+shoulder_diameter = 11.53e-3  # m
+shoulder_position = 39.6e-3   # m, head to start of the shoulder
+shoulder_angle    = 20.0      # degrees
+neck_wall         = 0.38e-3   # m
+body_wall         = 0.45e-3   # m
+head_thickness    = 5.0e-3    # m, solid web
+primer_diameter   = 5.33e-3   # m
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+charge_mass     = 2.9e-3   # kg
+force           = 1.0e6    # J/kg
+covolume        = 1.0e-3   # m^3/kg
+gamma           = 1.24
+density         = 1600     # kg/m^3
+web             = 0.4e-3   # m
+burn_rate_coeff = 7.0e-9   # (m/s)/Pa^n
+burn_rate_exp   = 0.9
+form_chi        = 1.0
+form_lambda     = 0.0
+
+[ignition]
+pressure = 5e6  # Pa, how much hot gas the primer jets in
+duration = 2e-4  # s the primer's flash lasts
+grain_ignition_temperature = 480.0  # K, a grain's surface lights at this
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+two_phase    = true  # grains move, drag on the gas, and light as the flame reaches them
+
+[action]
+# Recoil and the action cycle (gun_sim/action.py). type = "bolt" is worked by
+# hand; see example_gas_rifle.toml for a self-loading one.
+type        = "bolt"
+gun_mass    = 4.0     # kg, unloaded
+bolt_mass   = 0.45    # kg
+bore_height = 0.03    # m, bore axis above the shoulder (muzzle rise)
+cg_distance = 0.40    # m, butt to centre of mass
+
+[shooter]
+stance             = "shoulder"  # or "free" for free recoil
+body_mass          = 5.0         # kg of shooter moving with the gun
+shoulder_stiffness = 15e3        # N/m
+shoulder_damping   = 400.0       # N s/m

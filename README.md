@@ -32,14 +32,14 @@ Example output:
   charge burnt at exit      98.2 %
   heat to the barrel      1516.1 J (+1.74 K bulk, +58 K at the throat surface)
   spin at the muzzle      179311 rpm (11.5 J), stability Sg 2.28, peak rifling torque 1.87 N m
-  recoil impulse           11.96 N s; free recoil 2.99 m/s, 17.9 J
-  with the shooter          17.1 mm back at up to 1.15 m/s, muzzle rise 1.25 deg, peak shoulder force 508 N
+  recoil impulse           11.87 N s; free recoil 2.97 m/s, 17.6 J
+  with the shooter          16.9 mm back at up to 1.14 m/s, muzzle rise 1.24 deg, peak shoulder force 504 N
 ```
 
 and for the gas-operated preset, `configs/example_gas_rifle.toml`:
 
 ```
-  gas action           cycled in 36.1 ms (1664 rounds/min), bolt at 6.8 m/s into the rear stop
+  gas action           cycled in 41.0 ms (1364 rounds/min), bolt at 5.0 m/s into the rear stop
 ```
 
 ### Desktop app
@@ -53,8 +53,8 @@ This opens the simulator in its own window. It uses
 Edge WebView2 (already part of Windows 10 and 11). **Open…** and **Save…**
 load and save gun `.toml` files, and **Preset** picks one from `configs/`
 (the example rifle, the same cartridge in a gas-operated rifle, that rifle
-with a suppressor, a roller-delayed rifle, a 7-perforated-grain load, and a
-hollow-point round).
+with a suppressor, a roller-delayed rifle, a two-phase grain bed, a
+7-perforated-grain load, and a hollow-point round).
 The window has two tabs.
 
 **Editor.** Everything about the gun and the shot, one section at a time:
@@ -215,11 +215,11 @@ example.
 | `[case]` | case length, overall length, rim, extractor groove, base and shoulder diameters, shoulder position and angle, neck and body wall, head thickness, primer pocket (the solver uses it with `chamber_shape = "case"`) |
 | `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1 or G7) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"` or `"copper"`) and `exposed_core_length` (soft point) |
 | `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win |
-| `[ignition]` | igniter pressure |
+| `[ignition]` | igniter pressure; with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
 | `[action]` | `type` (`"bolt"`, `"gas"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas and gas-delayed); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
 | `[shooter]` | `stance` (`"shoulder"`, or `"free"` for free recoil); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"` or `"suppressor"`); length, outer diameter, number of baffles, baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake), mass. Missing sizes are scaled from the bore |
-| `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
+| `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `two_phase` (a moving grain bed lit by the primer's flame); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
 
 You can leave out any geometry value (the barrel's outside diameters, twist
 and groove depth, `[case]`, or the projectile shape). Missing values come from a reference 7.62 mm rifle
@@ -264,8 +264,10 @@ print(result.summary())
   function) and adds gas mass and energy where it lies. In a cylindrical
   chamber the grains move with the mesh, as the lumped model's Lagrange
   gradient assumes. In a case-shaped chamber they stay put, since grains that
-  followed the stretching mesh would be squeezed through the shoulder (a
-  moving grain bed is the two-phase item on the roadmap). The flux treats the
+  followed the stretching mesh would be squeezed through the shoulder. The
+  igniter's gas fills the chamber at the start, and every grain is alight.
+  With `[solver] two_phase = true` the grains are a moving bed instead (see
+  [Two-phase grain bed](#two-phase-grain-bed-gun_simgrainbedpy)). The flux treats the
   gas per unit of cell volume, grains included, as the density, so its sound
   speed is the gas's divided by the square root of the gas fraction.
 - **Projectile**: a moving wall pushed by the gas pressure at its base (the
@@ -278,9 +280,11 @@ print(result.summary())
   the rest, together with the gas at the gas port, for the
   [action model](#recoil-and-action-cycling-gun_simactionpy). Grains that move
   with the mesh are carried rather than pushed, so the momentum they gain (and
-  give their gas as it is born) is added to the push on the breech. Before the
-  projectile leaves, the gun has given it `m v` and the gas about `ω v / 2`, as
-  momentum conservation says.
+  give their gas as it is born) is added to the push on the breech. Until shot
+  start the case neck holds the projectile, so the gas's push on it comes back
+  to the barrel (a sealed case doesn't recoil). Before the projectile leaves,
+  the gun has given it `m v` and the gas about `ω v / 2`, as momentum
+  conservation says.
 - **Muzzle device**: during blowdown a brake or suppressor is solved in 2D
   alongside the bore and coupled to it (see the
   [2D solver](#2d-axisymmetric-solver-muzzle-devices-and-gas-ports-gun_simaxisympy-gun_simdevicespy)).
@@ -295,6 +299,58 @@ print(result.summary())
   this costs about 6% of muzzle velocity, and with blowdown puts about 2.5 kJ
   (about 20% of the charge's energy, +3 K in bulk) into the barrel per shot.
   It is off by default so the fluid and lumped models stay comparable.
+
+### Two-phase grain bed (`gun_sim/grainbed.py`)
+
+With `[solver] two_phase = true`, the grains are a second phase on the same
+moving mesh as the gas, as in the two-fluid interior ballistics codes (Gough's
+NOVA and its successors).
+
+- **Grains that move.** Each cell's grains have their own velocity and cross
+  the cell faces with it (a donor-cell flux, with Rusanov dissipation where
+  the bed is packed). They can't pass the breech or the projectile; after
+  exit they can be blown out of the muzzle unburnt. Lit and unlit grains are
+  kept apart, so a few burning grains drifting into a cell don't light it.
+- **Forces.** The gas pressure's push on a cell's contents is shared between
+  gas and grains by the volume each takes up. A packed bed resists being
+  squeezed further with an intergranular stress, zero below the packing it
+  was loaded at and stiffening towards 85% solid, with compression waves at
+  280 m/s in a just-packed bed. The bed pushes on the breech, the chamber
+  shoulder and the projectile.
+- **Interphase drag.** Gidaspow's law: Ergun's packed-bed drag below a gas
+  fraction of 0.8, Wen and Yu's for a dilute cloud above. It is applied
+  implicitly, so a dense bed locks gas and grains together without a tiny
+  time step. It keeps momentum, and the energy it removes heats the gas. The
+  grain size it needs comes from the form function: the grains' surface per
+  unit volume is `2 ψ'(z) / (web (1 - ψ))`, which is 6/d for a sphere.
+- **Flame spread from the primer.** The chamber starts full of cold gas at
+  ambient pressure. The primer jets its hot gas (as much as
+  `ignition.pressure` gives when it fills the space round the grains) through
+  the flash hole into the first cell over `ignition.duration`. A grain lights
+  when its surface reaches `ignition.grain_ignition_temperature`. The gas heats
+  it with the packed-bed correlation `Nu = 2 + 0.4 Re^(2/3) Pr^(1/3)`, and its
+  surface temperature follows from the heat it has absorbed (an integral
+  solution for a semi-infinite solid). So the flame runs as fast as the hot
+  gas is driven into the bed, and stagnant corners light late. Lit grains
+  burn at their local pressure, and their gas joins the gas at the grain's
+  velocity.
+
+For the example rifle the flame runs from the flash hole to the projectile in
+about 0.2 ms (0.23 ms in the cylinder chamber, 0.17 ms in the case, where the
+hot gas is funnelled through the shoulder). Waiting for it costs about 0.1 ms
+in the barrel and 1–1.5% of muzzle velocity (822 against 835 m/s in the
+cylinder, 873 against 881 m/s in the case). Grains are carried down the bore
+at a few hundred m/s, lagging the projectile, and about 1 mg is blown out of
+the muzzle unburnt. A 2 MPa primer takes 0.31 ms to light everything, a
+10 MPa one 0.19 ms. 50 and 200 cells agree on muzzle velocity to 0.25%. The
+preset `configs/example_two_phase.toml` is the example rifle with the case
+chamber and the bed turned on.
+
+Not modelled: the grains' gravity (they lie on the bottom of a horizontal
+case), their spread of burnt web within a cell (grains that mix share the mean
+z), radiation from the primer, and heat lost into the grains after they
+light. The thermal and ignition properties are generic figures for
+nitrocellulose.
 
 ### Lumped-parameter model (`gun_sim/lumped.py`)
 
@@ -399,11 +455,11 @@ the gun, solved for 300 ms with small fixed steps (2 µs while the gas acts):
   The cyclic rate counts only the bolt's own travel, with no hammer or sear
   time, so real guns fire more slowly.
 
-For the example rifle (4 kg) this gives 12.0 N·s of recoil, of which 2.5 N·s is
+For the example rifle (4 kg) this gives 11.9 N·s of recoil, of which 2.5 N·s is
 the gas jet. Free, the rifle recoils at 3.0 m/s with 18 J. Held, it goes about
-17 mm into the shoulder with 1.25° of muzzle rise. The gas-operated preset
-unlocks with 8.6 MPa left in the chamber and cycles in 36 ms, the bolt
-reaching the rear stop at 6.8 m/s.
+17 mm into the shoulder with 1.24° of muzzle rise. The gas-operated preset
+unlocks with 5.8 MPa left in the chamber and cycles in 41 ms, the bolt
+reaching the rear stop at 5.0 m/s.
 
 The roller-delayed preset, `configs/example_roller_delayed.toml` (the same
 cartridge, a 1 kg bolt with a 0.15 kg head, K = 4), unlocks about 0.9 ms after
@@ -696,6 +752,7 @@ is particles and condensate) and the glow's brightness are scale factors in
 gun_sim/
   config.py      gun definition dataclasses + TOML loading
   fluid.py       1D finite-volume interior ballistics solver
+  grainbed.py    two-phase grain bed: moving grains, interphase drag, flame spread from the primer
   chamber.py     chamber cross-section along the axis (cylinder, or the inside of the case)
   lumped.py      0-D reference model
   action.py      recoil and action cycling: gun, bolt, gas system, shooter, bursts
@@ -750,7 +807,7 @@ build_exe.ps1    one-command Windows build
 
 - [x] Higher-order solver (MUSCL reconstruction, HLLC flux, SSP-RK time stepping)
 - [x] Real chamber geometry: area that varies along the axis (bottleneck case); freebore and forcing cone set where engraving happens
-- [ ] Two-phase grain bed: grains that move, interphase drag, flame spread from the primer
+- [x] Two-phase grain bed: grains that move, interphase drag, flame spread from the primer
 - [x] Propellant library (single, double and triple base; multi-perforated grain geometries)
 - [x] Heat loss to the barrel wall and barrel heating
 - [x] Rifling and engraving forces, projectile spin, gyroscopic stability and spin drift
