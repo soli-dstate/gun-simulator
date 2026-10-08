@@ -1,0 +1,111 @@
+# AK-74: 5.45x39 mm 7N6 from a 415 mm barrel, long-stroke gas piston, and its
+# two-chamber muzzle brake.
+# Dimensions are the published ones where there are any; the burn law is tuned
+# to 7N6's muzzle velocity (about 880-900 m/s) and peak pressure.
+# All units are SI (m, kg, s, Pa, J).
+
+name = "AK-74 (5.45x39 mm 7N6)"
+
+[barrel]
+bore_diameter  = 5.62e-3   # m, groove diameter
+travel         = 0.386     # m, seated base to muzzle (415 mm barrel)
+chamber_volume = 1.55e-6   # m^3, case capacity less the bullet's intrusion
+breech_diameter = 26.0e-3  # m, at the trunnion
+muzzle_diameter = 14.0e-3  # m
+twist        = 0.200       # m per turn (1 in 7.87")
+groove_depth = 0.1e-3      # m
+freebore     = 0.5e-3      # m
+leade_angle  = 1.5         # degrees
+
+[projectile]
+# 7N6: 3.42 g, long and slender, steel core with a hollow air pocket in the
+# nose (drawn as a plain steel core), lead plug at the base, steel jacket.
+mass                = 3.42e-3  # kg
+shot_start_pressure = 30e6     # Pa
+bore_resistance     = 5e6      # Pa
+length           = 25.5e-3  # m
+ogive_length     = 15.0e-3  # m
+meplat_diameter  = 0.6e-3   # m
+boat_tail_length = 3.0e-3   # m
+boat_tail_angle  = 8.0      # degrees
+cannelure_position = 8.0e-3 # m
+cannelure_width    = 1.0e-3 # m
+cannelure_depth    = 0.08e-3 # m
+jacket_thickness = 0.5e-3   # m
+core_material    = "steel"
+drag_model            = "G7"
+ballistic_coefficient = 118.0  # kg/m^2 (0.168 lb/in^2)
+
+[case]
+length            = 39.82e-3  # m
+overall_length    = 57.00e-3  # m
+rim_diameter      = 10.00e-3  # m
+rim_thickness     = 1.50e-3   # m
+groove_diameter   = 8.60e-3   # m
+groove_width      = 1.20e-3   # m
+base_diameter     = 10.00e-3  # m
+shoulder_diameter = 9.25e-3   # m
+shoulder_position = 31.00e-3  # m
+shoulder_angle    = 20.0      # degrees
+neck_wall         = 0.30e-3   # m
+body_wall         = 0.45e-3   # m
+head_thickness    = 4.0e-3    # m
+primer_diameter   = 5.33e-3   # m (Berdan)
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+# Single-base tubular powder.
+composition  = "single_base"
+charge_mass  = 1.36e-3   # kg
+grain        = "tube"
+grain_length = 1.0e-3    # m
+web          = 0.38e-3   # m, tube wall
+
+[ignition]
+pressure = 5e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# The AKM's long-stroke piston and two-lug rotating bolt, with a smaller port
+# for the hotter, faster round.
+type              = "gas"
+gun_mass          = 3.07      # kg, unloaded
+bolt_mass         = 0.50      # kg, carrier with its piston and the bolt
+bolt_travel       = 0.118     # m, carrier stroke
+spring_rate       = 200.0     # N/m, return spring
+spring_preload    = 30.0      # N
+# The simulated cyclic rate runs above the real 600-650 rounds/min: the hammer
+# the carrier cocks, the rate reducer and friction aren't modelled.
+unlock_travel     = 10.0e-3   # m
+gas_port_position = 0.226     # m of travel from the seat
+gas_port_diameter = 1.7e-3    # m
+piston_diameter   = 15.0e-3   # m
+gas_volume        = 1.5e-6    # m^3
+gas_stroke        = 10.0e-3   # m
+rear_restitution  = 0.3
+bore_height       = 0.045     # m
+cg_distance       = 0.36      # m
+radius_of_gyration = 0.24     # m
+
+[muzzle_device]
+# The two-chamber brake: a big expansion chamber with two side ports, then a
+# second chamber; it takes a good part of the recoil and kills muzzle climb.
+type           = "brake"
+length         = 82.0e-3   # m
+outer_diameter = 24.0e-3   # m
+baffles        = 2
+vent_fraction  = 0.4
+mass           = 0.11      # kg
+
+[shooter]
+stance             = "shoulder"
+body_mass          = 5.0
+shoulder_stiffness = 15e3
+shoulder_damping   = 400.0
+
+[appearance]
+style = "ak"

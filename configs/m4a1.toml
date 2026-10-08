@@ -1,0 +1,116 @@
+# M4A1 carbine: 5.56x45 mm M855 from a 14.5" barrel, carbine-length direct
+# impingement gas system, A2 birdcage flash hider.
+# Dimensions are the published ones where there are any; the burn law is tuned
+# to M855's muzzle velocity (about 900 m/s from 14.5") and peak pressure.
+# All units are SI (m, kg, s, Pa, J).
+
+name = "M4A1 (5.56x45 mm M855)"
+
+[barrel]
+bore_diameter  = 5.70e-3   # m, groove diameter
+travel         = 0.334     # m, seated base to muzzle (368 mm barrel)
+chamber_volume = 1.60e-6   # m^3, case capacity less the bullet's intrusion
+breech_diameter = 25.0e-3  # m, barrel extension end
+muzzle_diameter = 15.5e-3  # m, government profile under the flash hider
+twist        = 0.1778      # m per turn (1 in 7")
+groove_depth = 0.07e-3     # m
+freebore     = 0.5e-3      # m
+leade_angle  = 1.5         # degrees
+
+[projectile]
+# M855: 62 gr, steel penetrator over a lead core in a copper jacket, boat tail.
+mass                = 4.02e-3  # kg
+shot_start_pressure = 30e6     # Pa
+bore_resistance     = 5e6      # Pa
+length           = 23.1e-3  # m
+ogive_length     = 13.5e-3  # m
+meplat_diameter  = 0.8e-3   # m
+boat_tail_length = 2.6e-3   # m
+boat_tail_angle  = 9.0      # degrees
+cannelure_position = 7.0e-3 # m
+cannelure_width    = 1.2e-3 # m
+cannelure_depth    = 0.1e-3 # m
+jacket_thickness = 0.5e-3   # m
+core_material    = "lead"
+drag_model            = "G7"
+ballistic_coefficient = 106.0  # kg/m^2 (0.151 lb/in^2)
+
+[case]
+length            = 44.70e-3  # m
+overall_length    = 57.40e-3  # m
+rim_diameter      = 9.60e-3   # m
+rim_thickness     = 1.14e-3   # m
+groove_diameter   = 8.43e-3   # m
+groove_width      = 1.14e-3   # m
+base_diameter     = 9.58e-3   # m
+shoulder_diameter = 9.00e-3   # m
+shoulder_position = 36.53e-3  # m
+shoulder_angle    = 23.0      # degrees
+neck_wall         = 0.33e-3   # m
+body_wall         = 0.45e-3   # m
+head_thickness    = 4.0e-3    # m
+primer_diameter   = 4.45e-3   # m, small rifle
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+# Double-base ball powder (WC844-like). Its deterrent coating slows the outside
+# of each grain, so it burns about neutrally rather than as a bare sphere.
+composition = "double_base"
+charge_mass = 1.72e-3   # kg (26.5 gr)
+web         = 0.15e-3   # m, effective web of the coated grain
+form_chi    = 1.0
+form_lambda = 0.0
+
+[ignition]
+pressure = 5e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Direct impingement: gas from the port under the front sight runs back down
+# the gas tube into the carrier key and fills the space between the carrier and
+# the bolt's tail. The carrier is driven back while the bolt stays locked; its
+# cam pin turns the bolt out of the barrel extension's lugs after 7 mm, and the
+# expansion chamber vents through the carrier's side holes.
+type              = "direct_impingement"
+gun_mass          = 2.88      # kg, unloaded
+bolt_mass         = 0.43      # kg, carrier group (0.32) and H buffer (0.11)
+bolt_travel       = 0.083     # m, the carrier's 3.25" stroke into the buffer tube
+spring_rate       = 500.0     # N/m, carbine action spring
+spring_preload    = 50.0      # N
+unlock_travel     = 7.0e-3    # m: 3.2 mm free travel, then the cam turns the bolt 22.5 degrees
+gas_port_position = 0.156     # m of travel: carbine length, 7.5" from the bolt face
+gas_port_diameter = 1.60e-3   # m (0.063")
+piston_diameter   = 12.7e-3   # m, the bolt tail and its gas rings
+gas_volume        = 0.5e-6    # m^3, expansion chamber and key with the carrier forward
+gas_stroke        = 6.0e-3    # m of carrier travel before its vent holes open
+gas_tube_length   = 0.250     # m, carbine gas tube
+gas_tube_diameter = 1.5e-3    # m, inside: the key's narrower bore limits the flow
+rear_restitution  = 0.05      # the H buffer's sliding weights are there to kill the bounce
+# The simulated cyclic rate (about 1300 rounds/min) runs above the real 700-950:
+# the hammer the carrier cocks and the buffer's friction aren't modelled.
+bore_height       = 0.025     # m, nearly straight-line stock
+cg_distance       = 0.33      # m
+radius_of_gyration = 0.22     # m
+
+[muzzle_device]
+# A2 birdcage: closed underneath so it doesn't kick up dust, slots round the rest.
+type           = "flash_hider"
+length         = 57.0e-3   # m
+outer_diameter = 22.0e-3   # m
+baffles        = 5         # slots
+vent_fraction  = 0.45
+flare_angle    = 3.0       # degrees
+mass           = 0.045     # kg
+
+[shooter]
+stance             = "shoulder"
+body_mass          = 5.0
+shoulder_stiffness = 15e3
+shoulder_damping   = 400.0
+
+[appearance]
+style = "ar15"

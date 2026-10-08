@@ -54,12 +54,13 @@ Edge WebView2 (already part of Windows 10 and 11). **Open…** and **Save…**
 load and save gun `.toml` files, and **Preset** picks one from `configs/`
 (the example rifle, the same cartridge in a gas-operated rifle, that rifle
 with a suppressor, a roller-delayed rifle, a two-phase grain bed, a
-7-perforated-grain load, and a hollow-point round).
+7-perforated-grain load, a hollow-point round, and three real rifles: the
+M4A1, AKM and AK-74).
 The window has two tabs.
 
 **Editor.** Everything about the gun and the shot, one section at a time:
 barrel, cartridge case, projectile, propellant, ignition, action and recoil,
-muzzle device, shooter, listener and air, plus the solver and sound-model settings under
+muzzle device, appearance, shooter, listener and air, plus the solver and sound-model settings under
 *Advanced*. Every value has a
 slider, a number box in friendly units, and a line explaining what it does.
 Next to the form is a live WebGL 2 preview of either the **Cartridge** or the
@@ -82,12 +83,31 @@ the copper jacket and the lead, steel or copper core as separate materials,
 with the hollow-point cavity cut open.
 
 **Firing range.** The rifle in 3D: a barrel with its chamber, throat, bore
-and crown cut to fit the case, a receiver with an ejection port, a
-two-lug rotating bolt with extractor, handle and firing pin, and a stock whose
-butt sits where `[action]` puts the shoulder. A gas-operated rifle has a bolt
-carrier instead, with a charging handle and an op rod running forward to a
-piston in the gas cylinder over the gas block (at the gas port), and a
-six-lug bolt head that turns in the carrier as it unlocks. A brake,
+and crown cut to fit the case, a receiver with an ejection port, the parts of
+the action, and a stock whose butt sits where `[action]` puts the shoulder.
+Every action type has its own moving parts:
+
+- *bolt*: a two-lug rotating bolt with extractor, handle and firing pin;
+- *gas*: a bolt carrier with an op rod running forward to a piston in the gas
+  cylinder over the gas block (at the gas port), and a bolt head that turns in
+  the carrier as it unlocks (two lugs in an AK, six or seven otherwise);
+- *direct_impingement*: no piston. A gas tube runs from the gas block back to a
+  key on top of the carrier, and a seven-lug bolt head turns in it;
+- *blowback*: a plain heavy bolt with a charging knob;
+- *short_recoil*: the barrel and its extension recoil with the bolt until the
+  barrel stops, and a locking block drops out from under the bolt as it does;
+- *roller_delayed* and *lever_delayed*: a light bolt head with the carrier
+  running ahead of it while the delay lasts. Two rollers come in from the
+  head's sides, or a lever on top of it tips back;
+- *gas_delayed*: a sleeve round the barrel, tied to the bolt by two rods, whose
+  front closes on a piston ring on the barrel just ahead of the port.
+
+`[appearance] style` dresses the gun: *rifle* is a sporting stock round a
+turned receiver; *ar15* an aluminium upper and lower with a rail, A-frame
+front sight, round handguard, pistol grip, buffer tube and collapsible stock;
+*ak* a stamped receiver and dust cover, rear sight block, gas tube with
+wooden handguards, curved magazine and wooden stock. The moving parts follow
+the action type whatever the style. A brake,
 suppressor or flash hider on the muzzle is turned from the same dimensions the
 2D solver uses; **Cutaway** shows its baffles. **Fire** runs the simulation,
 then animates the shot from its results. All the while the whole rifle
@@ -216,9 +236,11 @@ example.
 | `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1 or G7) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"` or `"copper"`) and `exposed_core_length` (soft point) |
 | `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win. `flash_suppressant` (`potassium_sulfate`, `potassium_nitrate`, `potassium_cryolite`) with `suppressant_fraction` (share of the charge mass) puts out the secondary flash, at some impetus and more smoke |
 | `[ignition]` | igniter pressure; with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
-| `[action]` | `type` (`"bolt"`, `"gas"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas and gas-delayed); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
+| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, restitution at the rear stop and in battery; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
+direct impingement the "piston" is the bolt's tail in the carrier); `gas_tube_length` and `gas_tube_diameter` (direct impingement); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
 | `[shooter]` | `stance` (`"shoulder"`, or `"free"` for free recoil); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"`, `"suppressor"` or `"flash_hider"`); length, outer diameter, number of baffles (prongs for a flash hider), baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake, flash hider), `flare_angle` (flash hider bore), mass. Missing sizes are scaled from the bore |
+| `[appearance]` | `style` (`"rifle"`, `"ar15"` or `"ak"`): how the 3D view dresses the gun; the solvers ignore it |
 | `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `two_phase` (a moving grain bed lit by the primer's flame); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
 
 You can leave out any geometry value (the barrel's outside diameters, twist
@@ -415,6 +437,17 @@ the gun, solved for 300 ms with small fixed steps (2 µs while the gas acts):
     from the solver). The cylinder pressure drives the piston and carrier until
     the piston has moved `gas_stroke`, when the cylinder vents. The reaction
     pushes the gas block forwards.
+  - *direct_impingement*: locked like *gas*, but there is no piston. The port
+    feeds a long thin gas tube, solved as a volume of its own. Its outlet's
+    discharge coefficient falls with the tube's friction (0.8 / √(1 + f L/D),
+    f = 0.03), and it loses heat to its wall at the Dittus–Boelter rate for the
+    flow through it, so the gas arrives late and cooled. The tube empties into
+    an expansion chamber between the carrier and the bolt's tail: the carrier
+    is the cylinder and the locked bolt the piston, so the chamber pushes the
+    carrier back and, through the bolt's lugs, the barrel forwards. Once the
+    bolt unlocks it rides with the carrier and the chamber's pressure is
+    internal to the bolt group, so it pushes nothing more; it vents through the
+    carrier's holes after `gas_stroke`.
   - *blowback*: never locked. The breech pressure on the case head pushes the
     bolt from the start.
   - *short_recoil*: the barrel and slide recoil locked together until the
@@ -460,6 +493,16 @@ the gas jet. Free, the rifle recoils at 3.0 m/s with 18 J. Held, it goes about
 17 mm into the shoulder with 1.24° of muzzle rise. The gas-operated preset
 unlocks with 5.8 MPa left in the chamber and cycles in 41 ms, the bolt
 reaching the rear stop at 5.0 m/s.
+
+The M4A1 preset (`configs/m4a1.toml`: M855 from a 14.5" barrel, a carbine-length
+gas system) leaves the muzzle at 885 m/s with a 408 MPa peak. The bolt unlocks
+2.8 ms after ignition, well after the bullet has gone, with about 9 MPa left in
+the chamber, and the carrier reaches the buffer at 6.6 m/s. The AKM (`configs/akm.toml`, M43 ball) gives
+741 m/s at 313 MPa and the AK-74 (`configs/ak74.toml`, 7N6, with its brake)
+901 m/s at 351 MPa; their long-stroke pistons bring the carrier to the rear trunnion at 6 to 8 m/s. All
+three cycle faster than the real rifles (about 950 to 1,300 rounds a minute
+against 600 to 950), since the hammer the carrier cocks, an AK's rate reducer
+and friction are not modelled.
 
 The roller-delayed preset, `configs/example_roller_delayed.toml` (the same
 cartridge, a 1 kg bolt with a 0.15 kg head, K = 4), unlocks about 0.9 ms after

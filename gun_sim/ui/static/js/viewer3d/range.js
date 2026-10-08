@@ -36,6 +36,7 @@ const MATERIALS = {
   steel: { color: srgbToLinear([0.2, 0.2, 0.22]), metallic: 1, roughness: 0.36, section: srgbToLinear([0.27, 0.28, 0.3]) },
   bolt: { color: srgbToLinear([0.74, 0.74, 0.76]), metallic: 1, roughness: 0.22, section: srgbToLinear([0.5, 0.5, 0.52]) },
   black: { color: srgbToLinear([0.06, 0.06, 0.065]), metallic: 0.6, roughness: 0.5, section: srgbToLinear([0.2, 0.2, 0.2]) },
+  wood: { color: srgbToLinear([0.3, 0.13, 0.06]), metallic: 0, roughness: 0.45, section: srgbToLinear([0.55, 0.34, 0.18]) },
   case: { color: srgbToLinear([0.86, 0.66, 0.34]), metallic: 1, roughness: 0.32, section: srgbToLinear([0.62, 0.45, 0.2]) },
   spent: { color: srgbToLinear([0.7, 0.5, 0.26]), metallic: 1, roughness: 0.48, section: srgbToLinear([0.5, 0.36, 0.17]) },
   primer: { color: srgbToLinear([0.78, 0.78, 0.76]), metallic: 1, roughness: 0.38, section: srgbToLinear([0.5, 0.5, 0.5]) },
@@ -399,8 +400,10 @@ export class FiringRange {
     const L = this.layout, a = this._action, t = this.tSim;
     const k = this._shotAt(t);
     const travel = this._actionAt("bolt", t) * 1e3;
-    const unlock = a.strokes.unlock * 1e3;
-    const angle = a.kind === "gas" && unlock > 0 ? -LUG_TURN * clamp(travel / unlock, 0, 1) : 0;
+    // The simulation's own unlock travel and delay ratio, which the parts that follow the bolt use.
+    const s = a.strokes;
+    const mech = { ...L.mech, unlock: s.unlock * 1e3, ratio: s.carrier_unlock ? s.carrier_unlock / s.unlock : L.mech.ratio };
+    const { angle, ...follow } = this._mechPose(travel, mech);
     let round = null;
     if (t < this._eventTime("case ejected", k)) {
       if (this.chamber) round = { kind: this.chamber, x: -travel, y: 0 };
@@ -411,7 +414,30 @@ export class FiringRange {
       const rise = smooth((feed - travel) / (0.5 * feed));
       round = { kind: "live", x: -travel + 0.5, y: (L.magTop + L.rimR * 0.6) * (1 - rise) };
     }
-    return { travel, angle, round };
+    return { travel, angle, round, ...follow };
+  }
+
+  /**
+   * Where the parts that follow the bolt are, with the bolt (head) `travel` mm back: a rotating
+   * bolt's turn, a carrier's travel, a short-recoil barrel's, how far a locking block, rollers or a
+   * lever have come out of engagement (0 locked, 1 free), and the lever's tilt.
+   */
+  _mechPose(travel, mech = this.layout.mech) {
+    const L = this.layout, u = mech.unlock;
+    const free = u > 0 ? clamp(travel / u, 0, 1) : 0;
+    const out = { angle: 0, carrier: travel, barrel: 0, lock: 0, lever: 0 };
+    if (mech.kind === "gas" || mech.kind === "direct_impingement") {
+      out.angle = -LUG_TURN * free;
+    } else if (mech.kind === "roller_delayed" || mech.kind === "lever_delayed") {
+      // The carrier runs `ratio` times as fast as the head until the delay ends, then keeps its lead.
+      out.carrier = travel < u ? mech.ratio * travel : travel + (mech.ratio - 1) * u;
+      out.lock = free;
+      if (L.lever) out.lever = Math.atan((out.carrier - travel) / L.lever.arm);
+    } else if (mech.kind === "short_recoil") {
+      out.barrel = Math.min(travel, u);
+      out.lock = free;
+    }
+    return out;
   }
 
   get animating() {
@@ -423,7 +449,7 @@ export class FiringRange {
     const L = this.layout;
     const c = this.cycle;
     if (!c && this._auto) return this._autoBoltPose();
-    if (!c) return { travel: 0, angle: 0, round: this.chamber ? { kind: this.chamber, x: 0, y: 0 } : null };
+    if (!c) return { travel: 0, round: this.chamber ? { kind: this.chamber, x: 0, y: 0 } : null, ...this._mechPose(0) };
     const t = c.t;
     const t1 = CYCLE.lift, t2 = t1 + CYCLE.back, t3 = t2 + CYCLE.pause, t4 = t3 + CYCLE.forward;
     let travel = 0, angle = 0, round = null;
@@ -448,7 +474,9 @@ export class FiringRange {
       angle = -Math.PI / 2 * (1 - smooth((t - t4) / CYCLE.lower));
       round = { kind: "live", x: 0, y: 0 };
     }
-    return { travel, angle, round };
+    // A self-loader is drawn back by its handle: no lift; its bolt turns (or its parts follow) as it goes.
+    if (L.mech.kind !== "bolt") return { travel, round, ...this._mechPose(travel) };
+    return { travel, round, ...this._mechPose(travel), angle };
   }
 
   /** Projectile base position (mm) of the first shot when it is under way, or null. */
@@ -706,14 +734,24 @@ export class FiringRange {
     const gunAt = this._gunMatrix();           // the whole rifle, recoiling
     const boltAt = chain(gunAt, translation(-pose.travel, 0, 0));
     const pinBack = (this.cycle && this.cycle.t > CYCLE.lift * 0.5) || (this._auto && pose.travel > 0.5) ? 0 : this.pin;
+    const barrelAt = chain(gunAt, translation(-pose.barrel, 0, 0));   // a short-recoil barrel recoils on its own
+    const optional = (mesh, model, material, clip = false) => (mesh ? [{ mesh, model, material, clip }] : []);
+    const lv = L.lever;
     const items = [
       { mesh: m.steel, model: gunAt, material: MATERIALS.steel },
       { mesh: m.furniture, model: gunAt, material: MATERIALS.black },
+      ...optional(m.wood, gunAt, MATERIALS.wood, true),
+      ...optional(m.barrel, barrelAt, MATERIALS.steel, true),
       // The bolt stays whole in the cutaway, so it reads clearly inside the cut receiver.
       { mesh: m.bolt, model: chain(boltAt, rotationX(pose.angle)), material: MATERIALS.bolt, clip: false },
-      ...(m.shroud ? [{ mesh: m.shroud, model: boltAt, material: MATERIALS.steel, clip: false }] : []),
-      // A gas rifle's carrier slides without turning; its bolt head (above) turns in it.
-      ...(m.carrier ? [{ mesh: m.carrier, model: boltAt, material: MATERIALS.steel, clip: false }] : []),
+      ...optional(m.shroud, boltAt, MATERIALS.steel),
+      // A carrier slides without turning (its bolt head, above, turns in it); a delayed blowback's runs ahead of the head.
+      ...optional(m.carrier, chain(gunAt, translation(-pose.carrier, 0, 0)), MATERIALS.steel),
+      // A short-recoil locking block drops out of the bolt as the barrel stops; rollers come in; a lever tips back.
+      ...optional(m.lock, chain(barrelAt, translation(0, -pose.lock * (L.lockDrop ?? 0), 0)), MATERIALS.bolt),
+      ...optional(m.rollerRight, chain(boltAt, translation(0, 0, -pose.lock * (L.rollerIn ?? 0))), MATERIALS.bolt),
+      ...optional(m.rollerLeft, chain(boltAt, translation(0, 0, pose.lock * (L.rollerIn ?? 0))), MATERIALS.bolt),
+      ...optional(m.lever, lv && chain(boltAt, translation(lv.px, lv.py, 0), rotationZ(pose.lever), translation(-lv.px, -lv.py, 0)), MATERIALS.bolt),
       { mesh: m.striker, model: chain(gunAt, translation(-pose.travel + pinBack * L.pinTravel, 0, 0)), material: MATERIALS.bolt, clip: false },
     ];
     const addProjectile = (model, clip) => {

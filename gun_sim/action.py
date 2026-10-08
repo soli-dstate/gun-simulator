@@ -27,6 +27,15 @@ Actions. Which body the bore forces push depends on the action:
   and carrier until the piston has moved `gas_stroke`, when the cylinder
   vents. The reaction pushes the gas block forwards. Once unlocked, any
   pressure left in the chamber pushes the bolt too.
+* direct_impingement: locked like gas, but there is no piston: the port feeds
+  a long thin gas tube (a volume of its own, with friction setting its
+  outlet's discharge coefficient and heat lost to its wall), which empties
+  into an expansion chamber between the carrier and the bolt's tail. The
+  carrier is the cylinder, the locked bolt the piston: the chamber pushes the
+  carrier back and, through the bolt's lugs, the barrel forwards. Once the
+  bolt unlocks it rides with the carrier, so the chamber's pressure is
+  internal to the bolt group and pushes nothing; it vents through the
+  carrier's holes after `gas_stroke`.
 * blowback: never locked. The breech pressure pushes the bolt from the
   start, held back only by its inertia and the spring.
 * short_recoil: the barrel and slide recoil locked together inside the frame
@@ -108,8 +117,39 @@ CASE_PRESSURE = 30e6            # Pa: above this the case is pressed hard into t
 CASE_SETBACK_WARNING = 1e-3     # m the case may back out while it is
 # Delayed blowback: (carrier speed / head speed while delayed, carrier travel until unlocked).
 DELAYED = {"roller_delayed": (4.0, 5e-3), "lever_delayed": (6.0, 6e-3)}
-GAS_SYSTEMS = ("gas", "gas_delayed")
+GAS_SYSTEMS = ("gas", "direct_impingement", "gas_delayed")
+LOCKED_GAS = ("gas", "direct_impingement")   # locked until the carrier has moved unlock_travel
 HEAD_SHARE = 0.2                # delayed blowback: bolt head's share of bolt_mass, unless given
+# Direct impingement gas tube: Darcy friction factor and the wall's temperature. Heat goes to
+# the wall by Dittus-Boelter (Nu = 0.023 Re^0.8 Pr^0.4, at least the laminar 3.66) with the
+# propellant gas's viscosity, conductivity and Prandtl number.
+TUBE_FRICTION = 0.03
+TUBE_WALL = AIR_TEMPERATURE
+GAS_VISCOSITY = 6e-5            # Pa s
+GAS_CONDUCTIVITY = 0.15         # W/(m K)
+GAS_PRANDTL = 0.7
+
+
+def tube_heat(flow: float, diameter: float) -> float:
+    """Heat transfer coefficient (W/(m^2 K)) of gas flowing at `flow` kg/s down a tube."""
+    re = 4 * abs(flow) / (math.pi * diameter * GAS_VISCOSITY)
+    nu = max(3.66, 0.023 * re**0.8 * GAS_PRANDTL**0.4)
+    return nu * GAS_CONDUCTIVITY / diameter
+
+
+def gas_tube(gun: Gun) -> tuple[float, float]:
+    """Direct impingement: gas tube (length, inside diameter) in m. The tube runs from
+    the gas block back to the carrier key, over the bolt: about the port's distance from
+    the case head, unless given."""
+    a = gun.action
+    length = a.gas_tube_length if a.gas_tube_length is not None else port_position(gun) + gun.case.length
+    return length, a.gas_tube_diameter
+
+
+def tube_cd(gun: Gun) -> float:
+    """Discharge coefficient of the gas tube's outlet: an orifice with the tube's friction losses ahead of it."""
+    length, diameter = gas_tube(gun)
+    return ORIFICE_CD / math.sqrt(1 + TUBE_FRICTION * length / diameter)
 
 
 def delay(gun: Gun) -> tuple[float, float]:
@@ -159,7 +199,7 @@ def strokes(gun: Gun) -> dict:
     eject = c.length + 3e-3          # the case is clear of the chamber and hits the ejector
     feed = c.overall_length + 3e-3   # the bolt face is behind the next round
     stroke = a.bolt_travel if a.bolt_travel is not None else feed + 8e-3
-    defaults = {"gas": 6e-3, "short_recoil": 3e-3, **{k: v[1] for k, v in DELAYED.items()}}
+    defaults = {"gas": 6e-3, "direct_impingement": 7e-3, "short_recoil": 3e-3, **{k: v[1] for k, v in DELAYED.items()}}
     unlock = a.unlock_travel if a.unlock_travel is not None else defaults.get(a.type, 0.0)
     out = {"eject": eject, "feed": feed, "stroke": stroke, "unlock": min(unlock, stroke)}
     if a.type in DELAYED:
@@ -178,6 +218,16 @@ def _orifice(area: float, p_up: float, t_up: float, p_down: float, gamma: float,
     if ratio <= (2 / (gamma + 1)) ** (gamma / (gamma - 1)):  # choked
         return k * math.sqrt(gamma) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1)))
     return k * math.sqrt(2 * gamma / (gamma - 1) * (ratio ** (2 / gamma) - ratio ** ((gamma + 1) / gamma)))
+
+
+def _exchange(area: float, cd: float, p1: float, t1: float, p2: float, t2: float,
+              gamma: float, r_gas: float) -> tuple[float, float]:
+    """Flow (kg/s, + from 1 to 2) through an orifice between two gases, and the
+    specific enthalpy it carries (J/kg)."""
+    cp = gamma * r_gas / (gamma - 1)
+    if p1 > p2:
+        return _orifice(area, p1, t1, p2, gamma, r_gas, cd), cp * t1
+    return -_orifice(area, p2, t2, p1, gamma, r_gas, cd), cp * t2
 
 
 @dataclass
@@ -310,7 +360,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     inertia = gun_mass * (a.radius_of_gyration**2 + arm**2)
     h = a.bore_height
     gamma, r_gas = gun.propellant.gamma, gun.propellant.gas_constant
-    cp, cv = gamma * r_gas / (gamma - 1), r_gas / (gamma - 1)
+    cv = r_gas / (gamma - 1)
     port_area = math.pi / 4 * a.gas_port_diameter**2
     piston_area = math.pi / 4 * a.piston_diameter**2
 
@@ -340,6 +390,14 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     sealed = True             # gas cylinder closed (the piston hasn't reached the vent)
     m_c = AMBIENT * a.gas_volume / (r_gas * AIR_TEMPERATURE)  # cylinder starts full of air
     e_c = m_c * cv * AIR_TEMPERATURE
+    # Direct impingement: the gas tube between the port and the expansion chamber, also full of air.
+    impinge = kind == "direct_impingement"
+    if impinge:
+        tube_len, tube_d = gas_tube(gun)
+        tube_area, tube_k = math.pi / 4 * tube_d**2, tube_cd(gun)
+        v_tube, tube_wall = tube_area * tube_len, math.pi * tube_d * tube_len
+        m_t = AMBIENT * v_tube / (r_gas * AIR_TEMPERATURE)
+        e_t = m_t * cv * AIR_TEMPERATURE
     p_c = gas_peak = AMBIENT
     rear_speed = unlock_pressure = first_battery = None
     s_max = setback = 0.0
@@ -381,22 +439,33 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
 
         f_piston = 0.0
         if kind in GAS_SYSTEMS:
+            # A direct impingement chamber only grows while the bolt is locked; then it rides along.
+            grows = min(s, unlock) if impinge else s
             if sealed:
-                vol = a.gas_volume + swept * piston_area * s
+                vol = a.gas_volume + swept * piston_area * grows
                 p_c = (gamma - 1) * e_c / vol
                 t_c = p_c * vol / (m_c * r_gas)
-                if pp > p_c:
-                    flow = _orifice(port_area, pp, tp, p_c, gamma, r_gas, port_cd)
-                    enthalpy = cp * tp
-                else:
-                    flow = -_orifice(port_area, p_c, t_c, pp, gamma, r_gas, port_cd)
-                    enthalpy = cp * t_c
-                m_c = max(m_c + flow * dt, 1e-12)
-                e_c = max(e_c + (flow * enthalpy - p_c * swept * piston_area * u) * dt, 1e-9)
-                f_piston = swept * (p_c - AMBIENT) * piston_area
-                gas_peak = max(gas_peak, p_c)
             else:
-                p_c = AMBIENT
+                p_c, t_c = AMBIENT, AIR_TEMPERATURE
+            if impinge:
+                # Port -> tube -> expansion chamber (or out of the carrier's vents).
+                p_t = (gamma - 1) * e_t / v_tube
+                t_t = p_t * v_tube / (m_t * r_gas)
+                f_in, h_in = _exchange(port_area, port_cd, pp, tp, p_t, t_t, gamma, r_gas)
+                flow, enthalpy = _exchange(tube_area, tube_k, p_t, t_t, p_c, t_c, gamma, r_gas)
+                cooling = tube_heat(max(abs(f_in), abs(flow)), tube_d) * tube_wall * (t_t - TUBE_WALL)
+                m_t = max(m_t + (f_in - flow) * dt, 1e-12)
+                e_t = max(e_t + (f_in * h_in - flow * enthalpy - cooling) * dt, 1e-9)
+            else:
+                flow, enthalpy = _exchange(port_area, port_cd, pp, tp, p_c, t_c, gamma, r_gas)
+            if sealed:
+                du = 0.0 if impinge and s >= unlock else u
+                m_c = max(m_c + flow * dt, 1e-12)
+                e_c = max(e_c + (flow * enthalpy - p_c * swept * piston_area * du) * dt, 1e-9)
+                # Once a direct impingement bolt unlocks, the chamber is inside the moving bolt group.
+                if not (impinge and unlocked):
+                    f_piston = swept * (p_c - AMBIENT) * piston_area
+                gas_peak = max(gas_peak, p_c)
 
         # Forces between the bolt group and the gun (+ pushes the bolt back). The spring
         # bears on the carrier, which a delayed blowback's head drives `ratio` times as far.
@@ -475,7 +544,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             s_max = max(s_max, s)
             cyc["s_max"] = max(cyc["s_max"], s)
 
-            if kind == "gas":
+            if kind in LOCKED_GAS:
                 if not unlocked and s >= unlock:
                     unlocked = True
                     p_unlock = fb / loads.head_area + AMBIENT
@@ -489,7 +558,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                     event(t_end, "gas cylinder vents")
                 elif not sealed and s < a.gas_stroke and u < 0:
                     sealed = True  # the piston closes the cylinder again, on air
-                    m_c = AMBIENT * (a.gas_volume + swept * piston_area * s) / (r_gas * AIR_TEMPERATURE)
+                    m_c = AMBIENT * (a.gas_volume + swept * piston_area * (min(s, unlock) if impinge else s)) / (r_gas * AIR_TEMPERATURE)
                     e_c = m_c * cv * AIR_TEMPERATURE
             elif kind == "short_recoil":
                 if carry and s >= unlock and u > 0:  # the barrel stops against the frame
@@ -514,7 +583,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                 event(t_end, "strips the next round")
 
             # How far the case has backed out of the chamber while still pressed into it.
-            free = s - unlock if kind in ("gas", "short_recoil") else s
+            free = s - unlock if kind in (*LOCKED_GAS, "short_recoil") else s
             if (unlocked or (kind == "short_recoil" and not carry)) and fb / loads.head_area > CASE_PRESSURE:
                 setback = max(setback, free)
 
@@ -558,6 +627,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             warnings.append(f"the burst stopped after {n} of {shots} shots")
     if rear_speed is not None and rear_speed > REAR_SPEED_WARNING:
         cure = {"gas": "over-gassed; a smaller gas port, a heavier carrier or a stiffer spring would ease it",
+                "direct_impingement": "over-gassed; a smaller gas port, a heavier carrier or buffer, or a stiffer spring would ease it",
                 "blowback": "a heavier bolt or a stiffer spring would slow it",
                 "short_recoil": "a heavier slide or a stiffer spring would slow it",
                 "gas_delayed": "a bigger piston or a port nearer the chamber would hold it back longer",

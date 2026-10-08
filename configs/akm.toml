@@ -1,0 +1,104 @@
+# AKM: 7.62x39 mm M43 (57-N-231 steel core) from a 415 mm barrel, long-stroke
+# gas piston, slant compensator left off.
+# Dimensions are the published ones where there are any; the burn law is tuned
+# to the round's muzzle velocity (about 715 m/s) and peak pressure (about 355 MPa).
+# All units are SI (m, kg, s, Pa, J).
+
+name = "AKM (7.62x39 mm M43)"
+
+[barrel]
+bore_diameter  = 7.92e-3   # m, groove diameter
+travel         = 0.389     # m, seated base to muzzle (415 mm barrel)
+chamber_volume = 2.05e-6   # m^3, case capacity less the bullet's intrusion
+breech_diameter = 28.0e-3  # m, at the trunnion
+muzzle_diameter = 15.0e-3  # m
+twist        = 0.240       # m per turn (1 in 9.45")
+groove_depth = 0.15e-3     # m
+freebore     = 0.5e-3      # m
+leade_angle  = 1.5         # degrees
+
+[projectile]
+# 57-N-231: 7.9 g, mild steel core in a lead sleeve, copper-washed steel jacket, boat tail.
+mass                = 7.9e-3   # kg
+shot_start_pressure = 35e6     # Pa
+bore_resistance     = 6e6      # Pa
+length           = 26.8e-3  # m
+ogive_length     = 14.5e-3  # m
+meplat_diameter  = 1.2e-3   # m
+boat_tail_length = 3.6e-3   # m
+boat_tail_angle  = 9.0      # degrees
+cannelure_position = 9.0e-3 # m
+cannelure_width    = 1.0e-3 # m
+cannelure_depth    = 0.1e-3 # m
+jacket_thickness = 0.6e-3   # m
+core_material    = "steel"
+drag_model            = "G7"
+ballistic_coefficient = 98.0   # kg/m^2 (0.139 lb/in^2)
+
+[case]
+# Lacquered steel, with the body's steep taper.
+length            = 38.70e-3  # m
+overall_length    = 56.00e-3  # m
+rim_diameter      = 11.35e-3  # m
+rim_thickness     = 1.50e-3   # m
+groove_diameter   = 9.56e-3   # m
+groove_width      = 1.30e-3   # m
+base_diameter     = 11.35e-3  # m
+shoulder_diameter = 10.07e-3  # m
+shoulder_position = 30.50e-3  # m
+shoulder_angle    = 18.0      # degrees
+neck_wall         = 0.35e-3   # m
+body_wall         = 0.50e-3   # m
+head_thickness    = 4.5e-3    # m
+primer_diameter   = 5.33e-3   # m, large rifle (Berdan)
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+# Single-base tubular powder.
+composition  = "single_base"
+charge_mass  = 1.50e-3   # kg
+grain        = "tube"
+grain_length = 1.2e-3    # m
+web          = 0.24e-3   # m, tube wall
+
+[ignition]
+pressure = 5e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Long-stroke piston: the piston is part of the bolt carrier, and the gas from
+# the port, drilled at 45 degrees into the gas block, drives the whole carrier
+# back. After 5.5 mm of free travel the carrier's cam turns the two-lug bolt out
+# of the trunnion; the cylinder vents through holes in the gas tube once the
+# piston has moved 10 mm, and the carrier coasts on to the rear trunnion.
+type              = "gas"
+gun_mass          = 3.10      # kg, unloaded
+bolt_mass         = 0.52      # kg, carrier with its piston (0.45) and bolt (0.07)
+bolt_travel       = 0.118     # m, carrier stroke
+spring_rate       = 200.0     # N/m, return spring
+spring_preload    = 30.0      # N
+# The simulated cyclic rate runs above the real 600-650 rounds/min: the hammer
+# the carrier cocks, the rate reducer (AKM) and friction aren't modelled.
+unlock_travel     = 10.0e-3   # m: free travel, then the 35-degree turn
+gas_port_position = 0.228     # m of travel from the seat
+gas_port_diameter = 2.5e-3    # m
+piston_diameter   = 15.0e-3   # m
+gas_volume        = 1.5e-6    # m^3, gas block and cylinder with the piston forward
+gas_stroke        = 10.0e-3   # m, piston travel before the cylinder's vent holes
+rear_restitution  = 0.3       # steel carrier on the steel rear trunnion
+bore_height       = 0.045     # m, the drop of the stock
+cg_distance       = 0.36      # m
+radius_of_gyration = 0.24     # m
+
+[shooter]
+stance             = "shoulder"
+body_mass          = 5.0
+shoulder_stiffness = 15e3
+shoulder_damping   = 400.0
+
+[appearance]
+style = "ak"

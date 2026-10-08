@@ -6,6 +6,7 @@ import { profileVolume, radiusAt, radiusVolume } from "./lathe.js";
 
 const MM = 1e3;
 const DEG = Math.PI / 180;
+const CORE_NAMES = ["lead", "steel", "copper"];   // config.CORE_MATERIALS, in index order
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** Bottleneck case. Returns {parts, cavity, dims, warnings}; cavity is the inner wall as [r, x] sorted by x. */
@@ -321,7 +322,9 @@ export function buildCartridge(gun) {
   const projVolume = profileVolume(proj.body);
   return {
     parts: { case: kase.parts, primer: primerProfile(kase.pocket), projectile: proj.parts, ...(proj.core ? { core: proj.core } : {}) },
-    coreMaterial: Math.round(p.core_material || 0),
+    // The form gives the core by name, a loaded config by index.
+    coreMaterial: Math.max(0, typeof p.core_material === "string"
+      ? CORE_NAMES.indexOf(p.core_material.toLowerCase()) : Math.round(p.core_material || 0)),
     dims: kase.dims,
     projectileLength: p.length,
     seat,

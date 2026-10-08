@@ -361,7 +361,7 @@ class MuzzleDevice:
     mass: float | None = None             # kg, added to the gun; None = from its steel
 
 
-ACTION_TYPES = ("bolt", "gas", "blowback", "short_recoil", "roller_delayed", "lever_delayed", "gas_delayed")
+ACTION_TYPES = ("bolt", "gas", "direct_impingement", "blowback", "short_recoil", "roller_delayed", "lever_delayed", "gas_delayed")
 STANCES = ("shoulder", "free")
 
 
@@ -370,7 +370,9 @@ class Action:
     """How the gun reloads, and the mass properties that set its recoil (gun_sim/action.py).
 
     "bolt" is worked by hand; "gas" taps gas from a port in the barrel into a
-    cylinder whose piston drives the bolt carrier; "blowback" has an unlocked
+    cylinder whose piston drives the bolt carrier; "direct_impingement" pipes
+    that gas down a tube into the carrier itself, which the locked bolt's tail
+    drives back like a piston in a cylinder; "blowback" has an unlocked
     bolt held shut only by its own mass and spring; "short_recoil" has the
     barrel and slide recoil locked together until the barrel stops and unlocks.
     Delayed blowbacks: "roller_delayed" and "lever_delayed" split the bolt into
@@ -385,7 +387,7 @@ class Action:
     bolt_travel: float | None = None    # m, bolt stroke to the rear stop; None = enough to feed + 8 mm
     spring_rate: float = 700.0          # N/m, return spring
     spring_preload: float = 50.0        # N, return spring force with the bolt closed
-    unlock_travel: float | None = None  # m, gas: carrier travel before the bolt unlocks (None = 6 mm);
+    unlock_travel: float | None = None  # m, gas: carrier travel before the bolt unlocks (None = 6 mm, 7 mm direct impingement);
                                         # short recoil: barrel travel before it stops (None = 3 mm);
                                         # roller/lever delayed: carrier travel until the delay ends (None = 5 / 6 mm)
     # Roller/lever delayed blowback: carrier speed over bolt head speed while delayed
@@ -401,6 +403,9 @@ class Action:
     piston_diameter: float = 10.0e-3    # m
     gas_volume: float = 1.0e-6          # m^3, gas cylinder with the piston forward
     gas_stroke: float = 0.008           # m, piston travel before the cylinder vents
+    # Direct impingement: the tube from the gas block back to the carrier key.
+    gas_tube_length: float | None = None  # m; None = from the port to the case head, plus a case length
+    gas_tube_diameter: float = 1.8e-3     # m, inside
     # Stock and balance, for muzzle rise.
     bore_height: float = 0.03           # m, bore axis above where the recoil is taken (the shoulder)
     cg_distance: float = 0.40           # m, along the bore from the butt to the centre of mass
@@ -418,6 +423,18 @@ class Shooter:
     hold_damping: float = 9.0           # N m s/rad
 
 
+STYLES = ("rifle", "ar15", "ak")
+
+
+@dataclass
+class Appearance:
+    """How the 3D view dresses the action (the solvers ignore it): "rifle" is a
+    sporting stock, "ar15" an AR-15 / M4 (upper and lower receiver, pistol grip,
+    carry handle or rail, buffer tube and collapsible stock), "ak" a Kalashnikov
+    (stamped receiver and dust cover, gas tube over the barrel, curved magazine)."""
+    style: str = "rifle"
+
+
 @dataclass
 class Gun:
     name: str
@@ -430,6 +447,7 @@ class Gun:
     action: Action = field(default_factory=Action)
     shooter: Shooter = field(default_factory=Shooter)
     muzzle_device: MuzzleDevice = field(default_factory=MuzzleDevice)
+    appearance: Appearance = field(default_factory=Appearance)
 
     def __post_init__(self):
         scale = self.barrel.bore_diameter / _REF_BORE
@@ -477,6 +495,8 @@ class Gun:
             raise ValueError("ignition.grain_ignition_temperature must be between 320 and 1500 K")
         self._validate_action()
         self._validate_device()
+        if self.appearance.style not in STYLES:
+            raise ValueError(f"appearance.style must be one of {", ".join(STYLES)}, not {self.appearance.style!r}")
         solid_volume = p.charge_mass / p.density
         chamber = self.effective_chamber_volume
         if solid_volume >= chamber:
@@ -494,7 +514,8 @@ class Gun:
         moving = a.bolt_mass + ((a.barrel_mass or 0.0) if a.type == "short_recoil" else 0.0)
         if a.gun_mass <= 0 or a.bolt_mass <= 0 or moving >= a.gun_mass:
             raise ValueError("action: the gun must be heavier than the parts that cycle inside it")
-        for name in ("barrel_mass", "bolt_travel", "unlock_travel", "gas_port_position", "bolt_head_mass"):
+        for name in ("barrel_mass", "bolt_travel", "unlock_travel", "gas_port_position", "bolt_head_mass",
+                     "gas_tube_length"):
             value = getattr(a, name)
             if value is not None and value <= 0:
                 raise ValueError(f"action.{name} must be positive (or left out)")
@@ -507,9 +528,11 @@ class Gun:
                      "gas_volume", "gas_stroke", "bore_height", "cg_distance", "radius_of_gyration"):
             if getattr(a, name) < 0:
                 raise ValueError(f"action.{name} cannot be negative")
-        if a.type in ("gas", "gas_delayed") and (a.gas_volume <= 0 or a.piston_diameter <= 0
+        if a.type in ("gas", "direct_impingement", "gas_delayed") and (a.gas_volume <= 0 or a.piston_diameter <= 0
                                                  or a.gas_port_diameter <= 0):
             raise ValueError("a gas action needs a gas port, a piston and a gas cylinder volume")
+        if a.type == "direct_impingement" and a.gas_tube_diameter <= 0:
+            raise ValueError("direct impingement needs a gas tube (action.gas_tube_diameter)")
         if a.type == "gas_delayed" and a.gas_volume <= math.pi / 4 * a.piston_diameter**2 * a.gas_stroke:
             raise ValueError("gas-delayed: the piston would bottom out in its cylinder before it vents "
                              "(a bigger gas_volume or a shorter gas_stroke)")
@@ -566,6 +589,7 @@ class Gun:
             "action": Action,
             "shooter": Shooter,
             "muzzle_device": MuzzleDevice,
+            "appearance": Appearance,
         }
         kwargs = {"name": data.get("name", "unnamed")}
         for key, section_cls in sections.items():

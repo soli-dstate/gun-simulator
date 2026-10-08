@@ -288,3 +288,68 @@ def test_gas_port_discharge_coefficient_from_2d(gas_shot):
     gun = Gun.load(GAS_RIFLE)
     a = action.simulate(gun, gas_shot)
     assert a.port_cd_2d and 0.1 < a.port_cd < 1.2
+
+
+M4A1 = CONFIGS / "m4a1.toml"
+
+
+@pytest.fixture(scope="module")
+def m4_shot():
+    return fluid.simulate(Gun.load(M4A1), blowdown_time=BLOWDOWN)
+
+
+def test_direct_impingement_preset_cycles_in_order(m4_shot):
+    gun = Gun.load(M4A1)
+    a = action.simulate(gun, m4_shot)
+    assert a.status == "cycled", a.warnings
+    t = {e["name"]: e["time"] for e in a.events}
+    order = ["bolt unlocks", "case ejected", "bolt hits the rear stop", "strips the next round", "back in battery"]
+    assert [t[name] for name in order] == sorted(t[name] for name in order)
+    assert t["bolt unlocks"] > m4_shot.muzzle_time   # the gas has to run down the tube first
+    assert a.rear_speed < action.REAR_SPEED_WARNING
+    assert 300 < a.cyclic_rate < 3000
+
+
+def test_direct_impingement_conserves_momentum(m4_shot):
+    """The expansion chamber sits between the carrier and the locked bolt: its push is internal."""
+    gun = Gun.load(M4A1)
+    gun.shooter.stance = "free"
+    a = action.simulate(gun, m4_shot)
+    assert a.gun_mass * a.recoil_velocity[-1] == pytest.approx(a.impulse, rel=0.01)   # flash hider included
+
+
+def test_longer_gas_tube_arrives_later_and_weaker(m4_shot):
+    gun = Gun.load(M4A1)
+    gun.solver.gas_port_2d = False
+    short = action.simulate(gun, m4_shot)
+    gun.action.gas_tube_length = 0.6
+    long = action.simulate(gun, m4_shot)
+    unlocks = lambda a: next(e["time"] for e in a.events if e["name"] == "bolt unlocks")
+    assert unlocks(long) > unlocks(short)
+    assert long.gas_peak_pressure < short.gas_peak_pressure
+    # Friction in the tube: its outlet passes less than the bare port would.
+    assert action.tube_cd(gun) < action.ORIFICE_CD
+
+
+def test_gas_tube_cools_harder_when_the_gas_rushes():
+    d = 1.8e-3
+    assert action.tube_heat(0.0, d) == pytest.approx(3.66 * action.GAS_CONDUCTIVITY / d)
+    assert action.tube_heat(0.05, d) > 100 * action.tube_heat(0.0, d)
+
+
+def test_bad_direct_impingement_rejected():
+    gun = Gun.load(M4A1)
+    gun.action.gas_tube_diameter = 0.0
+    with pytest.raises(ValueError, match="gas tube"):
+        gun.validate()
+
+
+@pytest.mark.parametrize("name, velocity", [("akm", 715), ("ak74", 900)])
+def test_kalashnikov_presets_cycle(name, velocity):
+    gun = Gun.load(CONFIGS / f"{name}.toml")
+    assert gun.appearance.style == "ak"
+    shot = fluid.simulate(gun, blowdown_time=BLOWDOWN)
+    assert shot.muzzle_velocity == pytest.approx(velocity, rel=0.06)
+    a = action.simulate(gun, shot)
+    assert a.status == "cycled", a.warnings
+    assert a.rear_speed < action.REAR_SPEED_WARNING

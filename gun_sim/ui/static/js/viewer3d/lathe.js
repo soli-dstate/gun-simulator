@@ -8,12 +8,15 @@
 // along it with x up and r to the right, i.e. "out along the base, up the outside,
 // back down the inside". That makes the outward normal of a segment (dx, -dr).
 
-/** Revolve a profile into a mesh: {positions, normals, indices} (Float32/Uint32 arrays). */
-export function lathe(parts, segments = 96) {
+/**
+ * Revolve a profile into a mesh: {positions, normals, indices} (Float32/Uint32 arrays).
+ * a0..a1 revolves only part of the way round (radians from +y towards +z), leaving the ends open.
+ */
+export function lathe(parts, segments = 96, a0 = 0, a1 = 2 * Math.PI) {
   const positions = [], normals = [], indices = [];
   const cos = [], sin = [];
   for (let j = 0; j <= segments; j++) {
-    const a = (j / segments) * 2 * Math.PI;
+    const a = a0 + (j / segments) * (a1 - a0);
     cos.push(Math.cos(a));
     sin.push(Math.sin(a));
   }

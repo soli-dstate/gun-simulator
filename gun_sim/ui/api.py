@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import action, devices, exterior, fluid, lumped, plume, rifling, sound
-from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, STANCES, Gun
+from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, STANCES, STYLES, Gun
 from ..propellants import COMPOSITIONS, GRAINS, SUPPRESSANTS
 from ..results import ShotResult
 from ..sound import GROUNDS, PRESET_LABELS, PRESETS, SoundSettings
@@ -115,7 +115,7 @@ FIELDS = {
         ("bolt_travel", "Bolt stroke (blank = enough to feed + 8 mm)", "mm", 1e-3),
         ("spring_rate", "Return spring rate", "N/mm", 1e3),
         ("spring_preload", "Return spring preload", "N", 1),
-        ("unlock_travel", "Unlock travel (blank = 6 mm gas, 3 mm short recoil, 5/6 mm roller/lever)", "mm", 1e-3),
+        ("unlock_travel", "Unlock travel (blank = 6 mm gas, 7 mm direct impingement, 3 mm short recoil, 5/6 mm roller/lever)", "mm", 1e-3),
         ("delay_ratio", "Delay ratio, carrier : head (roller/lever; blank = 4 / 6)", "", 1),
         ("bolt_head_mass", "Bolt head mass (roller/lever; blank = a fifth)", "g", 1e-3),
         ("barrel_mass", "Barrel mass (short recoil; blank = from its steel)", "g", 1e-3),
@@ -127,6 +127,8 @@ FIELDS = {
         ("piston_diameter", "Piston diameter", "mm", 1e-3),
         ("gas_volume", "Gas cylinder volume", "cm³", 1e-6),
         ("gas_stroke", "Piston stroke before it vents", "mm", 1e-3),
+        ("gas_tube_length", "Gas tube length (direct impingement; blank = from the port)", "mm", 1e-3),
+        ("gas_tube_diameter", "Gas tube bore (direct impingement)", "mm", 1e-3),
         ("bore_height", "Bore above the shoulder", "mm", 1e-3),
         ("cg_distance", "Butt to centre of mass", "mm", 1e-3),
         ("radius_of_gyration", "Radius of gyration (pitch)", "mm", 1e-3),
@@ -143,6 +145,9 @@ FIELDS = {
         ("vent_fraction", "Vent opening round the circumference (brake, flash hider)", "", 1),
         ("flare_angle", "Bore flare half-angle (flash hider)", "°", 1),
         ("mass", "Mass (blank = from its steel)", "g", 1e-3),
+    ],
+    "appearance": [
+        ("style", "3D model", "choice", list(STYLES)),
     ],
     "shooter": [
         ("stance", "Hold", "choice", list(STANCES)),
