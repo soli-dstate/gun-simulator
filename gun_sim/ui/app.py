@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=0, help="with --browser: port to listen on")
     parser.add_argument("--debug", action="store_true", help="enable the web inspector (right-click > Inspect)")
     args = parser.parse_args(argv)
+    api.warm()
 
     if args.browser:
         from .server import serve

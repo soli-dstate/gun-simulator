@@ -89,4 +89,5 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=0, help="port to listen on (default: any free port)")
     parser.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     args = parser.parse_args(argv)
+    api.warm()
     serve(args.port, not args.no_browser)

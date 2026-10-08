@@ -8,11 +8,12 @@ import sys
 import tomllib
 import traceback
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 
-from .. import action, devices, exterior, fluid, lumped, plume, rifling, sound
+from .. import action, devices, exterior, fluid, lumped, parallel, plume, rifling, sound
 from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, STANCES, STYLES, Gun
 from ..propellants import COMPOSITIONS, GRAINS, SUPPRESSANTS
 from ..results import ShotResult
@@ -237,6 +238,15 @@ def _envelope(t: np.ndarray, y: np.ndarray, points: int = 1500) -> tuple[list, l
     return xs, ys
 
 
+def _shot(gun: Gun, blowdown: float, ambient: float) -> tuple:
+    """The fluid shot everything else builds on, solved once in its own worker.
+
+    Returns it as a seed for parallel.submit(), so the jobs built on it don't solve it again.
+    """
+    shot = fluid.simulate_cached(gun, blowdown, ambient, run=partial(parallel.run, "bore"))
+    return gun, blowdown, ambient, shot
+
+
 def synthesize(payload: dict) -> dict:
     gun = Gun.from_dict(payload["gun"])
     gun.solver.cells = int(gun.solver.cells)
@@ -245,7 +255,12 @@ def synthesize(payload: dict) -> dict:
     for key in ("blast_cells", "sample_rate"):
         if key in settings_in:
             settings_in[key] = int(settings_in[key])
-    snd = sound.synthesize(gun, SoundSettings.from_dict(settings_in))
+    s = SoundSettings.from_dict(settings_in)
+    return parallel.run("sound", _sound_json, gun, s, seed=_shot(gun, s.blast_time, s.pressure))
+
+
+def _sound_json(gun: Gun, s: SoundSettings) -> dict:
+    snd = sound.synthesize(gun, s)
     t = snd.start_time + np.arange(len(snd.pressure)) / snd.sample_rate
     wt, wp = _envelope(t, snd.pressure)
     nf = snd.near_field
@@ -373,26 +388,38 @@ def simulate(payload: dict) -> dict:
     burst = int(payload.get("burst", 1))
     if not 1 <= burst <= action.MAX_BURST:
         raise ValueError(f"burst must be between 1 and {action.MAX_BURST} shots")
-    fitted = gun.muzzle_device.type != "none"
-    results = []
     for name in models:
         if name not in MODELS:
             raise ValueError(f"unknown model {name!r}")
-        if name == "fluid":
-            r = fluid.simulate_cached(gun, blowdown_time=blowdown, ambient_pressure=ambient)
-        else:
-            r = MODELS[name](gun, blowdown_time=blowdown)
-            if fitted and r.left_muzzle:
-                # The lumped model has no 2D device of its own: borrow the fluid model's, lined up on its exit.
-                f = fluid.simulate_cached(gun, blowdown_time=blowdown, ambient_pressure=ambient)
-                if f.device is not None:
-                    r.loads = devices.with_device(r.loads, f.device, r.muzzle_time - f.muzzle_time,
-                                                  source=f.loads, exit_time=r.muzzle_time)
-                    r.recoil_impulse = r.loads.impulse
-        if not math.isfinite(r.muzzle_velocity) or not math.isfinite(r.peak_breech_pressure):
-            raise ValueError(f"the {name} model went unstable (non-finite values); check the inputs")
-        results.append(result_to_json(r, gun, burst))
-    return {"results": results, "travel": gun.barrel.travel}
+    # Each model (and its recoil) runs in its own worker, alongside the sound and the flash.
+    # Only the lumped model without a muzzle device can start before the fluid shot is in.
+    fitted = gun.muzzle_device.type != "none"
+    jobs = {}
+    if "lumped" in models and not fitted:
+        jobs["lumped"] = parallel.submit("lumped", _model_json, "lumped", gun, blowdown, ambient, burst)
+    rest = [name for name in models if name not in jobs]
+    if rest:
+        seed = _shot(gun, blowdown, ambient)
+        for name in rest:
+            jobs[name] = parallel.submit(name, _model_json, name, gun, blowdown, ambient, burst, seed=seed)
+    return {"results": [jobs[name].result() for name in models], "travel": gun.barrel.travel}
+
+
+def _model_json(name: str, gun: Gun, blowdown: float, ambient: float, burst: int) -> dict:
+    if name == "fluid":
+        r = fluid.simulate_cached(gun, blowdown_time=blowdown, ambient_pressure=ambient)
+    else:
+        r = MODELS[name](gun, blowdown_time=blowdown)
+        if gun.muzzle_device.type != "none" and r.left_muzzle:
+            # The lumped model has no 2D device of its own: borrow the fluid model's, lined up on its exit.
+            f = fluid.simulate_cached(gun, blowdown_time=blowdown, ambient_pressure=ambient)
+            if f.device is not None:
+                r.loads = devices.with_device(r.loads, f.device, r.muzzle_time - f.muzzle_time,
+                                              source=f.loads, exit_time=r.muzzle_time)
+                r.recoil_impulse = r.loads.impulse
+    if not math.isfinite(r.muzzle_velocity) or not math.isfinite(r.peak_breech_pressure):
+        raise ValueError(f"the {name} model went unstable (non-finite values); check the inputs")
+    return result_to_json(r, gun, burst)
 
 
 def plume_field(payload: dict) -> dict:
@@ -403,8 +430,16 @@ def plume_field(payload: dict) -> dict:
     gun = Gun.from_dict(payload["gun"])
     blowdown = float(payload.get("blowdown", BLOWDOWN))
     ambient = float(payload.get("ambient_pressure", fluid.ATMOSPHERE))
-    result, shot = plume.simulate_cached(gun, blowdown, ambient)
-    return plume.to_json(result, shot)
+    return parallel.run("plume", _plume_json, gun, blowdown, ambient, seed=_shot(gun, blowdown, ambient))
+
+
+def _plume_json(gun: Gun, blowdown: float, ambient: float) -> dict:
+    return plume.to_json(*plume.simulate_cached(gun, blowdown, ambient))
+
+
+def warm() -> None:
+    """Boot the workers in the background while the window opens."""
+    parallel.warm("bore", "sound", "plume", *MODELS)
 
 
 def trajectory(payload: dict) -> dict:

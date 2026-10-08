@@ -151,20 +151,38 @@ _cache: dict = {}
 _cache_lock = threading.Lock()
 
 
-def simulate_cached(gun: Gun, blowdown_time: float = 0.0, ambient_pressure: float = ATMOSPHERE) -> ShotResult:
+def _cache_key(gun: Gun, blowdown_time: float, ambient_pressure: float) -> str:
+    return json.dumps([asdict(gun), blowdown_time, ambient_pressure], sort_keys=True)
+
+
+def _store(key: str, shot: ShotResult) -> None:
+    if key not in _cache and len(_cache) >= 4:
+        _cache.pop(next(iter(_cache)))
+    _cache[key] = shot
+
+
+def simulate_cached(gun: Gun, blowdown_time: float = 0.0, ambient_pressure: float = ATMOSPHERE,
+                    run=None) -> ShotResult:
     """simulate(), remembered for the last few guns.
 
     The firing range asks for the shot and its sound at the same moment; with a
     muzzle device the coupled 2D solution takes seconds, so the second caller
     waits for the first and shares its result.
+
+    run(simulate, gun, **kwargs), if given, is how simulate() gets called (e.g. in a worker process).
     """
-    key = json.dumps([asdict(gun), blowdown_time, ambient_pressure], sort_keys=True)
+    key = _cache_key(gun, blowdown_time, ambient_pressure)
     with _cache_lock:
         if key not in _cache:
-            if len(_cache) >= 4:
-                _cache.pop(next(iter(_cache)))
-            _cache[key] = simulate(gun, blowdown_time=blowdown_time, ambient_pressure=ambient_pressure)
+            kwargs = {"blowdown_time": blowdown_time, "ambient_pressure": ambient_pressure}
+            _store(key, run(simulate, gun, **kwargs) if run else simulate(gun, **kwargs))
         return _cache[key]
+
+
+def remember(gun: Gun, blowdown_time: float, ambient_pressure: float, shot: ShotResult) -> None:
+    """Hand simulate_cached() a shot solved elsewhere (another process), so it isn't solved again."""
+    with _cache_lock:
+        _store(_cache_key(gun, blowdown_time, ambient_pressure), shot)
 
 
 def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
