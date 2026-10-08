@@ -542,6 +542,7 @@ export class FiringRange {
    */
   _plumeAt(P, rise, tau, gT, thick, seed) {
     const L = this.layout, n = P.times.length, last = P.times[n - 1], c = P.cloud;
+    // The cloud grows about its own centre, so it spreads back over the barrel as well as forward.
     let frame, scale = 1, height = 0, extent;
     if (tau < last) {
       let k = 0;
@@ -553,7 +554,7 @@ export class FiringRange {
       scale = Math.pow((c.age + tau - last) / c.age, 0.25);
       height = interp(rise.t, rise.h, tau - last);
       const [x0, x1, r] = P.extent[n - 1];
-      extent = [c.origin + (x0 - c.origin) * scale, c.origin + (x1 - c.origin) * scale, r * scale];
+      extent = [c.x + (x0 - c.x) * scale, c.x + (x1 - c.x) * scale, r * scale];
     }
     const dilute = scale ** -3;
     const m = chain(translation(0, height, 0), gT);
@@ -562,12 +563,12 @@ export class FiringRange {
     return {
       inverse: chain(translation(-L.muzzleX, 0, 0), invert(m)),
       frame: (frame + 0.5) / P.layers, scale, density: thick * dilute, temperature: dilute,
-      origin: c.origin, seed, smoke: P.smoke ?? 1,
+      origin: c.x, seed, smoke: P.smoke ?? 1,
       bound: [...centre, Math.hypot((extent[1] - extent[0]) / 2, extent[2]) + 10],
       // The flash's light: the solved glow, then the cloud's, falling with its temperature.
       glow: tau < last ? interp(P.times, P.glow, tau)
         : P.glow[n - 1] * Math.exp(-WIEN * (1 / (T_AIR * (1 + c.warmth * dilute)) - 1 / (T_AIR * (1 + c.warmth)))),
-      glowX: L.muzzleX + (tau < last ? interp(P.times, P.glow_x, tau) : c.origin + (P.glow_x[n - 1] - c.origin) * scale),
+      glowX: L.muzzleX + (tau < last ? interp(P.times, P.glow_x, tau) : c.x + (P.glow_x[n - 1] - c.x) * scale),
       size: Math.max(extent[1] - extent[0], extent[2], 20),
     };
   }
