@@ -95,7 +95,8 @@ shoulder_damping   = 400.0
 
 [feed]
 # Linked rounds drawn across the feed tray by a cam on the carrier, through a
-# feed lever and slide in the top cover; 30 cm of belt hangs to the box.
+# feed lever and slide in the top cover; 30 cm of belt hangs to the ground,
+# where the rest of it lies.
 type      = "belt"
 capacity  = 100
 link_mass = 0.005     # kg per link

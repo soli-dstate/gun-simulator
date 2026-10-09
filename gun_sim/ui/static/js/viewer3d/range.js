@@ -27,6 +27,14 @@
 // angle; a jam leaves it wedged there, and a bolt caught open by an empty
 // magazine stays back, until the bolt is worked or the magazine changed.
 //
+// The whole belt is drawn, as a chain of links under gravity: those in the
+// feed tray go where the gun and the feed slide put them, the rest hang from
+// the tray's edge to the ground and lie along it, swinging as the gun recoils
+// and yanked along a link each shot. A new belt goes in by hand: the top cover
+// swings up, what is left of the old belt is pulled out and dropped, the new
+// belt's end is laid in across the tray, the cover shuts, and the bolt is
+// worked.
+//
 // Throughout, the whole rifle moves as the recoil simulation says: back into
 // the shoulder and pitching about it, muzzle up. Gas and smoke stay in the air
 // where they left the gun; only their source, the barrel tip or the breech,
@@ -51,6 +59,7 @@ const MATERIALS = {
   wood: { color: srgbToLinear([0.3, 0.13, 0.06]), metallic: 0, roughness: 0.45, section: srgbToLinear([0.55, 0.34, 0.18]) },
   case: { color: srgbToLinear([0.86, 0.66, 0.34]), metallic: 1, roughness: 0.32, section: srgbToLinear([0.62, 0.45, 0.2]) },
   spent: { color: srgbToLinear([0.7, 0.5, 0.26]), metallic: 1, roughness: 0.48, section: srgbToLinear([0.5, 0.36, 0.17]) },
+  ground: { color: srgbToLinear([0.3, 0.28, 0.23]), metallic: 0, roughness: 0.92, section: srgbToLinear([0.36, 0.33, 0.27]) },
   primer: { color: srgbToLinear([0.78, 0.78, 0.76]), metallic: 1, roughness: 0.38, section: srgbToLinear([0.5, 0.5, 0.5]) },
   projectile: { color: srgbToLinear([0.80, 0.47, 0.30]), metallic: 1, roughness: 0.28, section: srgbToLinear([0.55, 0.3, 0.18]) },
 };
@@ -63,6 +72,16 @@ const CYCLE_DELAY = 0.35;       // s after exit (real time) before the bolt is w
 const CYCLE = { lift: 0.18, back: 0.3, pause: 0.12, forward: 0.32, lower: 0.16 };
 const CYCLE_LENGTH = Object.values(CYCLE).reduce((a, b) => a + b, 0);
 const RELOAD = { out: 0.45, in: 0.55 };   // s: the empty magazine drops out, a full one goes in
+const BELT_RELOAD = { open: 0.4, lay: 0.9, close: 0.35 };   // s: the cover swings up, a belt is laid in, it shuts
+const COVER_OPEN = 1.2;         // rad the top cover swings up
+const HAND_IN = 90;             // mm beyond the tray's edge the new belt's end starts from
+const BELT_STEP = 1 / 600;      // s, longest step of the belt's chain
+const BELT_ITERATIONS = 8;      // constraint passes per step
+const BELT_DRAG = 1.5;          // 1/s, the air's damping of the swinging belt
+const BELT_BEND = 1.5;          // links two apart stay this many pitches apart: a link only folds so far on the next
+const BELT_FRICTION = 0.6;      // coefficient of friction of a link on the ground
+const BELT_DROPPED = 2.5;       // s an old belt lies on the ground before it is cleared away
+const G_MM = 9810;              // mm/s^2
 const RAMP = 3.2;               // 1/s, growth of the clock rate after exit
 const RAMP_AUTO = 1.6;          // slower, so an automatic action's cycle can be seen
 const LUG_TURN = Math.PI / 8;   // a gas action's bolt turns this much to unlock
@@ -76,6 +95,8 @@ const SMOKE = 0.012;            // smoke extinction per mm per kg/m^3 of propell
 const RISE_DRAG = 0.8;          // s, how fast the rising cloud comes to its terminal speed
 
 const smooth = (x) => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+/** A point under a column-major transform. */
+const apply = (m, [x, y, z]) => [0, 1, 2].map((k) => m[k] * x + m[4 + k] * y + m[8 + k] * z + m[12 + k]);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** Linear interpolation in a sampled curve (xs ascending). */
@@ -162,6 +183,9 @@ export class FiringRange {
     this.jam = null;            // why the round in the chamber is jammed
     this.reload = null;         // {t, swapped}
     this.beltAdv = 0;           // share of a link the belt has been drawn this cycle
+    this.belt = null;           // the belt's chain {nodes: [{p, q, pin, local, round}], h}, the link at the feed position first
+    this.dropped = [];          // old belts falling out of the gun, {nodes, h, age}
+    this.beltMoving = false;
   }
 
   // ---------- public API ----------
@@ -402,12 +426,14 @@ export class FiringRange {
     if (this.reload) {
       const r = this.reload;
       r.t += dt;
-      if (!r.swapped && r.t >= RELOAD.out) {
+      const { swap, end } = this._reloadTimes();
+      if (!r.swapped && r.t >= swap) {
         r.swapped = true;
+        if (L.feed.belt) this._dropBelt();
         this.mag = L.feed.capacity;
         this.beltAdv = 0;
       }
-      if (r.t >= RELOAD.out + RELOAD.in) {
+      if (r.t >= end) {
         this.reload = null;
         this.onChange?.();
         if (this.chamber !== "live" && this.chamber !== "jammed") this.startCycle();
@@ -425,6 +451,7 @@ export class FiringRange {
       e.tumble += e.tumbleRate * dtCase;
     }
     this.ejected = this.ejected.filter((e) => e.age < (e.kind === "live" ? 3 : 1.5));
+    if (L.feed.belt) this._stepBelt(dtCase);
     for (const w of this.wisps) w.age += dt;
     this.wisps = this.wisps.filter((w) => w.age < 4);
   }
@@ -525,6 +552,165 @@ export class FiringRange {
     this.ejected.push({ kind: "link", pos: [x - recoil, y, z], vel: [0, 200, 900], spin: 0, spinRate: 0, tumble: 0, tumbleRate: 8, age: 0 });
   }
 
+  // ---------- the belt ----------
+
+  /** When a reload swaps the ammunition, and when it is over (display s). */
+  _reloadTimes() {
+    const B = BELT_RELOAD;
+    if (this.layout.feed.belt) return { swap: B.open, end: B.open + B.lay + B.close };
+    return { swap: RELOAD.out, end: RELOAD.out + RELOAD.in };
+  }
+
+  /** How far the top cover is swung up (rad): open while a belt is changed. */
+  _coverAngle() {
+    const r = this.reload, B = BELT_RELOAD;
+    if (!r || !this.layout.feed.belt) return 0;
+    if (r.t < B.open) return COVER_OPEN * smooth(r.t / B.open);
+    if (r.t < B.open + B.lay) return COVER_OPEN;
+    return COVER_OPEN * (1 - smooth((r.t - B.open - B.lay) / B.close));
+  }
+
+  /** How far short of the feed position (mm) the new belt's end is, as it is laid in across the tray. */
+  _layOffset() {
+    const r = this.reload, B = BELT_RELOAD, F = this.layout.feed;
+    if (!r || !r.swapped || !F.belt) return 0;
+    return (F.trayLen + HAND_IN) * (1 - smooth((r.t - B.open) / (0.85 * B.lay)));
+  }
+
+  /** Link i of the belt (0 at the feed position): whether it is held (in the tray, or in the hand) and where, in the gun's frame. */
+  _beltSlot(i, adv, lay) {
+    const F = this.layout.feed, u = (i - adv) * F.pitch + lay;
+    return { pin: u <= F.trayLen + 1e-6 || (lay > 0 && i === 0), local: F.point(u) };
+  }
+
+  /** A belt as it is put in: its held links in place, the rest hanging from the last of them to the ground and lying along it. */
+  _newBelt() {
+    const F = this.layout.feed, M = this._gunMatrix(), adv = this._feedState().adv, lay = this._layOffset();
+    const nodes = [];
+    for (let i = 0; i <= this.mag; i++) {
+      const s = this._beltSlot(i, adv, lay);
+      let p;
+      if (s.pin || !nodes.length) {
+        p = apply(M, s.local);
+      } else {
+        const [x, y, z] = nodes[i - 1].p, drop = y - F.rest;
+        if (drop >= F.pitch) p = [x, y - F.pitch, z];
+        else if (drop > 0) p = [x, F.rest, z - Math.sqrt(F.pitch ** 2 - drop ** 2)];
+        else p = [x, F.rest, z - F.pitch];
+      }
+      nodes.push({ p, q: p.slice(), pin: s.pin, local: s.local, round: i > 0 });
+    }
+    return { nodes, h: 0 };
+  }
+
+  /** Keep the chain to the rounds in the belt: a stripped link leaves it (it is shed), a new belt replaces it. */
+  _beltSync() {
+    const n = this.mag + 1;
+    if (!this.belt || this.belt.nodes.length < n) this.belt = this._newBelt();
+    while (this.belt.nodes.length > n) this.belt.nodes.shift();
+  }
+
+  /** What is left of the old belt is pulled out to the left and dropped. */
+  _dropBelt() {
+    const b = this.belt, h = BELT_STEP;
+    this.belt = null;
+    if (!b) return;
+    for (const n of b.nodes) {
+      n.pin = false;
+      n.q = [n.p[0], n.p[1] - 250 * h, n.p[2] + 700 * h];     // up and out to the left
+    }
+    this.dropped.push({ nodes: b.nodes, h, age: 0 });
+  }
+
+  /** Swing the belt (and any old one falling away) on through dt s. */
+  _stepBelt(dt) {
+    this._beltSync();
+    const M = this._gunMatrix(), adv = this._feedState().adv, lay = this._layOffset();
+    this.belt.nodes.forEach((n, i) => {
+      const s = this._beltSlot(i, adv, lay);
+      n.pin = s.pin;
+      n.local = s.local;
+      n.from = n.p.slice();
+      n.to = s.pin ? apply(M, s.local) : null;
+    });
+    for (const c of this.dropped) c.age += dt;
+    this.dropped = this.dropped.filter((c) => c.age < BELT_DROPPED);
+    if (dt <= 0) return;
+    const steps = Math.min(Math.ceil(dt / BELT_STEP), 40), h = dt / steps;
+    let fastest = 0;
+    for (let k = 1; k <= steps; k++) {
+      for (const c of [this.belt, ...this.dropped]) fastest = Math.max(fastest, this._beltStep(c, h, k / steps));
+    }
+    this.beltMoving = fastest > 1 || this.dropped.length > 0;
+  }
+
+  /**
+   * One step of h s of a chain (Verlet): free links fall and swing on, held ones move `w` of the way
+   * to where they are put this frame; then the links are kept a pitch apart, folded no tighter than
+   * a link allows, and on the ground. Returns the fastest free link's speed (mm/s).
+   */
+  _beltStep(c, h, w) {
+    const F = this.layout.feed, nodes = c.nodes, rest = F.rest;
+    const scale = c.h ? h / c.h : 1, damp = Math.exp(-BELT_DRAG * h), fall = G_MM * h * h;
+    c.h = h;
+    for (const n of nodes) {
+      const { p, q } = n;
+      if (n.pin) {
+        for (let k = 0; k < 3; k++) { q[k] = p[k]; p[k] = n.from[k] + (n.to[k] - n.from[k]) * w; }
+        continue;
+      }
+      for (let k = 0; k < 3; k++) { const v = (p[k] - q[k]) * scale * damp; q[k] = p[k]; p[k] += v; }
+      p[1] -= fall;
+    }
+    const keep = (a, b, len, apart) => {
+      const wa = a.pin ? 0 : 1, wb = b.pin ? 0 : 1;
+      if (!wa && !wb) return;
+      const dx = b.p[0] - a.p[0], dy = b.p[1] - a.p[1], dz = b.p[2] - a.p[2], dist = Math.hypot(dx, dy, dz) || 1e-9;
+      if (apart && dist >= len) return;
+      const f = (dist - len) / dist / (wa + wb);
+      a.p[0] += wa * f * dx; a.p[1] += wa * f * dy; a.p[2] += wa * f * dz;
+      b.p[0] -= wb * f * dx; b.p[1] -= wb * f * dy; b.p[2] -= wb * f * dz;
+    };
+    const bend = BELT_BEND * F.pitch, grip = BELT_FRICTION * fall;
+    for (let it = 0; it < BELT_ITERATIONS; it++) {
+      // From the held end down, so a pull runs along the whole belt in one pass.
+      for (let i = 0; i + 1 < nodes.length; i++) keep(nodes[i], nodes[i + 1], F.pitch, false);
+      for (let i = 0; i + 2 < nodes.length; i++) keep(nodes[i], nodes[i + 2], bend, true);
+      for (const n of nodes) {
+        const { p, q } = n;
+        if (n.pin || p[1] > rest) continue;
+        // On the ground: it does not bounce, and its weight holds it (Coulomb friction): it
+        // stays put unless pulled harder than that, and then loses that much of its slide.
+        p[1] = rest;
+        q[1] = Math.max(q[1], rest);
+        const dx = p[0] - q[0], dz = p[2] - q[2], slide = Math.hypot(dx, dz);
+        const keepShare = slide > grip ? 1 - grip / slide : 0;
+        p[0] = q[0] + dx * keepShare;
+        p[2] = q[2] + dz * keepShare;
+      }
+    }
+    let fastest = 0;
+    for (const n of nodes) {
+      if (!n.pin) fastest = Math.max(fastest, Math.hypot(n.p[0] - n.q[0], n.p[1] - n.q[1], n.p[2] - n.q[2]) / h);
+    }
+    return fastest;
+  }
+
+  /** A free link's frame: its rounds lie along the gun's bore as near as the belt's run across them lets them. */
+  _linkFrame(nodes, i, gunAt) {
+    const a = nodes[Math.max(i - 1, 0)].p, b = nodes[Math.min(i + 1, nodes.length - 1)].p, p = nodes[i].p;
+    let Z = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];          // the belt runs on along -z
+    const zl = Math.hypot(...Z);
+    Z = zl > 1e-6 ? Z.map((v) => v / zl) : [0, 0, 1];
+    let X = [gunAt[0], gunAt[1], gunAt[2]];
+    const xz = X[0] * Z[0] + X[1] * Z[1] + X[2] * Z[2];
+    X = X.map((v, k) => v - xz * Z[k]);
+    const xl = Math.hypot(...X);
+    X = xl > 1e-6 ? X.map((v) => v / xl) : [1, 0, 0];
+    const Y = [Z[1] * X[2] - Z[2] * X[1], Z[2] * X[0] - Z[0] * X[2], Z[0] * X[1] - Z[1] * X[0]];
+    return new Float32Array([...X, 0, ...Y, 0, ...Z, 0, ...p, 1]);
+  }
+
   /** The round the bolt is driving into the chamber, the bolt `travel` mm back: it tips up the ramp from the feed angle. */
   _feedingRound(travel) {
     const L = this.layout, g = L.feed.geo, feedAt = L.oal + 3;
@@ -608,7 +794,7 @@ export class FiringRange {
   }
 
   get animating() {
-    return this.shot || this.cycle || this.reload || this.ejected.length || this.wisps.length;
+    return this.shot || this.cycle || this.reload || this.ejected.length || this.wisps.length || this.beltMoving;
   }
 
   /** Bolt pose: {travel (mm back), angle (rad)} and the round riding on the bolt face. */
@@ -954,15 +1140,26 @@ export class FiringRange {
     const magAt = chain(gunAt, translation(0, -this._magDrop(), 0));
     if (m.magazine) items.push({ mesh: m.magazine, model: magAt, material: MATERIALS.black });
     if (m.magFollower) items.push({ mesh: m.magFollower, model: chain(magAt, F.follower(this.mag, feedState.lift)), material: MATERIALS.black });
-    for (const e of F.rounds(this.mag, feedState.lift, feedState.adv)) {
-      const model = chain(magAt, e.m);
-      if (e.link) items.push({ mesh: m.link, model, material: MATERIALS.steel });
-      if (e.round) addRound("live", model);
-    }
-    if (F.belt) {
-      const frac = F.camFrac(pose.carrier);
-      items.push({ mesh: m.feedSlide, model: chain(gunAt, F.slide(frac)), material: MATERIALS.bolt });
-      items.push({ mesh: m.feedLever, model: chain(gunAt, F.lever(frac)), material: MATERIALS.bolt });
+    if (!F.belt) {
+      for (const e of F.rounds(this.mag, feedState.lift)) addRound("live", chain(magAt, e.m));
+    } else {
+      // The cover (swung up for a new belt) carries the feed lever and slide; the belt lies on the ground beside the gun.
+      const frac = F.camFrac(pose.carrier), coverAt = chain(gunAt, F.coverAt(this._coverAngle()));
+      items.push({ mesh: m.cover, model: coverAt, material: MATERIALS.black });
+      items.push({ mesh: m.feedSlide, model: chain(coverAt, F.slide(frac)), material: MATERIALS.bolt });
+      items.push({ mesh: m.feedLever, model: chain(coverAt, F.lever(frac)), material: MATERIALS.bolt });
+      items.push({ mesh: m.ground, model: translation(0, 0, 0), material: MATERIALS.ground, clip: false });
+      this._beltSync();
+      // The round drawn to the feed position is held at the feed angle, ready for the bolt.
+      const tilt = feedState.adv >= 1 ? F.geo.angle : 0;
+      for (const c of [this.belt, ...this.dropped]) {
+        c.nodes.forEach((n, i) => {
+          const model = n.pin ? chain(gunAt, translation(...n.local), rotationZ(c === this.belt && i === 1 ? tilt : 0))
+            : this._linkFrame(c.nodes, i, gunAt);
+          items.push({ mesh: m.link, model, material: MATERIALS.steel });
+          if (n.round) addRound("live", model);
+        });
+      }
     }
     for (const e of this.ejected) {
       if (e.kind === "link") {
@@ -995,7 +1192,9 @@ export class FiringRange {
     const F = this.layout.feed;
     const ammo = ["rounds", `${this.chamber === "live" ? 1 : 0} + ${this.mag} / ${F.capacity} ${F.belt ? "in the belt" : "in the magazine"}`];
     if (!s) {
-      const what = this.reload ? (F.belt ? "Loading a new belt" : "Changing the magazine")
+      const belt = () => (this.reload.t < BELT_RELOAD.open ? "Opening the top cover"
+        : this.reload.t < BELT_RELOAD.open + BELT_RELOAD.lay ? "Laying in a new belt" : "Closing the top cover");
+      const what = this.reload ? (F.belt ? belt() : "Changing the magazine")
         : this.cycle ? "Working the bolt"
         : this.chamber === "jammed" ? `Jammed (${this.jam ?? "feed"}): work the bolt to clear it`
         : this.chamber === "live" ? "Ready: round chambered"

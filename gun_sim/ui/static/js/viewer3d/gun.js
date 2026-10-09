@@ -485,7 +485,7 @@ export function buildRifle(gun) {
   // ---- the feed: magazine or belt, and the feed cam the bolt group carries for a belt ----
   const groupFront = kind === "gas" || kind === "direct_impingement" ? -(lugLen + 10)
     : delayed ? -Math.max(14, boltR * 1.6) : -2;
-  const feed = buildFeed(gun, { dims: d, boltR, recR, stroke, camTop: boltR, groupFront, lowest: magTop - 10 });
+  const feed = buildFeed(gun, { dims: d, boltR, recR, stroke, camTop: boltR, groupFront });
   furnParts.push(...feed.furniture);
   steelParts.push(...feed.steel);
 
@@ -668,7 +668,7 @@ export function buildRifle(gun) {
       ...(hammer ? { hammer } : {}),
       ...(feed.magazine.length ? { magazine: merge(...feed.magazine) } : {}),
       ...(feed.meshes.follower ? { magFollower: feed.meshes.follower } : {}),
-      ...(feed.meshes.link ? { link: feed.meshes.link, feedSlide: feed.meshes.feedSlide, feedLever: feed.meshes.feedLever } : {}),
+      ...(feed.meshes.link ? { link: feed.meshes.link, feedSlide: feed.meshes.feedSlide, feedLever: feed.meshes.feedLever, cover: feed.meshes.cover, ground: feed.meshes.ground } : {}),
       case: lathe(cart.parts.case),
       primer: lathe(cart.parts.primer),
       projectile: lathe(cart.parts.projectile),

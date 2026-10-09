@@ -133,7 +133,7 @@ export const META = {
   "feed.friction": { min: 0, max: 1, step: 0.01, help: "Friction of the top round on the bolt and the feed lips: the bolt drags this times the spring force while it is over the magazine." },
   "feed.hold_open": { help: "The follower lifts the bolt catch on an empty magazine, holding the bolt open. Off: the bolt closes on an empty chamber." },
   "feed.link_mass": { min: 0, max: 20, step: 0.1, help: "Belt: mass of each link." },
-  "feed.belt_hang": { min: 0, max: 1500, help: "Belt: how much hangs from the feed tray. The feed lever lifts its weight every shot, which slows the carrier." },
+  "feed.belt_hang": { min: 0, max: 1500, help: "Belt: how far it hangs from the feed tray to the ground, where the rest lies. The feed lever lifts its weight every shot, which slows the carrier." },
   "feed.belt_cam_start": { min: 1, max: 150, optional: true, help: "Belt: carrier travel at which the feed cam starts drawing the belt across." },
   "feed.belt_cam": { min: 2, max: 150, optional: true, help: "Belt: carrier travel over which it draws one link. Shorter is a steeper cam: the belt hits the carrier harder." },
   "appearance.style": { help: "rifle: a sporting stock round a turned receiver. ar15: aluminium upper and lower, rail, A-frame front sight, round handguard, buffer tube and collapsible stock. ak: stamped receiver and dust cover, gas tube and wooden handguards, curved magazine, wooden stock. The action's moving parts follow the action type whatever the style." },

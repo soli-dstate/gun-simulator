@@ -11,9 +11,10 @@
 // * Drum: a straight tower, then the rounds wound in a spiral round a sprung
 //   rotor whose arm follows the last round.
 // * Belt: the rounds lie in a feed tray over the bolt, the belt running off to
-//   the left and down into a box. A cam groove on top of the bolt group swings a
-//   feed lever in the top cover, whose front end slides the feed pawl across,
-//   drawing the belt one link per cycle; empty links fall out to the right.
+//   the left, hanging down to the ground and lying along it (the range swings
+//   it as a chain). A cam groove on top of the bolt group swings a feed lever in
+//   the hinged top cover, whose front end slides the feed pawl across, drawing
+//   the belt one link per cycle; empty links fall out to the right.
 //
 // The feed ramp runs from the chamber's edge back towards the magazine (from
 // the top, for a belt). Units are mm, in the gun's frame (gun.js).
@@ -74,9 +75,10 @@ function railXZ(x0, z0, x1, z1, y, h, w) {
 
 /**
  * The feed for a gun. ctx: {dims, boltR, recR, stroke (mm), camTop (y of the bolt group's top),
- * groupFront (bolt group's front, local x), lowest (y below which a belt box may hang)}.
+ * groupFront (bolt group's front, local x)}.
  * Returns {geo, furniture: [parts], magazine: [parts] (its body), steel: [parts], meshes: {name: mesh}, cam: [parts] (onto the
- * bolt group), layout} where layout places the rounds: rounds(n, lift, adv) -> [{m, round, link}].
+ * bolt group), layout} where layout places a magazine's rounds: rounds(n, lift) -> [{m, round}]; a belt's
+ * links are placed by point(u) along it (the range hangs the rest as a chain).
  */
 export function buildFeed(gun, ctx) {
   const g = feedGeometry(gun, ctx.dims), { d, oal } = g, f = gun.feed ?? {};
@@ -233,38 +235,32 @@ function boxMesh(sx, sy, sz, x, y, z) {
   return b;
 }
 
-/** The belt, its tray and box, the top cover, and the feed lever, slide and cam that draw it. */
+/**
+ * The belt's tray, the hinged top cover, and the feed lever, slide and cam that draw it. The
+ * belt itself is a hanging chain the range simulates (range.js): the links in the tray are held
+ * there, the rest hangs `belt_hang` from the tray's edge and lies on the ground beyond.
+ */
 function buildBelt(gun, ctx, g, o) {
-  const { headX, xm, furniture, steel, meshes, cam, layout, f } = o;
+  const { headX, xm, steel, meshes, cam, layout, f } = o;
   const { d, oal } = g;
-  const pitch = LINK_PITCH * d, yB = g.drop, Rb = 1.5 * d;
+  const pitch = LINK_PITCH * d, yB = g.drop;
   const trayLen = ctx.recR + 2 * pitch;
-  const boxTop = ctx.lowest - 20, boxH = 70;
-  const straight = Math.max(yB - Rb - boxTop, 0);
-  /** A point on the belt (y, z), u mm along it from the feed position towards the box. */
-  const along = (u) => {
-    if (u <= trayLen) return [yB, -u];
-    const arc = Rb * Math.PI / 2;
-    if (u <= trayLen + arc) { const a = (u - trayLen) / Rb; return [yB - Rb + Rb * Math.cos(a), -trayLen - Rb * Math.sin(a)]; }
-    return [yB - Rb - (u - trayLen - arc), -trayLen - Rb];
-  };
-  const visible = trayLen + Rb * Math.PI / 2 + straight + 2;
+  /** Where the link u mm along the belt from the feed position lies: in the tray, or beyond its edge (rising, held up to it). */
+  const point = (u) => (u <= trayLen ? [headX, yB, -u] : [headX, yB + 0.35 * (u - trayLen), -u]);
 
-  // Tray under the rounds (open over the bolt at the feed position), the cover over them, and the box.
+  // Tray under the rounds (open over the bolt at the feed position) and the cover over them,
+  // hinged at its front to swing up for a new belt.
   const trayY = yB - d / 2 - 1.2, trayFrom = -0.6 * pitch, trayTo = -trayLen;
   steel.push(boxAt(oal, 1.5, trayFrom - trayTo, xm, trayY, (trayFrom + trayTo) / 2));
   steel.push(boxAt(oal * 0.3, 3, trayFrom - trayTo, xm + oal * 0.3, trayY + 1.5, (trayFrom + trayTo) / 2));   // cartridge guide
-  const coverY = yB + d / 2 + 4, coverFrom = 2 * pitch, coverTo = -trayLen - 2;
-  furniture.push(boxAt(oal + 26, 3, coverFrom - coverTo, xm - 6, coverY, (coverFrom + coverTo) / 2));
-  const boxZ = -trayLen - Rb;
-  furniture.push(
-    boxAt(oal + 16, 2, 4.5 * d, xm, boxTop - 1, boxZ + 0),
-    boxAt(oal + 16, boxH, 1.5, xm, boxTop - boxH / 2, boxZ + 2.25 * d),
-    boxAt(oal + 16, boxH, 1.5, xm, boxTop - boxH / 2, boxZ - 2.25 * d),
-    boxAt(1.5, boxH, 4.5 * d, xm + oal / 2 + 8, boxTop - boxH / 2, boxZ),
-    boxAt(1.5, boxH, 4.5 * d, xm - oal / 2 - 8, boxTop - boxH / 2, boxZ),
-    boxAt(oal + 16, 1.5, 4.5 * d, xm, boxTop - boxH, boxZ),
-  );
+  const coverY = yB + d / 2 + 4, coverFrom = 2 * pitch, coverTo = -trayLen - 2, coverLen = oal + 26;
+  meshes.cover = boxMesh(coverLen, 3, coverFrom - coverTo, xm - 6, coverY, (coverFrom + coverTo) / 2);
+  const hingeX = xm - 6 + coverLen / 2, hingeY = coverY + 1.5;
+
+  // The ground the rest of the belt lies on, belt_hang below the tray, beside the gun.
+  const hang = (f.belt_hang ?? 0.25) * MM, floor = yB - hang - d / 2;
+  const far = trayLen + g.capacity * pitch + 60;
+  meshes.ground = boxMesh(oal + 80, 6, far - trayLen, xm, floor - 3, -(trayLen + far) / 2);
 
   // A link: two clips round the case body and a loop out to the next one.
   const r = ctx.dims.baseR, x1 = 0.2 * oal, x2 = 0.45 * oal;
@@ -302,23 +298,13 @@ function buildBelt(gun, ctx, g, o) {
   }
 
   Object.assign(layout, {
-    pitch, cam: [cs, ce], drop: yB,
+    pitch, cam: [cs, ce], drop: yB, trayLen, point, floor, rest: floor + d / 2,
     camFrac: (travel) => clamp((travel - cs) / Math.max(ce - cs, 1e-6), 0, 1),
     slide: (frac) => translation(0, 0, frac * pitch),
     lever: (frac) => chain(translation(xp, ySlide, 0), rotationY(lever(frac))),
+    /** The top cover (and the feed lever and slide in it) swung up `angle` rad about its front hinge. */
+    coverAt: (angle) => chain(translation(hingeX, hingeY, 0), rotationZ(-angle), translation(-hingeX, -hingeY, 0)),
     lowered: () => 0,
-    /** Links from the empty one at the feed position (k = -1) along the belt, and the n rounds in them. */
-    rounds: (n, lift, adv) => {
-      const out = [];
-      for (let k = -1; k < n; k++) {
-        const u = (k + 1 - adv) * pitch;
-        if (u > visible) break;
-        const [y, z] = along(u);
-        const tilt = k === 0 && adv >= 1 ? g.angle : 0;
-        out.push({ round: k >= 0, link: true, m: chain(translation(headX, y, z), rotationZ(tilt)) });
-      }
-      return out;
-    },
     ejectLink: () => [headX, yB, pitch],
   });
   layout.depth = 0;
