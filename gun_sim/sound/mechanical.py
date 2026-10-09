@@ -10,7 +10,11 @@ brass) at the place it happens:
 * the spent case landing on the ground beside the shooter, after its fall;
 * on a mount: the gun striking its recoil stop and running out into battery;
   a sliding wedge's crank picked up by the opening cam and its block striking
-  the extractors.
+  the extractors;
+* a chain gun's drive (motor()): the electric motor's whine and its gears,
+  the chain's links clattering onto the sprocket and the brushes' hiss, at the
+  speed and load the action simulation has the chain running at, so the whine
+  sags as the bolt loads the motor and surges as it lets go.
 
 A bigger part rings lower and longer: a steel part of more than a kilogram
 has its modes divided by (mass / 1 kg)^(1/3), as its size, and its decay
@@ -67,6 +71,81 @@ def ring(fs: float, energy: float, modes, seed: int, click: float = 0.3) -> np.n
     target = math.sqrt(e_acoustic / (4 * math.pi) * RHO_C)
     norm = math.sqrt(np.sum(wave**2) / fs) or 1.0
     return wave * (target / norm)
+
+
+MOTOR_SLOTS = 12            # armature slots: the magnetic whine, and the commutator's
+DRIVE_RADIATION = 1e-5      # share of the drive's power radiated as sound (assumed, like RADIATION_EFFICIENCY)
+NO_LOAD_LOSS = 0.1          # share of the rated power the drive spends on itself at free speed
+# How the drive's sound splits between the motor's whine, the gears, the chain's links and the brushes.
+DRIVE_SHARES = {"whine": 0.2, "mesh": 0.25, "chain": 0.45, "brushes": 0.1}
+
+
+def motor(fs: float, t: np.ndarray, q: np.ndarray, gun, track: dict, seed: int = 31) -> np.ndarray:
+    """Pressure (Pa) at 1 m of a chain gun's drive over the action simulation's clock t (s, from 0).
+
+    q is the chain's travel (m) from the action simulation; its speed sets the motor's
+    speed (the pitch of the whine and the rate the links clatter onto the sprocket), and
+    the motor's load (its force law, as action.py has it) how loud it is. The gearing:
+    the motor turns at action.motor_rpm when the chain runs free, its pinion has
+    action.pinion_teeth, and a link of action.drive_chain_pitch lands on the sprocket
+    for each pitch the chain moves.
+    """
+    a = gun.action
+    v_free = track["perimeter"] * a.chain_rate / 60
+    f_stall = 4 * a.motor_power / v_free
+    n = int(math.ceil((t[-1] - t[0]) * fs)) + 1
+    tt = t[0] + np.arange(n) / fs
+    qq = np.interp(tt, t, q)
+    v = np.maximum(np.gradient(qq, 1 / fs), 0.0)
+    # Smooth over a millisecond: the solver's steps would otherwise click.
+    k = max(1, int(1e-3 * fs))
+    v = np.convolve(v, np.ones(k) / k, mode="same")
+    power = f_stall * np.maximum(1 - v / v_free, 0.0) * v + NO_LOAD_LOSS * a.motor_power * v / v_free
+    p_rms = np.sqrt(RHO_C * DRIVE_RADIATION * power / (4 * math.pi))
+
+    # Motor turns per s: the sprocket's, geared up so that free speed is motor_rpm.
+    ratio = a.motor_rpm / 60 / (v_free / (2 * math.pi * track["radius"]))
+    f_motor = v / (2 * math.pi * track["radius"]) * ratio
+    phase = 2 * math.pi * np.cumsum(f_motor) / fs
+    rng = np.random.default_rng(seed)
+    nyq = 0.45 * fs
+
+    def tones(base: float, harmonics) -> np.ndarray:
+        out = np.zeros(n)
+        for h, amp in harmonics:
+            if base * h * f_motor.max() < nyq:
+                out += amp * np.sin(base * h * phase + rng.uniform(0, 2 * math.pi))
+        return out
+
+    parts = {
+        "whine": tones(MOTOR_SLOTS, [(1, 1.0), (2, 0.4), (3, 0.15)]) + tones(1, [(1, 0.3), (2, 0.2)]),
+        "mesh": tones(round(a.pinion_teeth), [(1, 1.0), (2, 0.5), (3, 0.25)]),
+    }
+    # Each link landing on the sprocket: a tick that rings the steel, harder the faster the chain.
+    links = np.cumsum(v) / fs / a.drive_chain_pitch
+    ticks = np.zeros(n)
+    at = np.nonzero(np.diff(np.floor(links)) > 0)[0] + 1
+    ticks[at] = v[at] / v_free
+    ring_t = np.arange(int(4e-3 * fs)) / fs
+    kernel = sum(amp * np.sin(2 * math.pi * f * ring_t) * np.exp(-ring_t / (tau * 0.15))
+                 for f, tau, amp in STEEL if f < nyq)
+    parts["chain"] = np.convolve(ticks, kernel)[:n]
+    # Brushes: hiss in the upper midrange.
+    hiss = rng.standard_normal(n)
+    spec = np.fft.rfft(hiss)
+    f = np.fft.rfftfreq(n, 1 / fs)
+    spec *= np.exp(-0.5 * (np.log(np.maximum(f, 1.0) / 4000.0) / 0.5) ** 2)
+    parts["brushes"] = np.fft.irfft(spec, n)
+
+    running = v > 0.05 * v_free
+    wave = np.zeros(n)
+    for name, x in parts.items():
+        rms = math.sqrt(np.mean(x[running] ** 2)) if running.any() else 0.0
+        if rms > 0:
+            wave += x / rms * math.sqrt(DRIVE_SHARES[name])
+    # Ease in and out over a few ms, so it doesn't click where its clock starts and stops.
+    edge = np.minimum(1.0, np.minimum(np.arange(n), np.arange(n)[::-1]) / (3e-3 * fs))
+    return wave * p_rms * edge
 
 
 def impacts(action_result, gun) -> list[dict]:

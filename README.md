@@ -758,6 +758,11 @@ Two presets are cannon, and bring the systems they need.
   gears and chain as `drive_mass`) are solved together from their kinetic energy.
   The bolt's mass going round the corners and the belt's weight slow the chain, so
   the gun fires a little under its no-load rate (about 199 rounds/min against 216).
+  The drive is heard too: the motor's whine (`motor_rpm` with no load, geared down to
+  the sprocket), its first pinion's mesh (`pinion_teeth`), the drive chain's links
+  ticking onto the sprocket (`drive_chain_pitch`) and the brushes' hiss, all at the
+  speed and load the simulation has the chain at, so the whine sags as the bolt loads
+  the motor and surges as it lets go.
   While the bolt is locked, dS/dq = 0, so the shot pushes only the gun. The breech
   stays shut through the dwell, about 45 ms after exit (the bore is down to under
   5 MPa when it unlocks), which is the chain gun's protection against a hangfire.

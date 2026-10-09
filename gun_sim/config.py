@@ -515,6 +515,11 @@ class Action:
     drive_mass: float = 4.0             # kg: motor rotor, gears and chain as felt at the master link
     chain_width: float | None = None    # m, across the track (the dwells); None = 0.35 overall lengths
     sprocket_radius: float | None = None  # m, the track's corners; None = a quarter of its width
+    # The drive's sound: the motor's speed with no load (the gearbox makes up the rest of the
+    # ratio down to the sprocket), its first pinion's teeth, and the drive chain's pitch.
+    motor_rpm: float = 6000.0
+    pinion_teeth: int = 14
+    drive_chain_pitch: float = 12.7e-3  # m (a 1/2" roller chain)
     # Sliding wedge: the opening cam turns the crank over the last cam_travel of the run-out.
     cam_travel: float = 0.12            # m of counter-recoil before battery
     extractor_ratio: float = 2.5        # case speed out of the breech over the block's speed when it strikes the extractors
@@ -825,6 +830,9 @@ class Gun:
                 value = getattr(a, name)
                 if value is not None and value <= 0:
                     raise ValueError(f"action.{name} must be positive (or left out)")
+            if not 100 <= a.motor_rpm <= 60000 or not 6 <= a.pinion_teeth <= 100 or not 2e-3 <= a.drive_chain_pitch <= 0.1:
+                raise ValueError("chain gun: motor_rpm must be 100 to 60000, pinion_teeth 6 to 100 and "
+                                 "drive_chain_pitch 2 to 100 mm")
             if a.sprocket_radius is not None and a.chain_width is not None and 2 * a.sprocket_radius > a.chain_width:
                 raise ValueError("action.sprocket_radius must be at most half the chain_width")
         if a.type == "sliding_wedge":

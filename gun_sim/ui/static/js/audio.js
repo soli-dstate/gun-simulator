@@ -345,7 +345,7 @@ export class ShotPlayer {
     this.protection = "none";
     this.irCache = {};
     this.sync = null;        // events following the range's clock
-    this.stretch = false;    // slow the sound down with the clock (else it plays at real speed)
+    this.stretch = true;     // slow the sound down with the clock (else it plays at real speed)
   }
 
   /** Create or wake the audio context. Call from a click handler (autoplay rules). */
