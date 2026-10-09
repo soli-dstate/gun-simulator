@@ -2,6 +2,8 @@
 
     bore blowdown (fluid.py) --+--> spherical blast solver (blast.py) --> probes
     precursor (ballistic.py) --+                                           |
+    secondary flash (plume.py) +                                           |
+    bore blowdown (fluid.py) ----> the jet's roar (jet.py) ----------------|
     revolver's cylinder gap -----> spherical blast solver --> probes       |
                                     directivity, weak shocks, absorption,  |
     supersonic crack (ballistic.py) --> ground reflection, head (propagation.py)
@@ -12,6 +14,11 @@ A revolver's cylinder gap blows its own blast out sideways, from beside the
 shooter's hands, a little before the muzzle's: the gas that escapes it
 (fluid.py's gap_flow) feeds a second spherical solution, heard without the
 muzzle jet's forward throw.
+
+The blast alone is a sharp crack. What gives a shot its weight comes after it:
+the fuel-rich propellant gas burning in the air (a heat release of the same
+order as the gas's own energy, which the blast solver turns into a deeper
+boom) and the turbulent roar of the jet while the bore empties.
 
 Nothing here is a recording or a sample: every sound comes from the gun's
 configuration and the air it is fired in.
@@ -25,10 +32,10 @@ from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 
-from .. import action, fluid
+from .. import action, fluid, plume
 from ..config import Gun
 from ..results import ShotResult
-from . import ballistic, mechanical, propagation
+from . import ballistic, jet, mechanical, propagation
 from .blast import BlastResult, BlastSource, simulate_blast
 from .settings import GROUNDS, SoundSettings
 
@@ -69,9 +76,34 @@ class _Physics:
     source_x: float = 0.0      # m, where the blast comes from, ahead of the muzzle
     gap_probes: np.ndarray | None = None   # a revolver's cylinder gap blast, on the same time base and radii
     gap_x: float = 0.0         # m, where the gap is (behind the muzzle: negative)
+    afterburn: float = 0.0     # J, heat of the secondary flash fed to the blast
 
 
 _cache: dict = {}
+
+
+def _afterburn(gun: Gun, shot: ShotResult, s: SoundSettings) -> dict:
+    """The secondary flash's heat over time (cumulative J, s from ignition) and the fireball's radius.
+
+    From the 2D plume (gun_sim.plume), solved for about as long as the bore takes to
+    let most of its gas out, which is when the burning dies down.
+    """
+    mf = shot.muzzle_flow
+    after = mf.t >= mf.exit_time
+    t, mdot = mf.t[after], np.maximum(mf.mdot[after], 0.0)
+    out = np.cumsum(mdot * np.diff(t, prepend=t[0]))
+    t90 = float(np.interp(0.9 * out[-1], out, t)) - mf.exit_time if out[-1] > 0 else 0.0
+    window = float(np.clip(t90, 2e-3, 1e-2))
+    g = replace(gun, solver=replace(gun.solver, plume_time=window))
+    r = plume.simulate(g, shot, s.pressure, s.temperature_k)
+    heat = np.maximum.accumulate(r.burnt)
+    if heat[-1] <= 0:
+        return {"t": None, "heat": np.zeros(1), "radius": 0.0}
+    # The fireball's size: a sphere of the hot region's volume when half the heat is out.
+    k = int(np.argmax(heat >= 0.5 * heat[-1]))
+    x0, x1, rad = r.extent[k]
+    radius = (3 / 4 * rad * rad * max(x1 - x0, rad)) ** (1 / 3)
+    return {"t": mf.exit_time + r.times, "heat": heat, "radius": float(radius)}
 
 
 def _physics(gun: Gun, s: SoundSettings) -> _Physics:
@@ -107,11 +139,13 @@ def _physics(gun: Gun, s: SoundSettings) -> _Physics:
         directivity = dev.momentum_ratio
         source_x = dev.dims["length"] * (0.5 if dev.dims["type"] == "brake" else 1.0)  # its vents, or its front
         ejected = float(e_gas[-1])
+    fire = _afterburn(gun, shot, s)
     source = BlastSource(
         t=np.concatenate((t_pre, [mf.exit_time], t_gas)),
         mass=np.concatenate((m_pre, [m0], m0 + m_gas)),
         energy=np.concatenate((e_pre, [e0], e0 + e_gas)),
         propellant=np.concatenate((np.zeros(t_pre.size + 1), m_gas)),
+        heat_t=fire["t"], heat=fire["heat"], heat_radius=fire["radius"],
     )
 
     dx = s.blast_radius / s.blast_cells
@@ -141,7 +175,7 @@ def _physics(gun: Gun, s: SoundSettings) -> _Physics:
         [propagation.shock_fit(t, np.interp(t, gap_blast.time, p, left=0.0)) * fade for p in gap_blast.pressure])
 
     phys = _Physics(shot, blast, t, probes, ejected, directivity, source_x, gap_probes,
-                    -(bar.travel - gap["position"]) if gap_probes is not None else 0.0)
+                    -(bar.travel - gap["position"]) if gap_probes is not None else 0.0, float(fire["heat"][-1]))
     while len(_cache) >= 2:
         _cache.pop(next(iter(_cache)))
     _cache[key] = phys
@@ -208,6 +242,16 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
         shift, wave = blast_at(r, vec[0] / r)
         arrivals.append(dict(name=f"muzzle blast ({name})", t0=t_u[0] + shift, wave=wave, r=r,
                              grazing=grazing, direction=vec / r))
+
+    # ---- the jet's roar while the bore empties ----
+    roar = jet.roar(mf, gun, shot.device, fs_int, p0, c0, rho0)
+    if roar is not None:
+        t_jet, jet_wave, jet_hz = roar
+        for name, vec, grazing in paths:
+            r = float(np.linalg.norm(vec))
+            arrivals.append(dict(name=f"muzzle jet ({name})", t0=t_jet + r / c0,
+                                 wave=jet_wave * math.sqrt(jet.directivity(vec[0] / r)) / r, r=r,
+                                 grazing=grazing, direction=vec / r))
 
     # ---- a revolver's cylinder gap: a blast of its own, out sideways all round, without the jet's throw ----
     if phys.gap_probes is not None:
@@ -337,6 +381,13 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
         lo, hi = max(0, -offset), min(len(ref_wave), n_out - offset)
         if hi > lo:
             ref[offset + lo: offset + hi] = ref_wave[lo:hi]
+        if roar is not None:
+            # The jet's roar reflects off the surroundings too.
+            jw = jet_wave * math.sqrt(jet.directivity(cos_theta))
+            offset = int(round((t_jet + r_direct / c0 - start) * fs_int))
+            lo, hi = max(0, -offset), min(len(jw), n_out - offset)
+            if hi > lo:
+                ref[offset + lo: offset + hi] += jw[lo:hi]
         references[side] = propagation.decimate(ref, OVERSAMPLE)
     reference = references["side"]
 
@@ -378,6 +429,8 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
             "duration": crack_info.duration, "overpressure": crack_info.overpressure,
         },
         "blast_steps": blast.steps,
+        "afterburn": phys.afterburn,
+        "jet_peak_frequency": None if roar is None else roar[2],
         "bare_peak": bare_peak,
         "listener": [float(v) for v in listener],
         "facing": s.facing,
@@ -450,10 +503,11 @@ def _tube_modes(length: float, radius: float):
 
 
 def _group(name: str) -> str:
+    """The stem a sound belongs to: its paths together, and the jet's roar with the blast."""
     for suffix in (" (direct)", " (ground)"):
         if name.endswith(suffix):
-            return name[: -len(suffix)]
-    return name
+            name = name[: -len(suffix)]
+    return "muzzle blast" if name == "muzzle jet" else name
 
 
 def _stems(groups: dict, out, references: dict, rate: int, start: float) -> list:

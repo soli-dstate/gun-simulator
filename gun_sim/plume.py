@@ -141,6 +141,7 @@ class PlumeResult:
     steps: int
     seconds: float           # wall-clock time of the solve
     smoke: float = 1.0       # smoke per kg of propellant gas, relative to a propellant without suppressant
+    burnt: np.ndarray | None = None  # J released by burning in the air by each frame's time (the sound's afterburn)
 
 
 def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
@@ -169,7 +170,7 @@ def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
 
     window = gun.solver.plume_time
     times = window * (np.arange(FRAMES) / (FRAMES - 1)) ** 1.5
-    temps, props, sizes = [], [], []
+    temps, props, sizes, burnt = [], [], [], []
     hidden = g.solid | g.bore
     # Light from inside a suppressor doesn't get out; a brake's chambers and a flash hider's bore
     # show through the slots.
@@ -188,6 +189,7 @@ def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
         # The cloud's size: mean distance of its propellant gas from where it came out.
         m = rp * s.volume * ~g.inside
         sizes.append(float((m * reach).sum() / max(m.sum(), 1e-30)))
+        burnt.append(s.burnt)
 
     t = 0.0
     for k, tf in enumerate(times):
@@ -252,7 +254,7 @@ def simulate(gun, shot, ambient_pressure: float = fluid.ATMOSPHERE,
         extent=np.array(extent), cloud=cloud, trickle=trickle, afterburn=s.burnt, heat=s.heat,
         escaped=float(s.out[4] / max(mass + stored + s.out[4], 1e-30)),
         peak_temperature=float(T_all[:, outside].max()), steps=s.steps,
-        seconds=time.perf_counter() - start, smoke=smokiness(additive, share))
+        seconds=time.perf_counter() - start, smoke=smokiness(additive, share), burnt=np.array(burnt))
 
 
 _cache: dict = {}

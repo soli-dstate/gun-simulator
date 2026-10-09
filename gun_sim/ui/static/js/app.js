@@ -315,7 +315,7 @@ function playOptions() {
 function play() {
   try {
     player.unlock();
-    player.play(playOptions());
+    player.play(playOptions()).catch((e) => { $("sound-status").textContent = e.message; });
   } catch (e) {
     $("sound-status").textContent = e.message;
   }

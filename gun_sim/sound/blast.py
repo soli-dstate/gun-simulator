@@ -17,6 +17,10 @@ what a microphone there would hear.
   (SSP-RK2) time stepping: second order, so the shock stays a few cells thick.
 * The geometric pressure term p dA/dr keeps a uniform gas at rest exactly at rest.
 
+* The secondary flash: the fuel-rich propellant gas burns in the air (solved
+  in 2D by gun_sim.plume), and its heat, released over the fireball, adds a
+  slower, deeper push to the blast: the boom behind the crack.
+
 The real near field is not spherical (there is a jet, and the gun is in the
 way); the directivity this misses is added later in propagation.py.
 """
@@ -37,6 +41,11 @@ class BlastSource:
     mass: np.ndarray        # kg
     energy: np.ndarray      # J, total (internal + kinetic + flow work)
     propellant: np.ndarray  # kg of the mass that is propellant gas (the rest is air)
+    # Heat released by the propellant gas burning in the air (the secondary flash), cumulative J on its
+    # own time base, and the radius of the fireball it is released over.
+    heat_t: np.ndarray | None = None
+    heat: np.ndarray | None = None
+    heat_radius: float = 0.0
 
 
 @dataclass
@@ -143,6 +152,11 @@ def simulate_blast(source: BlastSource, gas_constant: float, gas_gamma: float,
     started = np.nonzero(m_src > 0)[0]
     t = float(t_src[started[0] - 1]) if started.size and started[0] > 0 else float(t_src[0])
     m_prev, e_prev, y_prev = (np.interp(t, t_src, a) for a in (m_src, e_src, y_src))
+    burning = source.heat is not None and source.heat.size and source.heat[-1] > 0
+    if burning:
+        n_heat = max(n_src, int(np.searchsorted(r_c, min(source.heat_radius, 0.45 * radius))))
+        v_heat = vol[:n_heat].sum()
+        q_prev = float(np.interp(t, source.heat_t, source.heat, left=0.0))
 
     times = []
     rec = []
@@ -171,6 +185,12 @@ def simulate_blast(source: BlastSource, gas_constant: float, gas_gamma: float,
             # Air drawn back into the bore: take it from the source cells as they are.
             m_cells = U[0, :n_src] @ vol[:n_src]
             U[:, :n_src] *= 1 - min(-dm / m_cells, 0.5)
+        if burning:
+            # The fireball's heat, spread evenly through its volume.
+            q_now = float(np.interp(t, source.heat_t, source.heat, left=0.0))
+            if q_now > q_prev:
+                U[2, :n_heat] += (q_now - q_prev) / v_heat
+            q_prev = q_now
 
     pressure = np.array(rec).T - ambient_pressure
     return BlastResult(radii=probes, time=np.array(times), pressure=pressure,

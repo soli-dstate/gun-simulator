@@ -7,17 +7,24 @@
 // playback: reverb and echoes of the blast and of the crack, hearing
 // protection, level (with an optional overloaded recorder), a limiter and bursts.
 //
-//   direct (L/R) ─────────────────────────────┐
-//   reference front ─▶ convolver (front IR) ──┤
-//   reference side ──▶ convolver (side IR) ───┼─▶ protection ─┬─▶ clean ─────────────┬─▶ volume ─▶ limiter ─▶ speakers
-//   reference rear ──▶ convolver (rear IR) ───┤               └─▶ drive (tanh) ─▶ ───┘
-//   crack echoes (L/R) ───────────────────────┘
+//   ┌ the shot's mix, rendered offline once per surroundings ─────────┐
+//   │ blast, jet, crack, gap, device (L/R) ─────────────────────────┐ │
+//   │ reference front ─▶ convolver (front IR) ──────────────────────┤ │
+//   │ reference side ──▶ convolver (side IR) ───────────────────────┤ │
+//   │ reference rear ──▶ convolver (rear IR) ───────────────────────┤ │
+//   │ crack echoes (L/R) ───────────────────────────────────────────┘ │
+//   └─────────────────────────────────────────────────────────────────┘
+//      mix + the action's clacks ─▶ protection ─┬─▶ clean ─────────────┬─▶ volume ─▶ limiter ─▶ speakers
+//                                               └─▶ drive (tanh) ─▶ ───┘
 //
-// The shot also comes in stems, one per event (muzzle blast, supersonic crack,
-// each clack of the action), each with its time after ignition. On the range
-// they follow the animation's clock: each starts when the slowed-down clock
-// reaches it, and plays slowed down with it (down to MIN_RATE, below which a
-// blast would only be a rumble), speeding up as the clock does.
+// The shot comes in stems, one per event (muzzle blast, supersonic crack,
+// each clack of the action), each with its time after ignition. Everything
+// acoustic about the shot (the blast and crack with all their echoes and
+// reverb) is mixed into one buffer, so it always plays together, echoes in
+// time with the blast. On the range the mix and the action's clacks follow the
+// animation's clock: each starts when the slowed-down clock reaches it, and,
+// if the sound is stretched, plays slowed down with it (down to MIN_RATE,
+// below which a blast would only be a rumble), speeding up as the clock does.
 
 const P_REF = 20e-6;
 export const MIN_RATE = 0.25;   // slowest a stem plays at when it follows the slow motion
@@ -323,15 +330,22 @@ function driveCurve(db) {
   return (curves[db] = curve);
 }
 
+/** A stereo (or mono) AudioBuffer of Float32Arrays at sample rate fs. */
+function toBuffer(ctx, channels, fs) {
+  const b = ctx.createBuffer(channels.length, Math.max(1, channels[0].length), fs);
+  channels.forEach((c, i) => b.copyToChannel(c, i));
+  return b;
+}
+
 export class ShotPlayer {
   constructor() {
     this.ctx = null;
-    this.shot = null;        // decoded buffers of the current shot
+    this.shot = null;        // decoded stems of the current shot
     this.environment = "open";
     this.protection = "none";
     this.irCache = {};
     this.sync = null;        // events following the range's clock
-    this.stretch = true;     // slow the stems down with the clock (else they play at real speed)
+    this.stretch = false;    // slow the sound down with the clock (else it plays at real speed)
   }
 
   /** Create or wake the audio context. Call from a click handler (autoplay rules). */
@@ -341,6 +355,7 @@ export class ShotPlayer {
       if (!Ctx) throw new Error("this browser has no Web Audio");
       this.ctx = new Ctx({ latencyHint: "interactive" });
       this._buildGraph();
+      if (this.shot) this._mix();
     }
     if (this.ctx.state === "suspended") this.ctx.resume();
     return this.ctx;
@@ -351,19 +366,6 @@ export class ShotPlayer {
   _buildGraph() {
     const ctx = this.ctx;
     this.protIn = ctx.createGain();
-    this.directIn = ctx.createGain();
-    this.directIn.connect(this.protIn);
-    this.crackIn = ctx.createGain();   // echoes of the crack, already rendered per shot
-    this.crackIn.connect(this.protIn);
-    this.wetIn = {};
-    this.convolvers = {};
-    this.wetActive = {};
-    for (const side of SIDES) {
-      this.wetIn[side] = ctx.createGain();
-      this.convolvers[side] = ctx.createConvolver();
-      this.convolvers[side].normalize = false;
-      this.wetIn[side].connect(this.convolvers[side]).connect(this.protIn);
-    }
     this.protOut = ctx.createGain();
     this.volume = ctx.createGain();
     // Level stage: straight through, or saturated like a recorder.
@@ -383,7 +385,6 @@ export class ShotPlayer {
     this.volume.connect(this.limiter).connect(ctx.destination);
     this.protFilters = [];
     this._wireProtection();
-    this._wireEnvironment();
   }
 
   _wireProtection() {
@@ -404,30 +405,27 @@ export class ShotPlayer {
   }
 
   /** Where the listener is, from the shot (older servers: at the muzzle). */
-  _geometry() {
-    const st = this.shot?.stats ?? {};
+  _geometry(shot = this.shot) {
+    const st = shot?.stats ?? {};
     return { listener: st.listener ?? [0, 0, 0], facing: st.facing ?? 0, c: st.sound_speed ?? 343 };
   }
 
-  _wireEnvironment() {
-    if (!this.ctx) return;
-    const env = ENVIRONMENTS[this.environment];
-    const geom = this._geometry();
-    const key = `${this.environment}|${geom.listener.map((v) => v.toFixed(2))}|${geom.facing}|${geom.c.toFixed(1)}`;
+  /** The surroundings' impulse responses for a shot's listener, at the context's rate. */
+  _irs(name, shot) {
+    const env = ENVIRONMENTS[name], geom = this._geometry(shot);
+    const key = `${name}|${geom.listener.map((v) => v.toFixed(2))}|${geom.facing}|${geom.c.toFixed(1)}|${this.ctx.sampleRate}`;
     if (!this.irCache[key]) {
       if (Object.keys(this.irCache).length > 8) this.irCache = {};
       this.irCache[key] = buildIRs(this.ctx, env, geom);
     }
-    const irs = this.irCache[key];
-    for (const side of SIDES) {
-      this.wetActive[side] = !!irs[side];
-      if (irs[side]) this.convolvers[side].buffer = irs[side];
-      this.wetIn[side].gain.value = 0;
-    }
-    if (this.level) this._setLevel(this.level);
+    return this.irCache[key];
   }
 
-  setEnvironment(name) { this.environment = name; this._wireEnvironment(); }
+  setEnvironment(name) {
+    this.environment = name;
+    if (this.ctx && this.shot) this._mix();  // get it ready before it's played
+  }
+
   setProtection(name) { this.protection = name; this._wireProtection(); if (this.level) this._setLevel(this.level); }
 
   /** Load a shot from the synthesize API. */
@@ -444,50 +442,58 @@ export class ShotPlayer {
     // A muzzle device is normalised against the same gun without it, so the
     // suppression stays audible instead of being turned back up to full scale.
     const bare = data.stats?.bare_peak ?? 0;
+    const acoustic = stems.filter((st) => st.kind !== "action");
     this.shot = { fs: data.sample_rate, start: data.start_time, left, right, refs: refsOf(data.references, ref),
-                  peak: Math.max(peakOf(left, right), bare), buffers: null, stems, stats: data.stats ?? {},
-                  crackSource: data.crack_source ?? null, crackEchoes: {} };
-    this._wireEnvironment();
+                  peak: Math.max(peakOf(left, right), bare), stems, stats: data.stats ?? {},
+                  acoustic, actions: stems.filter((st) => st.kind === "action"),
+                  mixTime: Math.min(...acoustic.map((st) => st.time)),
+                  crackSource: data.crack_source ?? null, mixes: {}, mixed: {} };
+    if (this.ctx) this._mix();
   }
 
-  /** The crack's echoes in the current surroundings, as a stem (null if there are none). */
-  _crackStem() {
-    const s = this.shot;
-    if (!(this.environment in s.crackEchoes)) {
-      const r = renderCrackEchoes(ENVIRONMENTS[this.environment], this._geometry(), s.crackSource, s.fs);
-      s.crackEchoes[this.environment] = r && { name: "crack echoes", kind: "crack-echo", time: r.time, left: r.left, right: r.right, refs: null };
-    }
-    return s.crackEchoes[this.environment];
+  /**
+   * The shot's acoustic mix in the current surroundings: {time (s after ignition of its
+   * first sample), buffer}. A promise; once it has resolved, also in shot.mixed[environment].
+   */
+  _mix() {
+    const s = this.shot, name = this.environment;
+    s.mixes[name] ??= this._renderMix(s, name).then((m) => {
+      s.mixed[name] = m;
+      return m;
+    });
+    return s.mixes[name];
   }
 
-  _buffers() {
-    const s = this.shot;
-    if (s.buffers && s.buffers.ctx === this.ctx) return s.buffers;
-    s.buffers = this._makeBuffers(s);
-    return s.buffers;
-  }
-
-  _makeBuffers(src) {
-    const fs = this.shot.fs;
-    const direct = this.ctx.createBuffer(2, src.left.length, fs);
-    direct.copyToChannel(src.left, 0);
-    direct.copyToChannel(src.right, 1);
-    let refs = null;
-    if (src.refs) {
-      refs = {};
+  async _renderMix(s, name) {
+    const fs = this.ctx.sampleRate;
+    const irs = this._irs(name, s);
+    const echo = renderCrackEchoes(ENVIRONMENTS[name], this._geometry(s), s.crackSource, s.fs);
+    const t0 = s.mixTime;
+    const irLength = Math.max(0, ...SIDES.map((side) => irs[side]?.duration ?? 0));
+    let end = 0;
+    for (const st of s.acoustic) end = Math.max(end, st.time - t0 + st.left.length / s.fs + (st.refs ? irLength : 0));
+    if (echo) end = Math.max(end, echo.time - t0 + echo.left.length / s.fs);
+    const off = new OfflineAudioContext(2, Math.ceil((end + 0.05) * fs), fs);
+    const add = (buffer, at, dest) => {
+      const src = off.createBufferSource();
+      src.buffer = buffer;
+      src.connect(dest);
+      src.start(Math.max(at, 0), Math.max(-at, 0));
+    };
+    for (const st of s.acoustic) {
+      add(toBuffer(off, [st.left, st.right], s.fs), st.time - t0, off.destination);
+      if (!st.refs) continue;
       for (const side of SIDES) {
-        refs[side] = this.ctx.createBuffer(1, src.refs[side].length, fs);
-        refs[side].copyToChannel(src.refs[side], 0);
+        if (!irs[side]) continue;
+        const conv = off.createConvolver();
+        conv.normalize = false;
+        conv.buffer = irs[side];
+        conv.connect(off.destination);
+        add(toBuffer(off, [st.refs[side]], s.fs), st.time - t0, conv);
       }
     }
-    return { ctx: this.ctx, direct, refs };
-  }
-
-  /** [buffer, input node] pairs to play for a stem (or the whole shot). */
-  _routes(src, buffers) {
-    const routes = [[buffers.direct, src.kind === "crack-echo" ? this.crackIn : this.directIn]];
-    if (buffers.refs) for (const side of SIDES) if (this.wetActive[side]) routes.push([buffers.refs[side], this.wetIn[side]]);
-    return routes;
+    if (echo) add(toBuffer(off, [echo.left, echo.right], s.fs), echo.time - t0, off.destination);
+    return { time: t0, buffer: await off.startRendering() };
   }
 
   /**
@@ -507,9 +513,7 @@ export class ShotPlayer {
     if (level === "calibrated") scale = 1 / (P_REF * Math.pow(10, fullScaleDb / 20)) * Math.pow(10, prot.gain / 20);
     else if (level === "recorded") scale = norm * Math.pow(10, prot.gain / 20);
     else scale = norm * Math.pow(10, -1 / 20);
-    this.directIn.gain.value = scale;
-    this.crackIn.gain.value = scale;
-    for (const side of SIDES) this.wetIn[side].gain.value = this.wetActive[side] ? scale : 0;
+    this.protIn.gain.value = scale;
     const recorded = level === "recorded";
     this.clean.gain.value = recorded ? 0 : 1;
     this.makeup.gain.value = recorded ? Math.pow(10, -1 / 20) : 0;
@@ -517,10 +521,17 @@ export class ShotPlayer {
     this.volume.gain.value = volume;
   }
 
-  _stemBuffers(stem) {
-    if (stem.buffers && stem.buffers.ctx === this.ctx) return stem.buffers;
-    stem.buffers = this._makeBuffers(stem);
-    return stem.buffers;
+  _stemBuffer(stem) {
+    if (stem.buffer?.ctx !== this.ctx) stem.buffer = { ctx: this.ctx, buffer: toBuffer(this.ctx, [stem.left, stem.right], this.shot.fs) };
+    return stem.buffer.buffer;
+  }
+
+  _source(buffer, rate = 1) {
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = rate;
+    src.connect(this.protIn);
+    return src;
   }
 
   /**
@@ -531,16 +542,17 @@ export class ShotPlayer {
     this.stopSync();
     if (!this.shot || !this.ctx) return;
     this._setLevel(options);
+    const s = this.shot;
+    this._mix();
     const t0s = shotTimes.length ? shotTimes : [0];
-    const stems = [...this.shot.stems];
-    const echo = this._crackStem();
-    if (echo) stems.push(echo);
     const events = [];
     for (const t0 of t0s) {
-      for (const stem of stems) events.push({ at: t0 - t0s[0] + stem.time, stem });
+      const shift = t0 - t0s[0];
+      events.push({ at: shift + s.mixTime, mix: true });
+      for (const stem of s.actions) events.push({ at: shift + stem.time, stem });
     }
     events.sort((a, b) => a.at - b.at);
-    this.sync = { events, next: 0, sources: [], rate: 1 };
+    this.sync = { shot: s, environment: this.environment, events, next: 0, sources: [], rate: 1 };
   }
 
   stopSync() {
@@ -562,34 +574,35 @@ export class ShotPlayer {
     }
     const horizon = tSim + LOOKAHEAD * rate;
     while (sync.next < sync.events.length && sync.events[sync.next].at <= horizon) {
-      const { at, stem } = sync.events[sync.next++];
-      const buffers = this._stemBuffers(stem);
-      // Late (the sound loaded after the clock passed it): start part-way through.
-      const late = Math.max(0, tSim - at);
-      if (late >= buffers.direct.duration) continue;
-      const when = ctx.currentTime + Math.max(0, at - tSim) / Math.max(rate, 1e-9);
-      for (const [buf, dest] of this._routes(stem, buffers)) {
-        const src = ctx.createBufferSource();
-        src.buffer = buf;
-        src.playbackRate.value = play;
-        src.connect(dest);
-        src.start(when, late);
-        src.onended = () => { if (this.sync === sync) sync.sources = sync.sources.filter((x) => x !== src); };
-        sync.sources.push(src);
+      const ev = sync.events[sync.next];
+      let buffer;
+      if (ev.mix) {
+        const m = sync.shot.mixed[sync.environment];
+        if (!m) break;  // still rendering (a few tens of ms): it starts late, part-way through
+        buffer = m.buffer;
+      } else {
+        buffer = this._stemBuffer(ev.stem);
       }
+      sync.next++;
+      // Late (the sound loaded after the clock passed it): start part-way through.
+      const late = Math.max(0, tSim - ev.at);
+      if (late >= buffer.duration) continue;
+      const src = this._source(buffer, play);
+      src.start(ctx.currentTime + Math.max(0, ev.at - tSim) / Math.max(rate, 1e-9), late);
+      src.onended = () => { if (this.sync === sync) sync.sources = sync.sources.filter((x) => x !== src); };
+      sync.sources.push(src);
     }
   }
 
   /** Play the current shot. See _setLevel for the level modes. */
-  play({ shots = 1, rpm = 600, times = null, level = "recorded", fullScaleDb = 150, volume = 0.8, drive = 36 } = {}) {
+  async play({ shots = 1, rpm = 600, times = null, level = "recorded", fullScaleDb = 150, volume = 0.8, drive = 36 } = {}) {
     if (!this.shot) return;
     const ctx = this.unlock();
     this.stopSync();
+    const s = this.shot;
+    const mix = await this._mix();
+    if (s !== this.shot) return;
     this._setLevel({ level, fullScaleDb, volume, drive });
-    const whole = { kind: "shot", refs: this.shot.refs };
-    const routes = this._routes(whole, this._buffers());
-    const echo = this._crackStem();
-    if (echo) routes.push(...this._routes(echo, this._stemBuffers(echo)).map(([b, d]) => [b, d, echo.time - this.shot.start]));
     const t0 = ctx.currentTime + 0.03;
     // A burst from the action simulation plays at its shot times; otherwise evenly at rpm.
     const period = 60 / Math.max(rpm, 1);
@@ -597,12 +610,8 @@ export class ShotPlayer {
       ? times.map((t) => t - times[0])
       : [...Array(Math.max(1, Math.min(shots, 100))).keys()].map((i) => i * period);
     for (const at of starts) {
-      for (const [buf, dest, offset = 0] of routes) {
-        const src = ctx.createBufferSource();
-        src.buffer = buf;
-        src.connect(dest);
-        src.start(t0 + at + Math.max(offset, 0), Math.max(-offset, 0));
-      }
+      this._source(mix.buffer).start(t0 + at + mix.time - s.start);
+      for (const stem of s.actions) this._source(this._stemBuffer(stem)).start(t0 + at + stem.time - s.start);
     }
   }
 }
