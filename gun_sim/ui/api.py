@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import math
-import sys
 import tomllib
 import traceback
 from dataclasses import asdict
@@ -13,18 +12,16 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import action, devices, evacuator, exterior, fluid, lumped, parallel, plume, rifling, sound
+from .. import (action, designer, devices, evacuator, exterior, fluid, lumped, parallel, plume, rifling, sound,
+                terminal)
 from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES,
                       FIRE_MODES, LOCKINGS, PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Gun)
+from ..designer import CONFIG_DIR
 from ..propellants import COMPOSITIONS, GRAINS, SUPPRESSANTS
 from ..results import ShotResult
 from ..sound import GROUNDS, PRESET_LABELS, PRESETS, SoundSettings
 
 STATIC_DIR = Path(__file__).parent / "static"
-if getattr(sys, "frozen", False):
-    CONFIG_DIR = Path(sys._MEIPASS) / "configs"
-else:
-    CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 
 MODELS = {"fluid": fluid.simulate, "lumped": lumped.simulate}
 MAX_POINTS = 600
@@ -383,7 +380,70 @@ def list_presets() -> dict[str, dict]:
 
 def schema() -> dict:
     return {"fields": FIELDS, "presets": list_presets(), "models": list(MODELS), "sound": sound_schema(),
-            "compositions": COMPOSITIONS, "grains": GRAINS}
+            "compositions": COMPOSITIONS, "grains": GRAINS, "easy": designer.schema(), "targets": target_schema()}
+
+
+def target_schema() -> dict:
+    return {
+        "materials": {k: {"label": terminal.ARMOURS[k].label, "hardness": terminal.ARMOURS[k].hardness}
+                      for k in terminal.TARGETS},
+        "reference": {"label": terminal.ARMOURS["rha"].label, "hardness": terminal.ARMOURS["rha"].hardness},
+        "cores": {k: v.label for k, v in terminal.PENETRATORS.items()},
+    }
+
+
+def design(payload: dict) -> dict:
+    """Easy mode: a whole gun from a cartridge, a load, a kind of gun and a barrel length (see designer.py)."""
+    return designer.design(payload)
+
+
+def target(payload: dict) -> dict:
+    """A steel target downrange: what the shot does to it there, and how that changes with range.
+
+    payload: gun, muzzle_velocity (m/s), distance (m), thickness (m), angle (degrees off the plate's normal),
+    target (material), max_range (m) and atmosphere as for trajectory().
+    """
+    gun = Gun.from_dict(payload["gun"])
+    v0 = float(payload["muzzle_velocity"])
+    distance = float(payload.get("distance", 100.0))
+    thickness = float(payload.get("thickness", 9.525e-3))
+    angle = float(payload.get("angle", 0.0))
+    material = payload.get("target", "ar500")
+    if material not in terminal.TARGETS:
+        raise ValueError(f"unknown target {material!r}")
+    if not 0 <= distance <= 5000:
+        raise ValueError("the target must be between 0 and 5000 m away")
+    max_range = min(5000.0, max(float(payload.get("max_range", 1000.0)), distance * 1.25, 50.0))
+    atm = payload.get("atmosphere") or {}
+    traj = exterior.trajectory(
+        gun, v0, zero_range=min(100.0, max_range), max_range=max_range,
+        atmosphere=exterior.Atmosphere(**{k: float(v) for k, v in atm.items()}) if atm else None)
+    flown = float(traj.x[-1])
+    if distance > flown + 1e-6:
+        raise ValueError(f"the projectile comes down {flown:.0f} m out ({traj.stop_reason}), short of the target")
+    at = traj.at(distance) if distance > 0 else {"velocity": v0, "time": 0.0, "drop": 0.0}
+    hit = terminal.impact(gun, at["velocity"], thickness, angle, material)
+    hit.update(distance=distance, time=at["time"], drop=at["drop"], muzzle_velocity=v0)
+    # The same plate at every range out to the end of the flight.
+    los = thickness / math.cos(math.radians(angle))
+    armour, rha = terminal.ARMOURS[material], terminal.ARMOURS["rha"]
+    core = terminal.core_of(gun)
+    ranges = np.linspace(0.0, flown, 41)
+    speeds = np.interp(ranges, traj.x, traj.velocity)
+    depth, depth_rha, limit = [], [], []
+    for v in speeds:
+        h, hr = terminal.penetrate(core, armour, float(v)), terminal.penetrate(core, rha, float(v))
+        depth.append(h.depth)
+        depth_rha.append(hr.depth)
+        limit.append(h.limit_thickness)
+    through = [float(r) for r, lim in zip(ranges, limit) if lim >= los]
+    dented = [float(r) for r, d in zip(ranges, depth) if d >= terminal.CRATER]
+    hit["series"] = {"range": ranges.tolist(), "velocity": speeds.tolist(), "depth": depth,
+                     "rha_depth": depth_rha, "limit_thickness": limit}
+    hit["perforates_to"] = max(through) if through else None
+    hit["craters_to"] = max(dented) if dented else None
+    hit["flown"] = flown
+    return hit
 
 
 def _downsample(*arrays: np.ndarray) -> list[list[float]]:

@@ -48,6 +48,12 @@ class Bridge:
     def trajectory(self, payload):
         return self._call(api.trajectory, payload)
 
+    def design(self, payload):
+        return self._call(api.design, payload)
+
+    def target(self, payload):
+        return self._call(api.target, payload)
+
     def parse(self, text):
         return self._call(api.parse_toml, text)
 

@@ -172,6 +172,8 @@ export const CORE_MATERIALS = [
   { color: srgbToLinear([0.33, 0.35, 0.4]), metallic: 1, roughness: 0.34, section: srgbToLinear([0.22, 0.24, 0.28]) },
   { color: srgbToLinear([0.9, 0.52, 0.38]), metallic: 1, roughness: 0.3, section: srgbToLinear([0.7, 0.36, 0.24]) },
   { color: srgbToLinear([0.42, 0.43, 0.45]), metallic: 1, roughness: 0.42, section: srgbToLinear([0.55, 0.56, 0.58]) },   // tungsten
+  { color: srgbToLinear([0.2, 0.21, 0.25]), metallic: 1, roughness: 0.28, section: srgbToLinear([0.36, 0.37, 0.42]) },    // hardened steel
+  { color: srgbToLinear([0.3, 0.3, 0.32]), metallic: 0.8, roughness: 0.55, section: srgbToLinear([0.44, 0.44, 0.47]) },   // tungsten carbide
 ];
 
 /** Materials of a round's parts that aren't brass, copper or a core (cartridge.js roundParts names them). */

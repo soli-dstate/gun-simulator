@@ -91,7 +91,8 @@ _REF_GEOMETRY = {
 }
 
 
-CORE_MATERIALS = ("lead", "steel", "copper", "tungsten")
+# "steel" is a soft (mild) steel core; "hardened_steel" an armour-piercing one; "tungsten" a heavy alloy.
+CORE_MATERIALS = ("lead", "steel", "copper", "tungsten", "hardened_steel", "tungsten_carbide")
 PROJECTILE_TYPES = ("bullet", "apfsds")
 
 
@@ -118,7 +119,7 @@ class Projectile:
     cannelure_depth: float = 0.0           # m
     # Construction: jacket_thickness 0 = solid projectile of one metal.
     jacket_thickness: float = 0.0          # m, jacket over a core
-    core_material: int | str = 0           # 0/"lead", 1/"steel", 2/"copper"
+    core_material: int | str = 0           # index into (or a name from) CORE_MATERIALS
     exposed_core_length: float = 0.0       # m, soft point: core left bare at the tip
     # Discarding sabot ("apfsds"): a fin-stabilised long rod held in the bore by a sabot whose
     # petals fall away at the muzzle. `mass` is the whole launch package (the gas drives it),

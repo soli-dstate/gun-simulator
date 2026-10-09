@@ -6,62 +6,130 @@
 <title>Gun Simulator</title>
 <style>
   :root {
-    --bg: #f4f5f7; --panel: #ffffff; --text: #1c1f24; --muted: #646b75;
-    --border: #d9dde3; --accent: #c2410c; --accent-text: #ffffff; --accent-soft: #fdebdf;
-    --grid: #e6e8ec; --error-bg: #fde8e8; --error: #9b1c1c; --warn: #b45309;
+    --bg: #eef0f3; --panel: #ffffff; --panel-2: #f6f7f9; --text: #1a1d22; --muted: #5f6772;
+    --border: #d8dce2; --accent: #d9480f; --accent-text: #ffffff; --accent-soft: #fde8dc;
+    --grid: #e4e7eb; --error-bg: #fde8e8; --error: #9b1c1c; --warn: #b45309; --good: #15803d;
     --s1: #2563eb; --s2: #d97706; --s3: #059669; --s4: #db2777;
+    --bar: #16191e; --bar-text: #e9ebee; --bar-muted: #9aa1ab; --bar-border: #2b3038;
     --view-hi: #3a3f47; --view-lo: #16181c; --view-text: #e6e8eb; --view-muted: #9aa1ab;
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+    --radius: 10px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #15171b; --panel: #1e2126; --text: #e6e8eb; --muted: #9aa1ab;
-      --border: #33373e; --accent: #f97316; --accent-text: #15171b; --accent-soft: #3a2416;
-      --grid: #2b2f35; --error-bg: #3b1d1d; --error: #fca5a5; --warn: #f59e0b;
+      --bg: #111316; --panel: #1b1e23; --panel-2: #22262c; --text: #e6e8eb; --muted: #9aa1ab;
+      --border: #30353d; --accent: #fb7a3c; --accent-text: #15171b; --accent-soft: #3a2416;
+      --grid: #2a2e35; --error-bg: #3b1d1d; --error: #fca5a5; --warn: #f59e0b; --good: #4ade80;
       --s1: #60a5fa; --s2: #fbbf24; --s3: #34d399; --s4: #f472b6;
+      --bar: #0b0c0f; --bar-border: #22262c;
+      --shadow: none;
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; position: sticky; top: 0; z-index: 5;
-           padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); min-height: 52px; }
-  header h1 { font-size: 17px; margin: 0 8px 0 0; }
-  header label { color: var(--muted); }
-  nav.tabs { display: flex; align-self: stretch; }
-  nav.tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none;
-                    padding: 0 18px; font-weight: 600; color: var(--muted); }
-  nav.tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
   select, input, button { font: inherit; color: var(--text); }
-  select, input[type=number], input[type=text] {
-    background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; }
-  button { background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
-           padding: 5px 12px; cursor: pointer; }
+  select, input[type=number], input[type=text], input[type=search] {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
   button:hover { border-color: var(--muted); }
-  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent);
-                   font-weight: 600; padding: 6px 24px; }
-  button:disabled { opacity: 0.6; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 650; padding: 7px 22px; }
+  button.primary:hover { filter: brightness(1.06); }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: 0.55; cursor: default; }
   input[type=range] { accent-color: var(--accent); }
-  .spacer { flex: 1; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
   [hidden] { display: none !important; }
-  #error { display: none; background: var(--error-bg); color: var(--error); padding: 10px 14px; border-radius: 6px; margin: 16px 16px 0; }
+  .spacer { flex: 1; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .muted { color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; }
+  h2.title { margin: 0; font-size: 16px; }
 
-  /* ---------- editor ---------- */
-  #editor { display: grid; grid-template-columns: 190px minmax(380px, 1fr) minmax(360px, 1.1fr); gap: 16px; padding: 16px; }
-  @media (max-width: 1100px) { #editor { grid-template-columns: 170px 1fr; } #preview { grid-column: 1 / -1; } }
-  @media (max-width: 700px) { #editor { grid-template-columns: 1fr; } }
-  #sections { display: flex; flex-direction: column; gap: 2px; align-self: start; position: sticky; top: 68px; }
+  /* ---------- app bar ---------- */
+  header.appbar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; position: sticky; top: 0; z-index: 10;
+    padding: 0 16px; background: var(--bar); color: var(--bar-text); border-bottom: 1px solid var(--bar-border); min-height: 54px; }
+  .brand { display: flex; gap: 9px; align-items: center; font-weight: 700; font-size: 16px; letter-spacing: 0.01em; margin-right: 6px; }
+  .brand svg { width: 22px; height: 22px; color: var(--accent); }
+  nav.tabs { display: flex; align-self: stretch; }
+  nav.tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; color: var(--bar-muted);
+    padding: 0 16px; font-weight: 600; }
+  nav.tabs button:hover { color: var(--bar-text); }
+  nav.tabs button[aria-selected=true] { color: var(--bar-text); border-bottom-color: var(--accent); }
+  .seg { display: inline-flex; border: 1px solid var(--bar-border); border-radius: 7px; overflow: hidden; background: #1f2329; }
+  .seg button { border: 0; border-radius: 0; background: transparent; color: var(--bar-muted); padding: 5px 12px; font-weight: 600; font-size: 13px; }
+  .seg button[aria-pressed=true] { background: var(--accent); color: #fff; }
+  header .bar-btn { background: transparent; color: var(--bar-text); border-color: var(--bar-border); }
+  header .bar-btn:hover { border-color: var(--bar-muted); }
+  .seg-label { color: var(--bar-muted); font-size: 12px; margin-right: -6px; }
+  #error { display: none; background: var(--error-bg); color: var(--error); padding: 10px 14px; border-radius: 8px; margin: 14px 16px 0; }
+
+  /* ---------- workshop ---------- */
+  #workshop { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(340px, 1fr); gap: 16px; padding: 16px; }
+  @media (max-width: 1050px) { #workshop { grid-template-columns: 1fr; } #preview { position: static !important; } }
+  #preview { display: flex; flex-direction: column; gap: 14px; align-self: start; position: sticky; top: 70px; }
+
+  /* easy mode */
+  #easy { display: flex; flex-direction: column; gap: 14px; }
+  .step { padding: 14px 16px 16px; }
+  .step-head { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .step-no { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-text); display: grid;
+    place-items: center; font-weight: 700; font-size: 13px; flex: none; }
+  .step-head h2 { margin: 0; font-size: 15px; }
+  .step-head .sub { color: var(--muted); font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { border-radius: 999px; padding: 3px 11px; font-size: 12px; font-weight: 600; background: var(--panel-2); }
+  .chip[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .search-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .search-row input { flex: 1; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; max-height: 300px; overflow: auto; padding: 2px; }
+  .tile { text-align: left; padding: 9px 11px; border-radius: 8px; background: var(--panel-2); display: flex; flex-direction: column; gap: 1px; }
+  .tile .t1 { font-weight: 650; }
+  .tile .t2 { color: var(--muted); font-size: 12px; }
+  .tile .t3 { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 3px; }
+  .tile[aria-pressed=true] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .tile[aria-pressed=true] .t1 { color: var(--accent); }
+  .tiles.wide { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); max-height: none; }
+  .loads { display: flex; flex-direction: column; gap: 6px; }
+  .load { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; text-align: left; padding: 8px 11px; border-radius: 8px; background: var(--panel-2); }
+  .load .t1 { font-weight: 600; }
+  .load .t2 { color: var(--muted); font-size: 12px; grid-column: 1 / -1; }
+  .load[aria-pressed=true] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .badge { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 1px 6px;
+    border-radius: 4px; background: var(--grid); color: var(--muted); align-self: start; }
+  .badge.ap { background: #fee2e2; color: #991b1b; }
+  .badge.hp, .badge.sp { background: #e0f2fe; color: #075985; }
+  .badge.match { background: #dcfce7; color: #166534; }
+  @media (prefers-color-scheme: dark) {
+    .badge.ap { background: #4c1d1d; color: #fca5a5; } .badge.hp, .badge.sp { background: #0c3047; color: #7dd3fc; }
+    .badge.match { background: #12351f; color: #86efac; }
+  }
+  .row { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; align-items: center; padding: 8px 0; border-top: 1px solid var(--grid); }
+  .row:first-of-type { border-top: 0; }
+  .row > label { font-weight: 600; }
+  .row .ctl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .row .ctl input[type=range] { flex: 1; min-width: 140px; }
+  .row .ctl input[type=number] { width: 90px; }
+  .row .hint { grid-column: 2; color: var(--muted); font-size: 12px; margin-top: -4px; }
+  .pill-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .pill-seg button { border: 0; border-radius: 0; background: var(--panel-2); padding: 5px 12px; font-size: 13px; }
+  .pill-seg button + button { border-left: 1px solid var(--border); }
+  .pill-seg button[aria-pressed=true] { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+
+  /* expert mode */
+  #expert { display: grid; grid-template-columns: 185px minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 700px) { #expert { grid-template-columns: 1fr; } }
+  #sections { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 70px; }
   #sections .name-row { display: grid; gap: 4px; margin-bottom: 10px; }
   #sections .name-row label { font-weight: 600; font-size: 12px; color: var(--muted); }
   #sections h4 { margin: 12px 0 4px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-  #sections button.sec { text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 5px; }
+  #sections button.sec { text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 6px; }
   #sections button.sec:hover { background: var(--grid); }
   #sections button.sec[aria-selected=true] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-  #fields { padding: 14px 18px 18px; align-self: start; }
+  #fields { padding: 14px 18px 18px; }
   #fields h2 { margin: 0; font-size: 18px; }
   #fields .blurb { color: var(--muted); margin: 4px 0 8px; }
-  .field { display: grid; grid-template-columns: 1fr 120px 54px; gap: 2px 10px; align-items: center;
-           padding: 10px 0; border-top: 1px solid var(--grid); }
+  .field { display: grid; grid-template-columns: 1fr 120px 58px; gap: 2px 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--grid); }
   .field label { font-weight: 600; }
   .field .help { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
   .field input[type=range] { grid-column: 1 / -1; width: 100%; margin: 4px 0 0; }
@@ -72,125 +140,222 @@
   .field.invalid input[type=number] { border-color: var(--error); }
   .preset-row { display: flex; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--grid); }
   .preset-row label { font-weight: 600; flex: 1; }
-  #preview { display: flex; flex-direction: column; gap: 12px; align-self: start; position: sticky; top: 68px; }
+
+  /* preview column */
   #preview-panel { position: relative; overflow: hidden; }
-  #preview-panel canvas { width: 100%; height: 340px; display: block; cursor: grab; touch-action: none; }
+  #preview-panel canvas { width: 100%; height: 330px; display: block; cursor: grab; touch-action: none; border-radius: var(--radius); }
   #cartridge-view { background: radial-gradient(ellipse at 50% 40%, var(--view-hi), var(--view-lo)); }
   #preview-panel canvas:active { cursor: grabbing; }
-  .view-bar { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; gap: 12px; align-items: center;
-              color: var(--view-text); pointer-events: none; }
+  .view-bar { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; gap: 12px; align-items: center; color: var(--view-text); pointer-events: none; }
   .view-bar > * { pointer-events: auto; }
   .view-bar .hint { color: var(--view-muted); font-size: 12px; pointer-events: none; }
-  .seg { display: inline-flex; border: 1px solid #555b64; border-radius: 5px; overflow: hidden; }
-  .seg button { border: 0; border-radius: 0; background: rgba(0,0,0,0.35); color: var(--view-text); padding: 3px 10px; }
-  .seg button[aria-pressed=true] { background: var(--accent); color: #fff; }
+  .view-seg { display: inline-flex; border: 1px solid #555b64; border-radius: 6px; overflow: hidden; }
+  .view-seg button { border: 0; border-radius: 0; background: rgba(0,0,0,0.35); color: var(--view-text); padding: 3px 10px; }
+  .view-seg button[aria-pressed=true] { background: var(--accent); color: #fff; }
   #preview-warnings { position: absolute; right: 12px; bottom: 10px; max-width: 70%; text-align: right; font-size: 12px; color: #f59e0b; }
-  #derived { padding: 12px 16px; }
-  #derived h3 { margin: 0 0 6px; font-size: 14px; }
+  .card-pad { padding: 14px 16px; }
+  .card-pad h3 { margin: 0 0 8px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
   .stats { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
   .stats span:nth-child(odd) { color: var(--muted); }
   .stats span:nth-child(even) { font-variant-numeric: tabular-nums; text-align: right; }
   .stats .warn { color: var(--warn); font-weight: 600; }
-  #derived .actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   #editor-status { color: var(--error); font-size: 12px; min-height: 1em; }
+  .tiles-stat { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; }
+  .stat .k { color: var(--muted); font-size: 11.5px; }
+  .stat .v { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.25; }
+  .stat .s { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .stat.warn .v { color: var(--warn); } .stat.bad .v { color: var(--error); } .stat.good .v { color: var(--good); }
+  .gauge { height: 6px; border-radius: 3px; background: var(--grid); margin-top: 5px; overflow: hidden; }
+  .gauge > div { height: 100%; background: var(--good); border-radius: 3px; }
+  .gauge.warn > div { background: var(--warn); } .gauge.bad > div { background: var(--error); }
+  .notes { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .notes li { padding: 7px 10px 7px 12px; border-left: 3px solid var(--s1); background: var(--panel-2); border-radius: 0 6px 6px 0; font-size: 13px; }
+  .notes li b { display: block; font-size: 12.5px; }
+  .notes li.warn { border-left-color: var(--warn); } .notes li.bad { border-left-color: var(--error); }
+  .busy { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .busy::before { content: ""; width: 12px; height: 12px; border: 2px solid var(--grid); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ---------- firing range ---------- */
-  #range-tab { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  /* ---------- range ---------- */
+  .tabpage { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 14px; }
   .toolbar label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
-  .toolbar .group { display: inline-flex; gap: 8px; align-items: center; }
+  .toolbar .group { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #range-panel { position: relative; overflow: hidden; }
-  #range { width: 100%; height: min(62vh, 640px); min-height: 320px; display: block; cursor: grab; touch-action: none; background: #0b0c0e; }
+  #range { width: 100%; height: min(62vh, 640px); min-height: 320px; display: block; cursor: grab; touch-action: none; background: #0b0c0e; border-radius: var(--radius); }
   #range:active { cursor: grabbing; }
-  #hud { position: absolute; top: 12px; left: 14px; display: grid; grid-template-columns: auto auto; gap: 1px 14px;
-         font-size: 12px; color: var(--view-muted); pointer-events: none; background: rgba(10,11,13,0.55);
-         padding: 8px 12px; border-radius: 6px; min-width: 200px; }
+  #hud { position: absolute; top: 12px; left: 14px; display: grid; grid-template-columns: auto auto; gap: 1px 14px; font-size: 12px; color: var(--view-muted);
+    pointer-events: none; background: rgba(10,11,13,0.55); padding: 8px 12px; border-radius: 6px; min-width: 200px; }
   #hud b { grid-column: 1 / -1; color: var(--view-text); font-size: 13px; margin-bottom: 3px; }
   #hud span:nth-of-type(even) { color: var(--view-text); text-align: right; font-variant-numeric: tabular-nums; }
   #range-hint { position: absolute; top: 12px; right: 14px; color: var(--view-muted); font-size: 12px; pointer-events: none; }
   #range-warnings { position: absolute; right: 14px; bottom: 10px; max-width: 60%; text-align: right; font-size: 12px; color: #f59e0b; }
-  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
-  .card { padding: 12px 16px; }
-  .card h2 { margin: 0 0 8px; font-size: 15px; text-transform: capitalize; }
-  .card .bad { color: var(--error); font-weight: 600; }
+  #shot-summary:empty { display: none; }
+  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  details.card { padding: 0; }
+  details.card > summary { cursor: pointer; padding: 12px 16px; font-weight: 650; list-style: none; display: flex; gap: 8px; align-items: center; }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary::before { content: "▸"; color: var(--muted); transition: transform 0.15s; }
+  details.card[open] > summary::before { transform: rotate(90deg); }
+  details.card > .stats { padding: 0 16px 14px; }
+  .card .bad, .bad { color: var(--error); font-weight: 600; }
+  .placeholder { color: var(--muted); padding: 24px; text-align: center; }
+  #sound-panel { padding: 10px 14px 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  .bar h3 { margin: 0 4px 0 0; font-size: 15px; }
+  .bar label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  .bar input[type=number] { width: 72px; }
+  .bar input[type=range] { width: 90px; }
+  #play { min-width: 84px; }
+  #sound-status, #traj-status { color: var(--muted); font-size: 12px; }
+  #sound-out { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 4px 24px; margin-top: 10px; }
+  #sound-out:empty { display: none; }
+  #sound-out .note { color: var(--muted); font-size: 12px; grid-column: 1 / -1; }
+  .events { display: grid; grid-template-columns: 1fr auto auto; gap: 2px 12px; align-content: start; }
+  .events span:nth-child(3n+1) { color: var(--muted); }
+  .events span:nth-child(3n+2), .events span:nth-child(3n) { font-variant-numeric: tabular-nums; text-align: right; }
+  #burst { width: 52px; }
+
+  /* ---------- target ---------- */
+  #target-tab { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 900px) { #target-tab { grid-template-columns: 1fr; } }
+  #target-setup { padding: 14px 16px; position: sticky; top: 70px; }
+  #target-setup .row { grid-template-columns: 100px 1fr; }
+  .plate-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+  .plate-picks button { padding: 3px 9px; font-size: 12.5px; border-radius: 6px; background: var(--panel-2); }
+  .plate-picks button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  #target-out { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .verdict { display: flex; gap: 14px; align-items: center; padding: 14px 18px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--panel); box-shadow: var(--shadow); }
+  .verdict .big { font-size: 22px; font-weight: 800; letter-spacing: 0.04em; }
+  .verdict .why { color: var(--muted); }
+  .verdict.stopped .big { color: var(--good); } .verdict.cratered .big { color: var(--warn); }
+  .verdict.perforated .big, .verdict.ricochet .big { color: var(--error); }
+  #t-section { width: 100%; height: 260px; display: block; }
+  #c-pen { width: 100%; height: 280px; display: block; }
+  .safety { font-size: 12.5px; color: var(--muted); }
+  .safety li { margin: 3px 0; }
+
+  /* ---------- analysis ---------- */
   .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+  @media (max-width: 500px) { .charts { grid-template-columns: 1fr; } }
   .chart { padding: 10px 12px; }
   .chart h3 { margin: 0 0 6px; font-size: 14px; }
   .chart canvas { width: 100%; height: 280px; display: block; }
   .device-bar { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 6px; }
   .device-bar input { flex: 1; }
-  #burst { width: 52px; }
-  .placeholder { color: var(--muted); padding: 24px; text-align: center; }
-  #sound-panel { padding: 10px 14px 12px; }
-  .sound-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
-  .sound-bar h3 { margin: 0 4px 0 0; font-size: 15px; }
-  .sound-bar label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
-  .sound-bar input[type=number] { width: 64px; }
-  .sound-bar input[type=range] { width: 90px; }
-  #play { min-width: 84px; }
-  #sound-status { color: var(--muted); font-size: 12px; }
-  #sound-out { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 4px 24px; margin-top: 10px; }
-  #sound-out:empty { display: none; }
-  #sound-out .note { color: var(--muted); font-size: 12px; grid-column: 1 / -1; }
   #traj-panel { padding: 10px 14px 12px; }
-  #traj-panel .sound-bar input[type=number] { width: 72px; }
   #traj-panel .charts { margin-top: 10px; }
-  #traj-status { color: var(--muted); font-size: 12px; }
-  #traj-table table { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
-  #traj-table th { color: var(--muted); font-weight: 500; text-align: right; padding: 2px 12px; }
-  #traj-table td { text-align: right; padding: 2px 12px; }
+  .table-wrap { overflow-x: auto; }
+  table.data { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  table.data th { color: var(--muted); font-weight: 500; text-align: right; padding: 2px 12px; }
+  table.data td { text-align: right; padding: 2px 12px; border-top: 1px solid var(--grid); }
   #traj-table:empty { display: none; }
-  .events { display: grid; grid-template-columns: 1fr auto auto; gap: 2px 12px; align-content: start; }
-  .events span:nth-child(3n+1) { color: var(--muted); }
-  .events span:nth-child(3n+2), .events span:nth-child(3n) { font-variant-numeric: tabular-nums; text-align: right; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Gun Simulator</h1>
+<header class="appbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 1v5M12 18v5M1 12h5M18 12h5"/></svg>
+    Gun Simulator
+  </div>
   <nav class="tabs" role="tablist">
-    <button role="tab" id="tab-btn-editor" aria-selected="true" data-tab="editor">Editor</button>
-    <button role="tab" id="tab-btn-range" aria-selected="false" data-tab="range">Firing range</button>
+    <button role="tab" aria-selected="true" data-tab="workshop">Workshop</button>
+    <button role="tab" aria-selected="false" data-tab="range">Range</button>
+    <button role="tab" aria-selected="false" data-tab="target">Target</button>
+    <button role="tab" aria-selected="false" data-tab="analysis">Analysis</button>
   </nav>
   <span class="spacer"></span>
-  <label>Preset <select id="preset"></select></label>
-  <button id="load-btn" title="Load a gun from a .toml file">Open…</button>
-  <button id="save-btn" title="Save the current gun as a .toml file">Save…</button>
+  <span class="seg-label">Mode</span>
+  <span class="seg" id="mode-seg"><button data-mode="easy" aria-pressed="true" title="Pick a cartridge and a kind of gun; the computer works out the rest">Easy</button><button data-mode="expert" aria-pressed="false" title="Every parameter of the gun">Expert</button></span>
+  <span class="seg-label">Units</span>
+  <span class="seg" id="units-seg"><button data-units="metric" aria-pressed="true">Metric</button><button data-units="imperial" aria-pressed="false">Imperial</button></span>
+  <button id="load-btn" class="bar-btn" title="Load a gun from a .toml file">Open…</button>
+  <button id="save-btn" class="bar-btn" title="Save the current gun as a .toml file">Save…</button>
   <input type="file" id="file" accept=".toml" hidden>
 </header>
 <div id="error"></div>
 
-<main id="editor" role="tabpanel">
-  <div id="sections">
-    <div class="name-row"><label for="f-name">Gun name</label><input type="text" id="f-name"></div>
-  </div>
-  <section class="panel" id="fields"></section>
-  <section id="preview">
+<main id="workshop" role="tabpanel">
+  <!-- ======== easy mode ======== -->
+  <section id="easy">
+    <div class="panel step">
+      <div class="step-head"><span class="step-no">1</span><div><h2>Cartridge</h2><div class="sub">What it shoots. Search by either name: 7.62×51mm NATO or .308 Winchester.</div></div></div>
+      <div class="search-row"><input type="search" id="e-search" placeholder="Search: 9mm, .308, 5.56, .50 BMG…" aria-label="Search cartridges"></div>
+      <div class="chips" id="e-kinds"></div>
+      <div class="tiles" id="e-cartridges"></div>
+    </div>
+    <div class="panel step">
+      <div class="step-head"><span class="step-no">2</span><div><h2>Load</h2><div class="sub">The bullet. AP rounds have a hard core that matters on the Target tab.</div></div></div>
+      <div class="loads" id="e-loads"></div>
+    </div>
+    <div class="panel step">
+      <div class="step-head"><span class="step-no">3</span><div><h2>Gun</h2><div class="sub">How it works. Only the kinds that take this cartridge are shown.</div></div></div>
+      <div class="tiles wide" id="e-platforms"></div>
+    </div>
+    <div class="panel step">
+      <div class="step-head"><span class="step-no">4</span><div><h2>Barrel and muzzle</h2><div class="sub">A shorter barrel burns less of the powder: less velocity, more blast.</div></div></div>
+      <div class="row"><label for="e-barrel">Barrel length</label>
+        <div class="ctl"><input type="range" id="e-barrel-slider" min="0" max="1" step="0.001" aria-label="Barrel length"><input type="number" id="e-barrel" step="any"><span class="muted" data-unit="length_mm"></span></div></div>
+      <div class="row"><label>Muzzle device</label><div class="ctl"><span class="pill-seg" id="e-device"></span></div></div>
+      <div class="row"><label for="e-twist-auto">Rifling twist</label>
+        <div class="ctl"><label class="muted"><input type="checkbox" id="e-twist-auto" checked> work it out</label>
+          <span id="e-twist-wrap" hidden>1 in <input type="number" id="e-twist" step="0.25" min="0" style="width:70px"> in</span></div></div>
+      <div class="row"><label for="e-capacity">Magazine</label>
+        <div class="ctl"><input type="number" id="e-capacity" min="1" max="250" step="1" placeholder="auto"><span class="muted">rounds (blank = the usual)</span></div></div>
+      <div class="row"><label for="e-name">Name</label><div class="ctl"><input type="text" id="e-name" placeholder="named for you" style="flex:1"></div></div>
+    </div>
+  </section>
+
+  <!-- ======== expert mode ======== -->
+  <section id="expert" hidden>
+    <div id="sections">
+      <div class="name-row"><label for="preset">Start from a preset</label><select id="preset"></select></div>
+      <div class="name-row"><label for="f-name">Gun name</label><input type="text" id="f-name"></div>
+    </div>
+    <section class="panel" id="fields"></section>
+  </section>
+
+  <!-- ======== shared preview column ======== -->
+  <aside id="preview">
     <div class="panel" id="preview-panel">
       <canvas id="cartridge-view"></canvas>
       <canvas id="rifle-view" hidden></canvas>
       <div class="view-bar">
-        <span class="seg"><button id="pv-cartridge" aria-pressed="true">Cartridge</button><button id="pv-rifle" aria-pressed="false">Rifle</button></span>
+        <span class="view-seg"><button id="pv-cartridge" aria-pressed="true">Cartridge</button><button id="pv-rifle" aria-pressed="false">Gun</button></span>
         <label><input type="checkbox" id="pv-cutaway"> Cutaway</label>
-        <label id="pv-pull-wrap"><input type="checkbox" id="pv-pull"> Pull projectile</label>
+        <label id="pv-pull-wrap"><input type="checkbox" id="pv-pull"> Pull bullet</label>
         <span class="spacer"></span>
         <span class="hint">drag · wheel · double-click</span>
       </div>
       <div id="preview-warnings"></div>
     </div>
-    <div class="panel" id="derived">
+    <div class="panel card-pad" id="easy-out">
+      <h3>Performance <span class="muted" style="font-weight:400;font-size:12px">quick estimate</span><span class="spacer"></span><span id="e-busy" class="busy" hidden>Calculating…</span></h3>
+      <div class="tiles-stat" id="e-stats"></div>
+      <h3 style="margin-top:14px">What the computer worked out</h3>
+      <ul class="notes" id="e-notes"></ul>
+      <div class="actions">
+        <button class="primary" data-go="range">Fire it on the range →</button>
+        <button data-go="target">Shoot a steel target</button>
+        <button id="e-to-expert" class="ghost">Fine-tune in Expert mode</button>
+      </div>
+    </div>
+    <div class="panel card-pad" id="derived" hidden>
       <h3>At a glance</h3>
       <div class="stats" id="derived-stats"></div>
       <div class="actions">
         <button id="use-capacity" hidden title="Set the solver's chamber volume to the space under the projectile">Use case space as chamber volume</button>
-        <button id="go-range" class="primary">To the range →</button>
+        <button class="primary" data-go="range">To the range →</button>
       </div>
       <div id="editor-status"></div>
     </div>
-  </section>
+  </aside>
 </main>
 
-<main id="range-tab" role="tabpanel" hidden>
+<!-- ======== range ======== -->
+<main id="range-tab" class="tabpage" role="tabpanel" hidden>
   <div class="panel toolbar">
     <button id="run" class="primary" title="Simulate and fire (Enter)">Fire</button>
     <button id="replay" disabled title="Show the last shot again without re-simulating">Replay</button>
@@ -199,7 +364,7 @@
     <span class="group">
       <label>Camera <select id="camera">
         <option value="auto">Director</option>
-        <option value="rifle">Whole rifle</option>
+        <option value="rifle">Whole gun</option>
         <option value="breech">Breech</option>
         <option value="follow">Follow projectile</option>
         <option value="muzzle">Muzzle</option>
@@ -208,8 +373,8 @@
         <input type="range" id="slowmo" min="0" max="1" step="0.01" value="0.5"> <span id="slowmo-label"></span></label>
       <label title="Play the shot at its real speed: the bore takes about a millisecond"><input type="checkbox" id="realtime"> Real time</label>
       <label><input type="checkbox" id="cutaway" checked> Cutaway</label>
-      <label title="Work a manual bolt by itself after the shot (automatic actions always cycle)"><input type="checkbox" id="auto-cycle" checked> Auto-cycle bolt</label>
-      <label title="Shots per press of Fire. An automatic fires them as a burst, each as the action is back in battery; a semi-automatic or a revolver fires each with a pull of its own, the trigger's split apart">Shots <input type="number" id="burst" value="1" min="1" max="30" step="1"></label>
+      <label title="Work a manual bolt by itself after the shot (automatic actions always cycle)"><input type="checkbox" id="auto-cycle" checked> Auto-cycle</label>
+      <label title="Shots per press of Fire. An automatic fires them as a burst; a semi-automatic or a revolver fires each with a pull of its own">Shots <input type="number" id="burst" value="1" min="1" max="30" step="1"></label>
     </span>
     <span class="spacer"></span>
     <span class="group">
@@ -223,21 +388,25 @@
     <div id="range-hint">drag to orbit · wheel to zoom · double-click to reset</div>
     <div id="range-warnings"></div>
   </div>
-  <div id="cards"><div class="panel placeholder">Press <b>Fire</b> to simulate the shot.</div></div>
+  <div class="panel card-pad" id="shot-summary-panel">
+    <h3>Last shot</h3>
+    <div class="tiles-stat" id="shot-summary"><div class="placeholder" style="grid-column:1/-1">Press <b>Fire</b> to simulate the shot.</div></div>
+  </div>
+  <div id="cards"></div>
   <div class="panel" id="sound-panel">
-    <div class="sound-bar">
+    <div class="bar">
       <h3>Sound</h3>
       <button id="play" disabled title="Play the last shot's sound again (space)">▶ Play</button>
       <label>Surroundings <select id="environment"></select></label>
       <label>Ears <select id="protection"></select></label>
-      <label title="Recorded: overdriven like a microphone, the way shots sound on recordings (loud, with audible echoes). Normalised: the loudest instant at full scale, everything else at its true level below it. Calibrated: a fixed dB SPL at full scale, to compare guns and distances">Level <select id="level-mode">
+      <label title="Recorded: overdriven like a microphone. Normalised: the loudest instant at full scale. Calibrated: a fixed dB SPL at full scale">Level <select id="level-mode">
         <option value="recorded">Recorded</option>
         <option value="normalized">Normalised</option>
         <option value="calibrated">Calibrated</option></select></label>
-      <label id="drive-wrap" title="How hard the recorder is overdriven: the body of the shot and its echoes come up by this much against the peak">Drive <input type="range" id="drive" min="0" max="48" step="1" value="36"></label>
+      <label id="drive-wrap" title="How hard the recorder is overdriven">Drive <input type="range" id="drive" min="0" max="48" step="1" value="36"></label>
       <label id="full-scale-wrap" hidden title="The sound pressure level that plays at full scale">0 dBFS = <input type="number" id="full-scale" value="150" step="any"> dB</label>
       <label>Volume <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8"></label>
-      <label title="On the range, each sound starts when the slowed-down clock reaches it. Stretched: it slows down with the clock (to a quarter speed at most); real speed: it plays as it would really sound">Slow motion <select id="slowmo-sound">
+      <label title="Stretched: the sound slows down with the clock; real speed: as it would really sound">Slow motion <select id="slowmo-sound">
         <option value="stretch">Stretched</option>
         <option value="real">Real speed</option></select></label>
       <label>Shots <input type="number" id="shots" value="1" min="1" max="100" step="1"></label>
@@ -246,24 +415,65 @@
     </div>
     <div id="sound-out"></div>
   </div>
+</main>
+
+<!-- ======== target ======== -->
+<main id="target-tab" role="tabpanel" hidden>
+  <aside class="panel" id="target-setup">
+    <h2 class="title" style="margin-bottom:6px">Steel target</h2>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">A plate downrange, hit with the last shot's muzzle velocity flown out to it. Penetration is also given in RHAe: the rolled homogeneous armour it equals.</p>
+    <div class="row"><label for="t-material">Plate</label><div class="ctl"><select id="t-material" style="flex:1"></select></div></div>
+    <div class="row"><label>Thickness</label>
+      <div class="ctl" style="flex-direction:column;align-items:stretch">
+        <div class="plate-picks" id="t-plates"></div>
+        <div style="display:flex;gap:8px;align-items:center"><input type="number" id="t-thick" step="any" min="0.1" style="width:90px"><span class="muted" data-unit="length_mm"></span></div>
+      </div></div>
+    <div class="row"><label for="t-dist">Distance</label>
+      <div class="ctl"><input type="range" id="t-dist-slider" min="0" max="1" step="0.001" aria-label="Distance"><input type="number" id="t-dist" step="any" min="0" style="width:80px"><span class="muted" data-unit="length_m"></span></div></div>
+    <div class="row"><label for="t-angle">Angle</label>
+      <div class="ctl"><input type="range" id="t-angle" min="0" max="80" step="1" value="0"><span id="t-angle-label" class="num" style="width:36px">0°</span></div>
+      <div class="hint">Off square. Hanging plates are often angled 15–20° down to throw splash at the ground.</div></div>
+    <div class="actions"><button class="primary" id="t-fire">Shoot the plate</button><span id="t-status" class="muted" style="font-size:12px"></span></div>
+  </aside>
+  <section id="target-out">
+    <div class="verdict" id="t-verdict"><div><div class="big">—</div><div class="why">Choose a plate and shoot it.</div></div></div>
+    <div class="panel card-pad"><h3>The hit</h3><div class="tiles-stat" id="t-stats"></div></div>
+    <div class="panel card-pad"><h3>Cross-section through the plate</h3><canvas id="t-section"></canvas></div>
+    <div class="panel card-pad"><h3>Penetration against range</h3><canvas id="c-pen"></canvas>
+      <ul class="notes" id="t-notes" style="margin-top:10px"></ul></div>
+    <div class="panel card-pad safety">
+      <h3>Shooting steel safely</h3>
+      <ul>
+        <li>Keep pistols at least 10 m (11 yd) and rifles at least 100 m (110 yd) from steel: bullets break up and splash back.</li>
+        <li>Only shoot plates the round does not crater: a dent or crater throws splash straight back at the shooter.</li>
+        <li>Never shoot AP, steel-core or tungsten-core rounds at steel targets.</li>
+        <li>Hang plates so they swing, angled slightly down, and wear eye protection.</li>
+      </ul>
+      <div style="font-size:11.5px">The penetration model is an engineering estimate (cavity expansion for hard cores, Alekseevskii–Tate for eroding ones, a cratering law for bullets that splash), tuned to published figures. Don't stake anyone's safety on it.</div>
+    </div>
+  </section>
+</main>
+
+<!-- ======== analysis ======== -->
+<main id="analysis-tab" class="tabpage" role="tabpanel" hidden>
   <div class="panel" id="traj-panel">
-    <div class="sound-bar">
+    <div class="bar">
       <h3>Trajectory</h3>
-      <label>Zero <input type="number" id="t-zero" value="100" min="1" step="any"> m</label>
-      <label>Max range <input type="number" id="t-range" value="1000" min="10" step="any"> m</label>
-      <label>Sight height <input type="number" id="t-sight" value="40" min="0" step="any"> mm</label>
-      <label>Crosswind <input type="number" id="t-wind" value="0" step="any"> m/s</label>
+      <label>Zero <input type="number" id="t-zero" step="any" min="1" data-q="length_m" data-si="100"> <span data-unit="length_m"></span></label>
+      <label>Max range <input type="number" id="t-range" step="any" min="10" data-q="length_m" data-si="1000"> <span data-unit="length_m"></span></label>
+      <label>Sight height <input type="number" id="t-sight" step="any" min="0" data-q="length_mm" data-si="0.04"> <span data-unit="length_mm"></span></label>
+      <label>Crosswind <input type="number" id="t-wind" step="any" data-q="wind" data-si="0"> <span data-unit="wind"></span></label>
       <span id="traj-status"></span>
     </div>
     <div class="charts">
-      <div class="chart"><h3>Drop vs range (relative to the line of sight)</h3><canvas id="c-drop"></canvas></div>
-      <div class="chart"><h3>Velocity vs range</h3><canvas id="c-flight"></canvas></div>
+      <div class="chart"><h3>Drop against range (from the line of sight)</h3><canvas id="c-drop"></canvas></div>
+      <div class="chart"><h3>Velocity against range</h3><canvas id="c-flight"></canvas></div>
     </div>
-    <div id="traj-table"></div>
+    <div class="table-wrap" id="traj-table"></div>
   </div>
   <div class="charts">
-    <div class="panel chart"><h3>Pressure vs time</h3><canvas id="c-pressure"></canvas></div>
-    <div class="panel chart"><h3>Projectile velocity vs travel</h3><canvas id="c-velocity"></canvas></div>
+    <div class="panel chart"><h3>Pressure against time</h3><canvas id="c-pressure"></canvas></div>
+    <div class="panel chart"><h3>Projectile velocity against travel</h3><canvas id="c-velocity"></canvas></div>
     <div class="panel chart"><h3>Pressure along the bore (fluid model)</h3><canvas id="c-profile"></canvas></div>
     <div class="panel chart" id="bed-panel" hidden><h3>Grain bed: flame spread and burning (two-phase)</h3><canvas id="c-bed"></canvas></div>
     <div class="panel chart"><h3>Recoil and action</h3><canvas id="c-motion"></canvas></div>

@@ -63,6 +63,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, api.plume_field(json.loads(body)))
             elif self.path == "/api/trajectory":
                 self._json(200, api.trajectory(json.loads(body)))
+            elif self.path == "/api/design":
+                self._json(200, api.design(json.loads(body)))
+            elif self.path == "/api/target":
+                self._json(200, api.target(json.loads(body)))
             elif self.path == "/api/parse":
                 self._json(200, api.parse_toml(body.decode()))
             else:

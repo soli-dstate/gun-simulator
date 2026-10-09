@@ -51,7 +51,7 @@ python -m gun_sim.ui          # or: gun-sim-ui
 This opens the simulator in its own window. It uses
 [pywebview](https://pywebview.flowrl.com/), which on Windows hosts the UI in
 Edge WebView2 (already part of Windows 10 and 11). **Open…** and **Save…**
-load and save gun `.toml` files, and **Preset** picks one from `configs/`
+load and save gun `.toml` files, and in Expert mode **Start from a preset** picks one from `configs/`
 (the example rifle, the same cartridge in a gas-operated rifle, that rifle
 with a suppressor, a roller-delayed rifle, a two-phase grain bed, a
 7-perforated-grain load, a hollow-point round, and three real rifles: the
@@ -59,9 +59,53 @@ M4A1, AKM and AK-74; two cannon, the Mk44 Bushmaster II 30 mm chain gun and the
 Rheinmetall Rh-120 L/55 120 mm smoothbore tank gun; and five handguns: the Colt
 M1911A1, the Beretta M9, the Glock 17, the Colt Anaconda and the Colt Single
 Action Army).
-The window has two tabs.
 
-**Editor.** Everything about the gun and the shot, one section at a time:
+The bar along the top has four tabs (**Workshop**, **Range**, **Target**,
+**Analysis**), an **Easy / Expert** mode switch and a **Metric / Imperial**
+units switch. Imperial shows inches, grains, ft/s, ft·lbf, psi, yards and
+pounds everywhere, the expert form included (typed values are read in the units
+shown); the simulator itself stays in SI.
+
+**Workshop, Easy mode.** Build a gun without knowing any interior ballistics,
+in four steps: pick a **cartridge** (search by either name: *7.62×51mm NATO*
+or *.308 Winchester*, *9×19mm Parabellum* or *9mm Luger*; filter by pistol,
+revolver, intermediate, full-power, magnum, heavy or cannon), a **load**
+(ball, AP, soft point, hollow point, match; the bullet weight in grains and
+grams), a **gun** (striker-fired, 1911-style or DA/SA pistol, pistol-calibre
+carbine, submachine gun, double- or single-action revolver, bolt action,
+AR-style semi or select fire, AK, gas-piston battle rifle, roller-delayed,
+belt-fed machine gun, chain gun, tank gun; only the ones that take the
+cartridge are offered), and a **barrel length** and muzzle device. The computer
+does the rest (`gun_sim/designer.py`): the case, bullet and bore come from the
+cartridge library (`gun_sim/cartridges.py`, 24 cartridges with their
+published dimensions and service loads); the chamber volume is the case's
+powder space under the seated bullet; the powder's burn rate is tuned so the
+load makes its published velocity from its published barrel, so your barrel
+gives what it physically would; the twist is the standard one unless the
+bullet would be under-stabilised, when a faster one is worked out; and the
+action, feed, trigger and stock come from a preset of that kind of gun scaled
+to the cartridge's recoil, with its gas port (or a blowback's bolt mass, or a
+pistol's recoil spring) tuned until it cycles cleanly. **Performance** shows a
+quick estimate (velocity, energy, chamber pressure against the SAAMI / CIP /
+NATO maximum, recoil, stability, rate of fire) and **What the computer worked
+out** says each of those decisions in plain words. **Fine-tune in Expert mode**
+opens the same gun with every parameter.
+
+**Target.** A steel plate downrange (AR500 for now): its thickness (the
+standard 1/4″ to 1″ plates, or any), distance and angle. The last shot's
+muzzle velocity is flown out to it, and `gun_sim/terminal.py` works out what
+the hit does: **stopped**, **cratered**, **perforated** (with the exit
+velocity and the ballistic limit) or a **ricochet**. A hard core (hardened
+steel, tungsten carbide) penetrates as a rigid body (Forrestal's
+cavity-expansion law), a softer one or a long rod erodes (Alekseevskii–Tate),
+and a lead-core bullet splashes on the face and leaves a crater. Every
+depth is also given in **RHAe**: how much rolled homogeneous armour the round
+gets through, and how much RHA the plate is worth against it. A to-scale
+cross-section shows the hit, and a chart shows penetration against range, so
+you can read off how far out the round gets through the plate, and how far
+out it still craters it (the distance to stay beyond for target longevity).
+
+**Workshop, Expert mode.** Everything about the gun and the shot, one section at a time:
 barrel, cartridge case, projectile, propellant, ignition, action and recoil,
 muzzle device, appearance, shooter, listener and air, plus the solver and sound-model settings under
 *Advanced*. Every value has a
@@ -85,7 +129,11 @@ secant-ogive, hollow-point, cannelured or jacketed round; **Cutaway** shows
 the copper jacket and the lead, steel or copper core as separate materials,
 with the hollow-point cavity cut open.
 
-**Firing range.** The rifle in 3D: a barrel with its chamber, throat, bore
+**Analysis** holds the trajectory (drop, velocity, a range table in MOA and
+mil) and every chart: pressure, velocity, the pressure along the bore, recoil,
+the force on the shooter, the muzzle device's 2D field, and the sound.
+
+**Range.** The gun in 3D: a barrel with its chamber, throat, bore
 and crown cut to fit the case, a receiver with an ejection port, the parts of
 the action, and a stock whose butt sits where `[action]` puts the shoulder.
 Every action type has its own moving parts:
@@ -1089,6 +1137,9 @@ gun_sim/
   propellants.py propellant compositions and grain shapes -> form function
   exterior.py    point-mass trajectory solver: G1/G7 drag, atmosphere, zeroing, range tables
   rifling.py     engraving resistance vs travel, spin-up, moment of inertia, stability, spin drift
+  terminal.py    terminal ballistics: penetration into AR500 and RHA (rigid, eroding, cratering), RHAe
+  cartridges.py  library of cartridges (metric and imperial names), their dimensions and loads
+  designer.py    easy mode: builds and tunes a whole gun from a cartridge, a load and a kind of gun
   results.py     ShotResult (and MuzzleFlow) containers
   sound/
     settings.py    listener position, atmosphere, presets
@@ -1105,7 +1156,10 @@ gun_sim/
     api.py       backend calls shared by the window and the browser fallback
     server.py    --browser fallback: local HTTP server + JSON API
     static/      the HTML UI (self-contained, works offline)
-      js/app.js          editor and firing-range tabs, results, charts wiring
+      js/app.js          workshop, range and analysis tabs, results, charts wiring
+      js/easy.js         easy mode: cartridge, load, gun and barrel pickers, performance and notes
+      js/target.js       target tab: steel plate, verdict, cross-section, penetration against range
+      js/units.js        metric and imperial display units
       js/fields.js       editor sections, slider ranges and help text
       js/backend.js      pywebview bridge or HTTP, whichever is present
       js/audio.js        Web Audio playback: reverb, hearing protection, limiter, bursts

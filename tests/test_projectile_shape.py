@@ -56,7 +56,7 @@ def test_core_material_by_name_or_code():
     {"ogive_radius_ratio": 0.8},
     {"ogive_radius_ratio": 11},
     {"core_material": "uranium"},
-    {"core_material": 4},
+    {"core_material": 6},
     {"hollow_point_depth": -1e-3},
     {"jacket_thickness": -1e-4},
 ])

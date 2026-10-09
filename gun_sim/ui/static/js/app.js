@@ -1,7 +1,10 @@
 import { ENVIRONMENTS, PROTECTION, ShotPlayer } from "./audio.js";
 import { connect } from "./backend.js";
 import { cssVar, drawChart } from "./charts.js";
+import { EasyMode } from "./easy.js";
 import { META, SECTIONS, sliderFor } from "./fields.js";
+import { TargetRange } from "./target.js";
+import { bindUnitInputs, fieldUnit, fmt, getSystem, imperial, label, onUnits, savedSystem, setSystem, siOf, toDisplay } from "./units.js";
 import { FiringRange } from "./viewer3d/range.js";
 import { CartridgeViewer } from "./viewer3d/viewer.js";
 
@@ -21,13 +24,20 @@ let cartViewer = null;
 let rifleView = null;
 let range = null;
 let cartridge = null;
+let easy = null;
+let target = null;
 let gunVersion = 0;      // bumped on every edit; the range rebuilds when it is behind
 let rangeVersion = -1;
+let shotVersion = -1;    // the gun version the last shot was fired with
 let previewMode = "cartridge";
 let currentSection = SECTIONS[0].id;
+let mode = "easy";
+let currentTab = "workshop";
 const player = new ShotPlayer();
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
+const store = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } };
+const recall = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 
 // ---------- form ----------
 // Gun fields have ids f-<section>-<key>; sound fields s-<key>.
@@ -37,7 +47,7 @@ function sectionFields(id) {
   if (id.startsWith("sound:")) {
     const group = id.slice(6);
     return schema.sound.fields[group].map(([key, label, unit, scale]) =>
-      ({ id: `s-${key}`, key: `sound.${key}`, label, unit, scale }));
+      ({ id: `s-${key}`, key: `sound.${key}`, label, unit, scale, sound: true }));
   }
   return schema.fields[id].map(([key, label, unit, scale]) =>
     ({ id: `f-${id}-${key}`, key: `${id}.${key}`, label, unit, scale }));
@@ -47,20 +57,30 @@ const toSlider = (cfg, v) => (cfg.log ? Math.log(v / cfg.min) / Math.log(cfg.max
 const fromSlider = (cfg, f) => (cfg.log ? cfg.min * Math.pow(cfg.max / cfg.min, f) : cfg.min + f * (cfg.max - cfg.min));
 const tidy = (v) => Number(v.toPrecision(v !== 0 && Math.abs(v) < 1e-3 ? 3 : 4));
 
+/** Display unit of a gun field now (sound fields stay metric). */
+const unitOf = (f) => (f.sound ? { unit: f.unit, scale: f.scale, factor: 1 } : fieldUnit(f.unit, f.scale));
+
+/** Slider settings in display units: META's ranges are metric. */
+function sliderCfg(f, v) {
+  const { factor } = unitOf(f);
+  const m = sliderFor(f.key, v * factor);
+  return { ...m, min: m.min / factor, max: m.max / factor, step: factor === 1 ? m.step : undefined };
+}
+
 function fieldRow(f) {
   const row = document.createElement("div");
   row.className = "field";
   row.dataset.key = f.key;
   if (f.unit === "choice" || f.unit === "flag") {
     const input = f.unit === "flag" ? `<input type="checkbox" id="${f.id}">`
-      : `<select id="${f.id}">${f.scale.map((o) => `<option value="${o}">${o || "none"}</option>`).join("")}</select>`;
+      : `<select id="${f.id}">${f.scale.map((o) => `<option value="${o}">${o ? o.replaceAll("_", " ") : "none"}</option>`).join("")}</select>`;
     row.innerHTML = `<label for="${f.id}">${f.label}</label>${input}<span></span>
       <div class="help">${META[f.key]?.help ?? ""}</div>`;
     return row;
   }
   row.innerHTML = `<label for="${f.id}">${f.label}</label>
     <input type="number" step="any" id="${f.id}">
-    <span class="unit">${f.unit}</span>
+    <span class="unit">${unitOf(f).unit}</span>
     <input type="range" min="0" max="1" step="0.001" aria-label="${f.label}" tabindex="-1">
     <div class="help">${META[f.key]?.help ?? ""}</div>`;
   const num = row.querySelector("input[type=number]"), slider = row.querySelector("input[type=range]");
@@ -70,15 +90,18 @@ function fieldRow(f) {
     const v = Number(num.value);
     row.classList.toggle("invalid", num.value === "" ? !META[f.key]?.optional : !isFinite(v));
     if (!isFinite(v) || num.value === "") return;
-    if (!cfg || v < cfg.min || v > cfg.max) cfg = sliderFor(f.key, v);
+    if (!cfg || v < cfg.min || v > cfg.max) cfg = sliderCfg(f, v);
     slider.value = toSlider(cfg, v);
+  };
+  row.resetUnits = () => {
+    cfg = null;
+    row.querySelector(".unit").textContent = unitOf(f).unit;
   };
   num.addEventListener("input", row.sync);
   slider.addEventListener("input", () => {
-    if (!cfg) cfg = sliderFor(f.key, Number(num.value) || 0);
+    if (!cfg) cfg = sliderCfg(f, Number(num.value) || 0);
     let v = fromSlider(cfg, Number(slider.value));
-    const step = META[f.key]?.step;
-    v = step ? Math.round(v / step) * step : tidy(v);
+    v = cfg.step ? Math.round(v / cfg.step) * cfg.step : tidy(v);
     num.value = Number(v.toPrecision(10));
     row.classList.remove("invalid");
     num.dispatchEvent(new Event("input", { bubbles: true }));
@@ -135,11 +158,11 @@ function showSection(id) {
 const syncAll = () => document.querySelectorAll(".field").forEach((row) => row.sync?.());
 
 /** Put an SI config value into its form field. */
-function writeField(section, [key, , unit, scale], v) {
+function writeField(section, [key, label, unit, scale], v) {
   const el = $(`f-${section}-${key}`);
   if (unit === "flag") el.checked = !!v;
   else if (unit === "choice") el.value = typeof v === "number" ? scale[v] : (v ?? "");
-  else el.value = v === undefined || v === null ? "" : Number((v / scale).toPrecision(10));
+  else el.value = v === undefined || v === null ? "" : Number((v / fieldUnit(unit, scale).scale).toPrecision(10));
 }
 
 /** SI config value of a form field (null for "none" or a blank optional number). */
@@ -150,7 +173,7 @@ function readField(section, [key, label, unit, scale]) {
   const raw = el.value;
   if (raw === "" && META[`${section}.${key}`]?.optional) return null;
   if (raw === "" || !isFinite(Number(raw))) throw new Error(`${section}: "${label}" needs a number`);
-  return Number(raw) * scale;
+  return Number(raw) * fieldUnit(unit, scale).scale;
 }
 
 // Form functions a named grain works out for itself; sent only without one.
@@ -200,15 +223,33 @@ function getGun() {
 }
 
 function toToml(gun) {
-  const fmt = (v) => (typeof v === "string" ? JSON.stringify(v) : typeof v === "boolean" ? String(v)
+  const fmtv = (v) => (typeof v === "string" ? JSON.stringify(v) : typeof v === "boolean" ? String(v)
     : Number.isInteger(v) && Math.abs(v) < 1e6 ? String(v) : v.toExponential(6).replace(/\.?0+e/, "e"));
   let out = `name = ${JSON.stringify(gun.name)}\n`;
   for (const [section, values] of Object.entries(gun)) {
     if (typeof values !== "object") continue;
     out += `\n[${section}]\n`;
-    for (const [k, v] of Object.entries(values)) if (v !== null && v !== undefined) out += `${k} = ${fmt(v)}\n`;
+    for (const [k, v] of Object.entries(values)) if (v !== null && v !== undefined) out += `${k} = ${fmtv(v)}\n`;
   }
   return out;
+}
+
+/** The units changed: relabel every field and rewrite its value in the new units. */
+function unitsChanged() {
+  let gun = null;
+  try { gun = getGun(); } catch (e) { /* half-typed: keep the loaded one */ }
+  for (const row of document.querySelectorAll(".field")) row.resetUnits?.();
+  if (gun) {
+    loadedGun = gun;
+    for (const [section, fields] of Object.entries(schema.fields)) for (const f of fields) writeField(section, f, gun[section]?.[f[0]]);
+  }
+  syncAll();
+  for (const b of document.querySelectorAll("#units-seg button")) b.setAttribute("aria-pressed", b.dataset.units === getSystem());
+  updatePreview();
+  if (lastResult) { showCards(lastResult, lastGun); showSummary(lastResult, lastGun); }
+  if (lastSound) showSoundStats(lastSound);
+  if (lastTraj) showTrajTable(lastTraj);
+  drawAll();
 }
 
 // ---------- sound settings ----------
@@ -249,6 +290,13 @@ function resynthesize() {
   resynthTimer = setTimeout(() => synthesizeSound(lastGun, soundForShot), 250);
 }
 
+function atmosphere() {
+  try {
+    const s = getSound();
+    return { temperature: s.temperature, humidity: s.humidity, pressure: s.pressure };
+  } catch (e) { return null; }
+}
+
 // ---------- sound ----------
 function playOptions() {
   // A burst the action simulated plays at its own shot times.
@@ -279,7 +327,7 @@ async function synthesizeSound(gun, shot) {
   const status = $("sound-status");
   let settings;
   try { settings = getSound(); } catch (e) { status.textContent = e.message; return; }
-  status.textContent = "Synthesising…";
+  status.innerHTML = '<span class="busy">Synthesising…</span>';
   try {
     const data = await backend.synthesize({ gun, sound: settings });
     if (id !== soundRequest) return;  // a newer request superseded this one
@@ -303,6 +351,7 @@ async function synthesizeSound(gun, shot) {
 function showSoundStats(data) {
   const s = data.stats;
   const ms = (t) => `${(t * 1e3).toFixed(1)} ms`;
+  const dist = imperial() ? `${(s.distance / 0.3048).toFixed(1)} ft` : `${s.distance.toFixed(2)} m`;
   const crack = s.crack
     ? `<span>Supersonic crack</span><span>Mach ${s.crack.mach.toFixed(2)} at emission, ${s.crack.miss_distance.toFixed(1)} m miss distance, ${(s.crack.duration * 1e6).toFixed(0)} µs N-wave</span>`
     : `<span>Supersonic crack</span><span>${s.muzzle_mach > 1 ? "not heard here (outside the Mach cone)" : "none (subsonic)"}</span>`;
@@ -312,21 +361,22 @@ function showSoundStats(data) {
     <div class="stats">
       <span>Peak at the listener</span><span>${s.peak_db.toFixed(1)} dB (${s.peak_pressure.toFixed(0)} Pa)</span>
       <span>Left / right ear</span><span>${s.peak_left_db.toFixed(1)} / ${s.peak_right_db.toFixed(1)} dB</span>
-      <span>Listener distance</span><span>${s.distance.toFixed(2)} m at ${s.angle.toFixed(0)}°</span>
+      <span>Listener distance</span><span>${dist} at ${s.angle.toFixed(0)}°</span>
       <span>Blast at 1 m (omnidirectional)</span><span>${s.blast_1m_db.toFixed(1)} dB</span>
-      <span>Muzzle exit pressure</span><span>${(s.muzzle_exit_pressure / 1e6).toFixed(1)} MPa</span>
+      <span>Muzzle exit pressure</span><span>${fmt(s.muzzle_exit_pressure, "pressure", 1)}</span>
       <span>Gas ejected after the projectile</span><span>${(s.ejected_gas * 1e3).toFixed(2)} g, ${(s.ejected_energy / 1e3).toFixed(1)} kJ</span>
-      <span>Recoil impulse (incl. gas jet)</span><span>${s.recoil_impulse.toFixed(2)} N·s</span>
+      <span>Recoil impulse (incl. gas jet)</span><span>${fmt(s.recoil_impulse, "impulse")}</span>
       ${crack}
     </div>
     <div class="events"><span><b>Arrivals</b></span><span>after shot</span><span>peak</span>${events}</div>
     <div class="note">Peaks are unweighted (dBZ). Above about 140 dB peak, unprotected exposure risks permanent hearing damage.</div>`;
 }
 
-// ---------- editor previews ----------
+// ---------- workshop previews ----------
 function gunChanged() {
   gunVersion++;
   updatePreview();
+  target?.stale();
 }
 
 function updatePreview() {
@@ -367,20 +417,21 @@ function showDerived(gun, rifle) {
   const fromCase = gun.barrel.chamber_shape === "case" && cartridge;
   const chamber = fromCase ? cartridge.stats.powderSpace : gun.barrel.chamber_volume * 1e6;
   let mismatch = false;
+  const vol = (cm3) => fmt(cm3 * 1e-6, "volume");
   if (cartridge) {
     const s = cartridge.stats;
     mismatch = !fromCase && Math.abs(s.powderSpace - chamber) > 0.1 * chamber;
-    rows.push(["Case capacity", `${s.capacity.toFixed(2)} cm³`]);
-    rows.push(["Space under the projectile", `${s.powderSpace.toFixed(2)} cm³`, mismatch]);
+    rows.push(["Case capacity", vol(s.capacity)]);
+    rows.push(["Space under the projectile", vol(s.powderSpace), mismatch]);
   }
-  rows.push(["Chamber volume (solver)", `${chamber.toFixed(2)} cm³`]);
+  rows.push(["Chamber volume (solver)", vol(chamber)]);
   const solid = gun.propellant.charge_mass / gun.propellant.density * 1e6;
   rows.push(["Powder fills", `${(solid / chamber * 100).toFixed(0)} % of the chamber`, solid >= chamber]);
   rows.push(["Loading density", `${(gun.propellant.charge_mass * 1e3 / chamber).toFixed(2)} g/cm³`]);
   const boreVol = Math.PI * gun.barrel.bore_diameter ** 2 / 4 * gun.barrel.travel * 1e6;
   rows.push(["Expansion ratio", `${((chamber + boreVol) / chamber).toFixed(1)}`]);
   rows.push(["Charge / projectile mass", `${(gun.propellant.charge_mass / gun.projectile.mass).toFixed(2)}`]);
-  if (rifle) rows.push(["Barrel length (bolt face to muzzle)", `${rifle.layout.muzzleX.toFixed(0)} mm`]);
+  if (rifle) rows.push(["Barrel length (bolt face to muzzle)", fmt(rifle.layout.muzzleX * 1e-3, "length_mm", imperial() ? 2 : 0)]);
   if (cartridge) rows.push(["Projectile density", `${cartridge.stats.density.toFixed(1)} g/cm³`]);
   const pr = gun.propellant;
   if (!pr.grain && !(pr.form_z_k > 1)) {  // a grain, or a sliver phase, finishes the burn itself
@@ -391,15 +442,15 @@ function showDerived(gun, rifle) {
   $("use-capacity").hidden = !mismatch;
 }
 
-function setPreview(mode) {
-  if (mode === "rifle" && !rifleView) mode = "cartridge";
-  if (mode === "cartridge" && !cartViewer) mode = "rifle";
-  previewMode = mode;
-  $("pv-cartridge").setAttribute("aria-pressed", mode === "cartridge");
-  $("pv-rifle").setAttribute("aria-pressed", mode === "rifle");
-  $("cartridge-view").hidden = mode !== "cartridge";
-  $("rifle-view").hidden = mode !== "rifle";
-  $("pv-pull-wrap").hidden = mode !== "cartridge";
+function setPreview(m) {
+  if (m === "rifle" && !rifleView) m = "cartridge";
+  if (m === "cartridge" && !cartViewer) m = "rifle";
+  previewMode = m;
+  $("pv-cartridge").setAttribute("aria-pressed", m === "cartridge");
+  $("pv-rifle").setAttribute("aria-pressed", m === "rifle");
+  $("cartridge-view").hidden = m !== "cartridge";
+  $("rifle-view").hidden = m !== "rifle";
+  $("pv-pull-wrap").hidden = m !== "cartridge";
   updatePreview();
 }
 
@@ -417,10 +468,24 @@ function initPreviews() {
   $("pv-pull").onchange = (e) => cartViewer?.setPulled(e.target.checked);
   $("use-capacity").onclick = () => {
     if (!cartridge) return;
-    $("f-barrel-chamber_volume").value = Number(cartridge.stats.powderSpace.toPrecision(4));
+    const f = schema.fields.barrel.find((x) => x[0] === "chamber_volume");
+    writeField("barrel", f, cartridge.stats.powderSpace * 1e-6);
     syncAll();
     gunChanged();
   };
+}
+
+// ---------- mode (easy / expert) ----------
+function setMode(m) {
+  mode = m;
+  store("gun-sim-mode", m);
+  for (const b of document.querySelectorAll("#mode-seg button")) b.setAttribute("aria-pressed", b.dataset.mode === m);
+  $("easy").hidden = m !== "easy";
+  $("easy-out").hidden = m !== "easy";
+  $("expert").hidden = m !== "expert";
+  $("derived").hidden = m !== "expert";
+  if (m === "easy") setPreview("rifle");
+  else updatePreview();
 }
 
 // ---------- firing range ----------
@@ -496,11 +561,11 @@ function initRange() {
       const btn = $("replay");
       btn.disabled = true;
       try {
-        const action = await backend.cycle({
+        const act = await backend.cycle({
           gun: lastGun, model: lastShot.model, burst: lastRequest.burst, rounds,
           blowdown: lastRequest.blowdown, ambient_pressure: lastRequest.ambient_pressure,
         });
-        lastShot = { ...lastShot, action };
+        lastShot = { ...lastShot, action: act };
       } catch (e) {
         showError(`Replay: ${e.message}`);
         return;
@@ -524,49 +589,60 @@ function syncRange() {
 }
 
 function showTab(name) {
+  currentTab = name;
   for (const b of document.querySelectorAll("nav.tabs button")) b.setAttribute("aria-selected", b.dataset.tab === name);
-  $("editor").hidden = name !== "editor";
+  $("workshop").hidden = name !== "workshop";
   $("range-tab").hidden = name !== "range";
+  $("target-tab").hidden = name !== "target";
+  $("analysis-tab").hidden = name !== "analysis";
   if (name === "range") {
     syncRange();
+  } else if (name === "analysis") {
     requestAnimationFrame(drawAll);
+  } else if (name === "target") {
+    if (target?.result) requestAnimationFrame(() => target.show(target.result));
+    else if (lastResult && shotVersion === gunVersion) target?.shoot(false);
   } else {
     updatePreview();
   }
+  window.scrollTo({ top: 0 });
 }
 
 // ---------- charts ----------
 function drawAll() {
-  if ($("range-tab").hidden) return;
+  if ($("analysis-tab").hidden) return;
   const colors = ["--s1", "--s2", "--s3", "--s4"].map(cssVar);
   const results = lastResult ? lastResult.results : [];
+  const P = (p) => toDisplay(p, "pressure"), V = (v) => toDisplay(v, "velocity");
+  const X = (m) => toDisplay(m, "length_mm");
   const pressure = [], velocity = [], profile = [];
   results.forEach((r, i) => {
     const c = colors[i % colors.length];
     const t = r.time.map((v) => v * 1e3);
-    pressure.push({ label: `${r.model} breech`, color: c, x: t, y: r.breech_pressure.map((p) => p / 1e6) });
-    pressure.push({ label: `${r.model} base`, color: c, dash: true, x: t, y: r.base_pressure.map((p) => p / 1e6) });
-    velocity.push({ label: r.model, color: c, x: r.travel.map((x) => x * 1e3), y: r.velocity });
+    pressure.push({ label: `${r.model} breech`, color: c, x: t, y: r.breech_pressure.map(P) });
+    pressure.push({ label: `${r.model} base`, color: c, dash: true, x: t, y: r.base_pressure.map(P) });
+    velocity.push({ label: r.model, color: c, x: r.travel.map(X), y: r.velocity.map(V) });
   });
   const fluid = results.find((r) => r.profiles.length);
   if (fluid) {
     // Up to 4 evenly spread snapshots; colour by order.
     const step = Math.max(1, Math.floor(fluid.profiles.length / 4));
     fluid.profiles.filter((_, i) => i % step === 0).slice(0, 4).forEach((pr, i) => {
-      profile.push({ label: `${(pr.time * 1e3).toFixed(3)} ms`, color: colors[i % colors.length],
-                     x: pr.x.map((x) => x * 1e3), y: pr.p.map((p) => p / 1e6) });
+      profile.push({ label: `${(pr.time * 1e3).toFixed(3)} ms`, color: colors[i % colors.length], x: pr.x.map(X), y: pr.p.map(P) });
     });
   }
   const drop = [], flight = [];
   if (lastTraj) {
-    drop.push({ label: "drop", color: colors[0], x: lastTraj.range, y: lastTraj.drop.map((y) => y * 100) });
-    flight.push({ label: "velocity", color: colors[1], x: lastTraj.range, y: lastTraj.velocity });
+    const R = (m) => toDisplay(m, "length_m");
+    drop.push({ label: "drop", color: colors[0], x: lastTraj.range.map(R), y: lastTraj.drop.map((y) => toDisplay(y, "drop")) });
+    flight.push({ label: "velocity", color: colors[1], x: lastTraj.range.map(R), y: lastTraj.velocity.map(V) });
   }
-  drawChart($("c-drop"), { series: drop, xlabel: "range (m)", ylabel: "drop (cm)", legendBottom: true });
-  drawChart($("c-flight"), { series: flight, xlabel: "range (m)", ylabel: "velocity (m/s)" });
-  drawChart($("c-pressure"), { series: pressure, xlabel: "time (ms)", ylabel: "pressure (MPa)" });
-  drawChart($("c-velocity"), { series: velocity, xlabel: "travel (mm)", ylabel: "velocity (m/s)", legendBottom: true });
-  drawChart($("c-profile"), { series: profile, xlabel: "position from seated base (mm)", ylabel: "pressure (MPa)" });
+  const pl = label("pressure"), vl = label("velocity"), ml = label("length_mm"), rl = label("length_m");
+  drawChart($("c-drop"), { series: drop, xlabel: `range (${rl})`, ylabel: `drop (${label("drop")})`, legendBottom: true });
+  drawChart($("c-flight"), { series: flight, xlabel: `range (${rl})`, ylabel: `velocity (${vl})` });
+  drawChart($("c-pressure"), { series: pressure, xlabel: "time (ms)", ylabel: `pressure (${pl})` });
+  drawChart($("c-velocity"), { series: velocity, xlabel: `travel (${ml})`, ylabel: `velocity (${vl})`, legendBottom: true });
+  drawChart($("c-profile"), { series: profile, xlabel: `position from seated base (${ml})`, ylabel: `pressure (${pl})` });
   const bed = results.find((r) => r.grain_bed)?.grain_bed;
   $("bed-panel").hidden = !bed;
   if (bed) {
@@ -587,10 +663,11 @@ function drawAll() {
     else if (a.kind !== "bolt") motion.push({ label: "bolt travel (mm)", color: colors[1], x: t, y: a.bolt.map((v) => v * 1e3) });
     motion.push({ label: "muzzle rise (mrad)", color: colors[2], x: t, y: a.pitch.map((v) => v * 1e3) });
   }
+  const F = (f) => toDisplay(f, "force");
   results.forEach((r, i) => {
     if (!r.action) return;
     const a = r.action;
-    const y = a.stance === "free" ? a.recoil_velocity.map((v) => v * 100) : a.shoulder_force;
+    const y = a.stance === "free" ? a.recoil_velocity.map((v) => v * 100) : a.shoulder_force.map(F);
     shoulder.push({ label: r.model, color: colors[i % colors.length], x: a.time.map((v) => v * 1e3), y });
   });
   const stance = shown?.action.stance ?? "shoulder", free = stance === "free";
@@ -598,7 +675,7 @@ function drawAll() {
     : stance === "hands" ? "Force on the shooter's hands" : "Force on the shooter's shoulder";
   drawChart($("c-motion"), { series: motion, xlabel: "time (ms)", ylabel: "mm · mrad" });
   drawDevice();
-  drawChart($("c-shoulder"), { series: shoulder, xlabel: "time (ms)", ylabel: free ? "velocity (cm/s)" : "force (N)" });
+  drawChart($("c-shoulder"), { series: shoulder, xlabel: "time (ms)", ylabel: free ? "velocity (cm/s)" : `force (${label("force")})` });
 
   const sound = [], blast = [];
   if (lastSound) {
@@ -617,30 +694,25 @@ function drawAll() {
 let lastTraj = null;
 let trajRequest = 0;
 
+const mainShot = () => lastResult ? (lastResult.results.find((r) => r.model === "fluid") || lastResult.results[0]) : null;
+
 /** Fly the last shot's projectile downrange from its muzzle velocity and show curves and table. */
 async function updateTrajectory() {
   if (!lastGun || !lastResult) return;
-  const shot = lastResult.results.find((r) => r.model === "fluid") || lastResult.results[0];
-  const num = (id) => Number($(id).value);
+  const shot = mainShot();
+  if (!shot.left_muzzle) return;
   const id = ++trajRequest;
   const payload = {
     gun: lastGun, muzzle_velocity: shot.muzzle_velocity,
-    zero_range: num("t-zero"), max_range: num("t-range"), sight_height: num("t-sight") / 1e3, crosswind: num("t-wind"),
+    zero_range: siOf($("t-zero")), max_range: siOf($("t-range")), sight_height: siOf($("t-sight")), crosswind: siOf($("t-wind")),
   };
-  try { const s = getSound(); payload.atmosphere = { temperature: s.temperature, humidity: s.humidity, pressure: s.pressure }; } catch (e) { /* defaults */ }
+  const atm = atmosphere();
+  if (atm) payload.atmosphere = atm;
   try {
     const data = await backend.trajectory(payload);
     if (id !== trajRequest) return;
     lastTraj = data;
-    $("traj-status").textContent = `${data.drag_model} BC ${(data.ballistic_coefficient / 703.0696).toFixed(3)} lb/in²` +
-      (data.stability ? ` · spin drift included (Sg ${data.stability.toFixed(2)})` : "") +
-      (data.stop_reason === "max range" ? "" : ` · flight ended at ${data.max_range.toFixed(0)} m (${data.stop_reason})`);
-    const f = (v, d) => v.toFixed(d);
-    $("traj-table").innerHTML = "<table><tr><th>range (m)</th><th>drop (cm)</th><th>drop (MOA)</th><th>windage (cm)</th><th>of which spin (cm)</th>" +
-      "<th>velocity (m/s)</th><th>energy (J)</th><th>time (s)</th></tr>" +
-      data.table.map((r) => `<tr><td>${f(r.range, 0)}</td><td>${f(r.drop * 100, 1)}</td><td>${f(r.drop_moa, 1)}</td>` +
-        `<td>${f(r.windage * 100, 1)}</td><td>${f(r.spin_drift * 100, 1)}</td><td>${f(r.velocity, 0)}</td><td>${f(r.energy, 0)}</td><td>${f(r.time, 3)}</td></tr>`).join("") +
-      "</table>";
+    showTrajTable(data);
   } catch (e) {
     if (id !== trajRequest) return;
     lastTraj = null;
@@ -650,23 +722,58 @@ async function updateTrajectory() {
   drawAll();
 }
 
+function showTrajTable(data) {
+  $("traj-status").textContent = `${data.drag_model} BC ${(data.ballistic_coefficient / 703.0696).toFixed(3)} lb/in²` +
+    (data.stability ? ` · spin drift included (Sg ${data.stability.toFixed(2)})` : "") +
+    (data.stop_reason === "max range" ? "" : ` · flight ended at ${fmt(data.max_range, "length_m")} (${data.stop_reason})`);
+  const f = (v, d) => v.toFixed(d);
+  const L = label("length_m"), D = label("drop"), V = label("velocity"), E = label("energy");
+  $("traj-table").innerHTML = `<table class="data"><tr><th>range (${L})</th><th>drop (${D})</th><th>drop (MOA)</th><th>drop (mil)</th>` +
+    `<th>windage (${D})</th><th>of which spin (${D})</th><th>velocity (${V})</th><th>energy (${E})</th><th>time (s)</th></tr>` +
+    data.table.map((r) => `<tr><td>${f(toDisplay(r.range, "length_m"), 0)}</td><td>${f(toDisplay(r.drop, "drop"), 1)}</td>` +
+      `<td>${f(r.drop_moa, 1)}</td><td>${f(r.drop_mil, 2)}</td><td>${f(toDisplay(r.windage, "drop"), 1)}</td>` +
+      `<td>${f(toDisplay(r.spin_drift, "drop"), 1)}</td><td>${f(toDisplay(r.velocity, "velocity"), 0)}</td>` +
+      `<td>${f(toDisplay(r.energy, "energy"), 0)}</td><td>${f(r.time, 3)}</td></tr>`).join("") + "</table>";
+}
+
 // ---------- results ----------
+function showSummary(data, gun) {
+  const r = data.results.find((x) => x.model === "fluid") || data.results[0];
+  const tiles = [];
+  const tile = (k, v, s = "", cls = "") => tiles.push(`<div class="stat ${cls}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`);
+  if (!r.left_muzzle) tile("Projectile", "stuck", "it did not leave the muzzle", "bad");
+  tile("Muzzle velocity", fmt(r.muzzle_velocity, "velocity"), `${r.model} model`);
+  const mass = gun.projectile.type === "apfsds" ? gun.projectile.penetrator_mass : gun.projectile.mass;
+  tile("Muzzle energy", fmt(0.5 * mass * r.muzzle_velocity ** 2, "energy"));
+  tile("Peak breech pressure", fmt(r.peak_breech_pressure, "pressure"));
+  tile("Time in barrel", `${(r.muzzle_time * 1e3).toFixed(3)} ms`, `${(r.burnt_at_muzzle * 100).toFixed(0)} % of the powder burnt`);
+  const a = r.action;
+  if (a) {
+    tile("Recoil", fmt(a.impulse, "impulse"), `free recoil ${fmt(a.free_recoil_energy, "energy", 1)}`);
+    const ok = ["cycled", "manual", "fired", "breech opened"].includes(a.status) || a.status.startsWith("empty");
+    tile("Action", a.cyclic_rate ? `${a.cyclic_rate.toFixed(0)} rpm` : (ok ? "OK" : "fault"), a.status, ok ? "" : "bad");
+  }
+  if (r.spin?.stability) tile("Stability", `S<sub>g</sub> ${r.spin.stability.toFixed(2)}`, `${(r.spin.spin_rpm / 1e3).toFixed(0)}k rpm`, r.spin.stability < 1 ? "bad" : "");
+  $("shot-summary").innerHTML = tiles.join("");
+}
+
 function showCards(data, gun) {
   const cards = $("cards");
   cards.innerHTML = "";
   for (const r of data.results) {
-    const card = document.createElement("div");
+    const card = document.createElement("details");
     card.className = "panel card";
-    const status = r.left_muzzle ? "" : '<div class="bad">Projectile did not leave the muzzle</div>';
-    card.innerHTML = `<h2>${r.model} model</h2>${status}<div class="stats">
-      <span>Muzzle velocity</span><span>${r.muzzle_velocity.toFixed(1)} m/s</span>
-      <span>Muzzle energy</span><span>${(0.5 * gun.projectile.mass * r.muzzle_velocity ** 2).toFixed(0)} J</span>${
+    const status = r.left_muzzle ? "" : '<span class="bad">· projectile did not leave the muzzle</span>';
+    const mass = gun.projectile.type === "apfsds" ? gun.projectile.penetrator_mass : gun.projectile.mass;
+    card.innerHTML = `<summary>${r.model[0].toUpperCase() + r.model.slice(1)} model: all the numbers ${status}</summary><div class="stats">
+      <span>Muzzle velocity</span><span>${fmt(r.muzzle_velocity, "velocity", 1)}</span>
+      <span>Muzzle energy</span><span>${fmt(0.5 * gun.projectile.mass * r.muzzle_velocity ** 2, "energy")}</span>${
         gun.projectile.type === "apfsds" ? `
-      <span>The rod's, once the sabot has gone</span><span>${(0.5 * gun.projectile.penetrator_mass * r.muzzle_velocity ** 2).toFixed(0)} J</span>` : ""}
+      <span>The rod's, once the sabot has gone</span><span>${fmt(0.5 * mass * r.muzzle_velocity ** 2, "energy")}</span>` : ""}
       <span>Time in barrel</span><span>${(r.muzzle_time * 1e3).toFixed(3)} ms</span>
-      <span>Peak breech pressure</span><span>${(r.peak_breech_pressure / 1e6).toFixed(1)} MPa</span>
+      <span>Peak breech pressure</span><span>${fmt(r.peak_breech_pressure, "pressure", 1)}</span>
       <span>Charge burnt at exit</span><span>${(r.burnt_at_muzzle * 100).toFixed(1)} %</span>${bedRows(r.grain_bed)}${gapRows(r.gap, gun)}${spinRows(r.spin)}${actionRows(r.action)}${deviceRows(r.device)}${evacuatorRows(r.evacuator)}</div>
-      ${(r.action?.warnings ?? []).map((w) => `<div class="bad">${w}</div>`).join("")}`;
+      ${(r.action?.warnings ?? []).map((w) => `<div class="bad" style="padding:0 16px 10px">${w}</div>`).join("")}`;
     cards.appendChild(card);
   }
 }
@@ -706,20 +813,21 @@ function spinRows(s) {
 function actionRows(a) {
   if (!a) return "";
   const deg = (rad) => (rad * 180 / Math.PI).toFixed(2);
+  const mm = (m) => fmt(m, "length_mm", imperial() ? 2 : 1);
   let rows = `
-      <span>Recoil impulse (incl. gas jet)</span><span>${a.impulse.toFixed(2)} N·s</span>
-      <span>Free recoil</span><span>${a.free_recoil_velocity.toFixed(2)} m/s, ${a.free_recoil_energy.toFixed(1)} J</span>`;
+      <span>Recoil impulse (incl. gas jet)</span><span>${fmt(a.impulse, "impulse")}</span>
+      <span>Free recoil</span><span>${fmt(a.free_recoil_velocity, "velocity", 2)}, ${fmt(a.free_recoil_energy, "energy", 1)}</span>`;
   if (a.stance === "shoulder" || a.stance === "hands") {
     const into = a.stance === "hands" ? "hands" : "shoulder";
     rows += `
-      <span>Into the ${into}</span><span>${(a.max_recoil * 1e3).toFixed(1)} mm, up to ${a.peak_recoil_velocity.toFixed(2)} m/s</span>
-      <span>Peak force on the ${into}</span><span>${a.peak_shoulder_force.toFixed(0)} N</span>`;
+      <span>Into the ${into}</span><span>${mm(a.max_recoil)}, up to ${fmt(a.peak_recoil_velocity, "velocity", 2)}</span>
+      <span>Peak force on the ${into}</span><span>${fmt(a.peak_shoulder_force, "force")}</span>`;
   } else if (a.stance === "mount") {
     const home = a.battery_time !== null
       ? `back in battery after ${(a.battery_time * 1e3).toFixed(0)} ms at ${a.battery_speed.toFixed(2)} m/s`
       : '<span class="bad">not back in battery</span>';
     rows += `
-      <span>Recoil on the mount</span><span>${(a.max_recoil * 1e3).toFixed(1)} mm, up to ${a.peak_recoil_velocity.toFixed(2)} m/s; ${home}</span>
+      <span>Recoil on the mount</span><span>${mm(a.max_recoil)}, up to ${a.peak_recoil_velocity.toFixed(2)} m/s; ${home}</span>
       <span>Peak force on the mount</span><span>${(a.peak_shoulder_force / 1e3).toFixed(1)} kN</span>`;
     if (a.stop_speed !== null) rows += `<span>Recoil stop</span><span class="bad">hit at ${a.stop_speed.toFixed(2)} m/s</span>`;
   }
@@ -754,11 +862,11 @@ function actionRows(a) {
   const ok = a.status === "cycled" || a.status.startsWith("empty");
   const kind = a.kind.replace("_", " ");
   rows += `<span>${kind[0].toUpperCase() + kind.slice(1)} action</span><span class="${ok ? "" : "bad"}">${a.status}` +
-    (a.cycle_time ? ` in ${(a.cycle_time * 1e3).toFixed(1)} ms (${a.cyclic_rate.toFixed(0)} rounds/min)` : "") + "</span>";
-  if (a.rear_speed !== null) rows += `<span>Bolt into the rear stop</span><span>${a.rear_speed.toFixed(1)} m/s</span>`;
-  else rows += `<span>Bolt travel</span><span>${(a.bolt_max_travel * 1e3).toFixed(0)} of ${(a.strokes.stroke * 1e3).toFixed(0)} mm</span>`;
-  if (a.unlock_pressure !== null) rows += `<span>Chamber pressure at unlock</span><span>${(a.unlock_pressure / 1e6).toFixed(1)} MPa</span>`;
-  if (a.gas_peak_pressure !== null) rows += `<span>Peak gas cylinder pressure</span><span>${(a.gas_peak_pressure / 1e6).toFixed(1)} MPa</span>`;
+    (a.cycle_time ? ` in ${(a.cycle_time * 1e3).toFixed(1)} ms${a.cyclic_rate ? ` (${a.cyclic_rate.toFixed(0)} rounds/min)` : ""}` : "") + "</span>";
+  if (a.rear_speed !== null) rows += `<span>Bolt into the rear stop</span><span>${fmt(a.rear_speed, "velocity", 1)}</span>`;
+  else rows += `<span>Bolt travel</span><span>${mm(a.bolt_max_travel)} of ${mm(a.strokes.stroke)}</span>`;
+  if (a.unlock_pressure !== null) rows += `<span>Chamber pressure at unlock</span><span>${fmt(a.unlock_pressure, "pressure", 1)}</span>`;
+  if (a.gas_peak_pressure !== null) rows += `<span>Peak gas cylinder pressure</span><span>${fmt(a.gas_peak_pressure, "pressure", 1)}</span>`;
   if (a.port_cd !== null) rows += `<span>Gas port discharge coefficient</span><span>${a.port_cd.toFixed(2)}${a.port_cd_2d ? " (2D)" : " (assumed)"}</span>`;
   if (a.hammer_energy !== null) rows += `<span>Hammer</span><span>${(a.lock_time * 1e3).toFixed(1)} ms from the sear to ignition, hits the pin with ${a.hammer_energy.toFixed(2)} J</span>`;
   if (a.striker_energy !== null) {
@@ -795,8 +903,8 @@ function evacuatorRows(e) {
 function deviceRows(d) {
   if (!d) return "";
   return `
-      <span>${d.dims.type[0].toUpperCase() + d.dims.type.slice(1).replace("_", " ")} (2D)</span><span>pushes the gun forwards ${d.impulse.toFixed(2)} N·s</span>
-      <span>Peak pressure inside</span><span>${(d.peak_pressure / 1e6).toFixed(2)} MPa</span>
+      <span>${d.dims.type[0].toUpperCase() + d.dims.type.slice(1).replace("_", " ")} (2D)</span><span>pushes the gun forwards ${fmt(d.impulse, "impulse")}</span>
+      <span>Peak pressure inside</span><span>${fmt(d.peak_pressure, "pressure", 2)}</span>
       <span>Heat to its walls</span><span>${d.heat.toFixed(0)} J</span>
       <span>Jet momentum leaving forwards</span><span>${(d.momentum_ratio * 100).toFixed(0)} %</span>`;
 }
@@ -818,11 +926,12 @@ async function fire(animate = true) {
   showError("");
   if (animate) unlockAudio();
   let gun;
-  try { gun = getGun(); } catch (e) { showError(e.message); return; }
+  try { gun = getGun(); } catch (e) { showError(e.message); return false; }
   const models = [...document.querySelectorAll("#model-boxes input:checked")].map((b) => b.value);
-  if (!models.length) { showError("Select at least one model."); return; }
+  if (!models.length) { showError("Select at least one model."); return false; }
   syncRange();
   const id = ++shotId;
+  const version = gunVersion;
   // Start the sound right away; it's needed by the time the projectile leaves the muzzle.
   if ($("sound-on").checked) synthesizeSound(gun, id);
   const btn = $("run");
@@ -843,27 +952,31 @@ async function fire(animate = true) {
     : Promise.resolve(null);
   try {
     lastResult = await backend.simulate(request);
-    showCards(lastResult, gun);
-    drawAll();
     lastGun = gun;
     lastRequest = request;
+    shotVersion = version;
+    showCards(lastResult, gun);
+    showSummary(lastResult, gun);
+    drawAll();
     updateTrajectory();
-    lastShot = lastResult.results.find((r) => r.model === "fluid") || lastResult.results[0];
+    lastShot = mainShot();
     if (lastShot.left_muzzle) {
       btn.textContent = "Simulating flash (2D)…";
       lastShot.plume = await plume;
     }
   } catch (e) {
     showError(e.message);
-    return;
+    return false;
   } finally {
     btn.disabled = false; btn.textContent = "Fire";
   }
   $("replay").disabled = false;
-  if (!range) return;
+  if (target && currentTab === "target") target.shoot(false);
+  if (!range) return true;
   const at = Number(params.get("at"));
   if (params.has("at") && isFinite(at)) range.seek(lastShot, at);
   else if (animate) range.fire(lastShot);
+  return true;
 }
 
 /** Shots per trigger pull: only a self-loading action fires more than one. */
@@ -885,7 +998,7 @@ function heat(f) {
 function drawDevice() {
   const shot = lastResult?.results.find((r) => r.device);
   $("device-panel").hidden = $("device-force-panel").hidden = !shot;
-  if (!shot) return;
+  if (!shot || $("analysis-tab").hidden) return;
   const d = shot.device, snaps = d.snapshots;
   const slider = $("device-snap");
   slider.max = Math.max(0, snaps.length - 1);
@@ -933,13 +1046,14 @@ function drawDevice() {
     ? `${((snap.t - exitT) * 1e3).toFixed(2)} ms after exit · ${d.dims.type.replace("_", " ")}, ${(d.dims.h * 1e3).toFixed(2)} mm cells`
     : "";
   drawChart($("c-device-force"), {
-    series: [{ label: "forwards (against recoil)", color: cssVar("--s1"), x: d.t.map((t) => (t - exitT) * 1e3), y: d.force }],
-    xlabel: "time after exit (ms)", ylabel: "force (N)",
+    series: [{ label: "forwards (against recoil)", color: cssVar("--s1"), x: d.t.map((t) => (t - exitT) * 1e3), y: d.force.map((f) => toDisplay(f, "force")) }],
+    xlabel: "time after exit (ms)", ylabel: `force (${label("force")})`,
   });
 }
 
 // ---------- setup ----------
 async function init() {
+  setSystem(params.get("units") === "imperial" ? "imperial" : savedSystem());
   try {
     backend = await connect();
     schema = await backend.schema();
@@ -948,6 +1062,16 @@ async function init() {
     return;
   }
   buildEditor();
+  if (imperial()) {   // round numbers in the units on screen: 100 and 1000 yd
+    $("t-zero").dataset.si = 91.44;
+    $("t-range").dataset.si = 914.4;
+  }
+  bindUnitInputs();
+  onUnits(unitsChanged);
+  for (const b of document.querySelectorAll("#units-seg button")) {
+    b.setAttribute("aria-pressed", b.dataset.units === getSystem());
+    b.onclick = () => setSystem(b.dataset.units);
+  }
   for (const [key, env] of Object.entries(ENVIRONMENTS)) $("environment").add(new Option(env.label, key));
   for (const [key, p] of Object.entries(PROTECTION)) $("protection").add(new Option(p.label, key));
   $("environment").value = player.environment;
@@ -958,17 +1082,57 @@ async function init() {
   initRange();
 
   const preset = $("preset");
+  preset.add(new Option("—", ""));
   for (const name of Object.keys(schema.presets)) preset.add(new Option(schema.presets[name].name, name));
-  preset.onchange = () => setGun(schema.presets[preset.value]);
-  if (schema.presets[params.get("preset")]) preset.value = params.get("preset");
-  if (preset.options.length) setGun(schema.presets[preset.value]);
+  preset.onchange = () => { if (preset.value) setGun(schema.presets[preset.value]); };
 
   $("model-boxes").innerHTML = schema.models
     .map((m) => `<label><input type="checkbox" value="${m}" checked> ${m}</label>`).join(" ");
 
-  for (const id of ["t-zero", "t-range", "t-sight", "t-wind"]) $(id).onchange = updateTrajectory;
+  target = new TargetRange(backend, schema, {
+    getShot: () => {
+      const shot = mainShot();
+      if (!shot || !shot.left_muzzle || shotVersion !== gunVersion) return null;
+      return { gun: lastGun, muzzle_velocity: shot.muzzle_velocity, atmosphere: atmosphere() };
+    },
+    ensureShot: async () => (await fire(false)) ? target.getShot() : null,
+    onError: showError,
+  });
+
+  // A preset in the URL starts in expert mode with it; otherwise easy mode builds the gun.
+  const startPreset = schema.presets[params.get("preset")] ? params.get("preset") : null;
+  const startMode = startPreset ? "expert" : (params.get("mode") ?? recall("gun-sim-mode") ?? "easy");
+  let firstBuild = true;
+  easy = new EasyMode(backend, schema, {
+    onGun: (gun) => {
+      if (mode !== "easy" && !firstBuild) return;
+      setGun(gun);
+      $("preset").value = "";
+      if (firstBuild && !startPreset) fire(params.has("at"));
+      firstBuild = false;
+    },
+    onError: showError,
+  });
+  if (startPreset) {
+    preset.value = startPreset;
+    setGun(schema.presets[startPreset]);
+    firstBuild = false;
+    fire(params.has("at"));
+  }
+  for (const b of document.querySelectorAll("#mode-seg button")) b.onclick = () => {
+    setMode(b.dataset.mode);
+    if (b.dataset.mode === "easy") easy.build();
+  };
+  setMode(startMode === "expert" ? "expert" : "easy");
+  $("e-to-expert").onclick = () => setMode("expert");
+
+  for (const id of ["t-zero", "t-range", "t-sight", "t-wind"]) $(id).addEventListener("change", updateTrajectory);
   for (const b of document.querySelectorAll("nav.tabs button")) b.onclick = () => showTab(b.dataset.tab);
-  $("go-range").onclick = () => showTab("range");
+  for (const b of document.querySelectorAll("[data-go]")) b.onclick = () => {
+    showTab(b.dataset.go);
+    if (b.dataset.go === "range" && shotVersion !== gunVersion) fire(true);
+    if (b.dataset.go === "target") target.shoot(true);
+  };
   let pending = false;
   const gunForm = (e) => {
     if (!e.target.id?.startsWith("f-")) return;
@@ -1011,6 +1175,7 @@ async function init() {
     if (!file) return;
     try {
       setGun(await backend.parse(await file.text()));
+      setMode("expert");
       showError("");
     } catch (e) {
       showError(`${file.name}: ${e.message}`);
@@ -1029,8 +1194,7 @@ async function init() {
   window.addEventListener("resize", drawAll);
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
 
-  showTab(params.get("tab") === "range" ? "range" : "editor");
-  // Fill in the results for the first preset without animating it.
-  if (preset.options.length) fire(params.has("at"));
+  const tab = params.get("tab");
+  showTab(["range", "target", "analysis"].includes(tab) ? tab : "workshop");
 }
 init();

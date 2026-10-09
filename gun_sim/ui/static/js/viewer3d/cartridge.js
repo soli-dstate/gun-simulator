@@ -14,7 +14,7 @@ import { prism } from "./shapes.js";
 
 const MM = 1e3;
 const DEG = Math.PI / 180;
-const CORE_NAMES = ["lead", "steel", "copper", "tungsten"];   // config.CORE_MATERIALS, in index order
+const CORE_NAMES = ["lead", "steel", "copper", "tungsten", "hardened_steel", "tungsten_carbide"];   // config.CORE_MATERIALS, in index order
 export const FINS = 6;
 export const PETALS = 3;
 const PETAL_GAP = 0.04;   // rad between the sabot's petals

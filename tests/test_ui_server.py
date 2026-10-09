@@ -165,3 +165,16 @@ def test_plume_endpoint(base_url):
     data = post(base_url + "/api/plume", json.dumps({"gun": gun, "blowdown": 0.004}).encode())
     assert len(base64.b64decode(data["frames"])) == data["nx"] * data["nr"] * data["layers"] * 2
     assert data["afterburn"] >= 0 and data["bore"]["t"]
+
+
+def test_design_and_target_endpoints(base_url):
+    with urllib.request.urlopen(base_url + "/api/schema") as r:
+        schema = json.load(r)
+    assert any(c["imperial"] == ".308 Winchester" for c in schema["easy"]["cartridges"])
+    assert "ar500" in schema["targets"]["materials"]
+    out = post(base_url + "/api/design", json.dumps({"cartridge": "9x19", "platform": "pistol_striker"}).encode())
+    assert out["prediction"]["left_muzzle"] and out["notes"]
+    hit = post(base_url + "/api/target", json.dumps({"gun": out["gun"], "muzzle_velocity": 360.0, "distance": 10.0,
+                                                   "thickness": 0.00635}).encode())
+    assert hit["verdict"] == "stopped" and hit["perforates_to"] is None
+    assert len(hit["series"]["range"]) == len(hit["series"]["depth"]) == len(hit["series"]["rha_depth"])
