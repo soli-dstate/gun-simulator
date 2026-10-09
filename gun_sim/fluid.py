@@ -74,7 +74,7 @@ from dataclasses import asdict
 
 import numpy as np
 
-from . import action, devices, rifling
+from . import action, devices, kernels, rifling
 from .chamber import chamber_profile
 from .config import Gun
 from .grainbed import GrainBed
@@ -145,6 +145,63 @@ def _hllc(qL, uL, pL, eL, cL, qR, uR, pR, eR, cR, w):
                    np.where(w <= sL, F_L - w * U_L, F_L + sL * (Us_L - U_L) - w * Us_L),
                    np.where(w <= sR, F_R + sR * (Us_R - U_R) - w * Us_R, F_R - w * U_R))
     return out[0], out[1], out[2], p_star
+
+
+_MIRROR = np.array([1.0, -1.0, 1.0, 1.0, 1.0])[:, None]
+_NO_GHOST = np.zeros(5)
+
+
+def _faces(q, u, p, e, c, w, ghost=None):
+    """Fluxes at the n+1 nodes, MUSCL-reconstructed.
+
+    ghost=None: the right end is a wall (the projectile, moving at w[-1]);
+    otherwise it is the open muzzle's outside state (q, u, p, e, c).
+    kernels.bore_fluxes() is the compiled twin of this.
+    """
+    prim = np.stack((q, u, p, e, c))
+    ghost_l = prim[:, :1] * _MIRROR
+    if ghost is None:
+        ghost_r = prim[:, -1:] * _MIRROR
+        ghost_r[1] += 2 * w[-1]
+    else:
+        ghost_r = np.array(ghost, dtype=float)[:, None]
+    ext = np.concatenate((ghost_l, prim, ghost_r), axis=1)
+    d = np.diff(ext, axis=1)
+    half = 0.5 * _van_leer(d[:, :-1], d[:, 1:])
+    lo, hi = prim - half, prim + half  # states at each cell's left and right faces
+    left = np.concatenate((lo[:, :1] * _MIRROR, hi), axis=1)
+    if ghost is None:
+        edge = hi[:, -1:] * _MIRROR
+        edge[1] += 2 * w[-1]
+    else:
+        edge = ghost_r
+    rght = np.concatenate((lo, edge), axis=1)
+    return _hllc(*left, *rght, w)
+
+
+def _bore_rhs(q, u, p, e, c, w, nodes, ghost, chamber):
+    """Fluxes, face areas, and the rates of change of the cell totals (less any two-phase bed's share).
+
+    Also the fastest wave relative to the mesh, for the time step. kernels.bore_rhs() is the compiled twin.
+    """
+    area = chamber.area_at(nodes)
+    area[-1] = chamber.bore_area
+    fm, fp, fe, p_star = _faces(q, u, p, e, c, w, ghost)
+    d_area = np.diff(area)
+    d_mass = -np.diff(area * fm)
+    d_mom = -np.diff(area * fp) + p * d_area
+    d_energy = -np.diff(area * fe)
+    wave = np.max(np.abs(u - 0.5 * (w[:-1] + w[1:])) + c)
+    return fm, fp, fe, p_star, area, d_area, d_mass, d_mom, d_energy, wave
+
+
+def bore_rhs(q, u, p, e, c, w, nodes, ghost, chamber):
+    """_bore_rhs(), compiled when Numba is there."""
+    if kernels.ENABLED:
+        wall = ghost is None
+        return kernels.bore_rhs(q, u, p, e, c, w, nodes, wall, _NO_GHOST if wall else np.array(ghost, dtype=float),
+                                chamber.edges, chamber.area, chamber.bore_area)
+    return _bore_rhs(q, u, p, e, c, w, nodes, ghost, chamber)
 
 
 _cache: dict = {}
@@ -305,6 +362,10 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
 
     def primitives(mass, mom, energy, x_p, grains=None):
         nodes = xi * (l0 + x_p)
+        if kernels.ENABLED and not two_phase:
+            return (nodes, *kernels.bore_primitives(
+                mass, mom, energy, nodes, grain_edges(x_p), (omega - burnt) / prop.density, grains_move,
+                chamber.edges, chamber._cumulative, chamber.bore_area, gamma, b))
         v_cell = np.diff(chamber.volume_at(nodes))
         if two_phase:  # a bed squeezed nearly solid still leaves the gas a little room
             rho = mass / np.maximum(v_cell - bed.solid_volume(grains), 0.02 * v_cell)
@@ -318,46 +379,17 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         c = np.sqrt(gamma * p / ((mass / v_cell) * (1 - b * rho)))
         return nodes, v_cell, rho, u, e, p, c
 
-    def faces(q, u, p, e, c, w, right):
-        """Fluxes at the n+1 nodes, MUSCL-reconstructed.
-
-        right = "wall" (the projectile, moving at w[-1]) or, for an open
-        muzzle, a function of the cell states returning the ghost (q, u, p, e, c).
-        """
-        prim = np.stack((q, u, p, e, c))
-        mirror = np.array([1.0, -1.0, 1.0, 1.0, 1.0])[:, None]
-        ghost_l = prim[:, :1] * mirror
-        if right == "wall":
-            ghost_r = prim[:, -1:] * mirror
-            ghost_r[1] += 2 * w[-1]
-        else:
-            ghost_r = np.array(right(q, u, p, e, c), dtype=float)[:, None]
-        ext = np.concatenate((ghost_l, prim, ghost_r), axis=1)
-        d = np.diff(ext, axis=1)
-        half = 0.5 * _van_leer(d[:, :-1], d[:, 1:])
-        lo, hi = prim - half, prim + half  # states at each cell's left and right faces
-        left = np.concatenate((lo[:, :1] * mirror, hi), axis=1)
-        if right == "wall":
-            edge = hi[:, -1:] * mirror
-            edge[1] += 2 * w[-1]
-        else:
-            edge = ghost_r
-        rght = np.concatenate((lo, edge), axis=1)
-        return _hllc(*left, *rght, w)
-
     def rhs(state, moving, right):
         """Time derivatives of the state (cell totals, the projectile, and a two-phase bed's grains), plus diagnostics."""
         mass, mom, energy, x_p, v_p = state[:5]
         grains = state[5] if two_phase else None
         nodes, v_cell, rho, u, e, p, c = primitives(mass, mom, energy, x_p, grains)
-        area = chamber.area_at(nodes)
-        area[-1] = bore
         w = xi * v_p
-        fm, fp, fe, p_star = faces(mass / v_cell, u, p, e, c, w, right)
-        d_area = np.diff(area)
-        d_mass = -np.diff(area * fm)
-        d_mom = -np.diff(area * fp) + p * d_area
-        d_energy = -np.diff(area * fe)
+        # right = "wall" (the projectile, moving at w[-1]) or, for an open muzzle,
+        # a function of the cell states returning the ghost (q, u, p, e, c).
+        q = mass / v_cell
+        fm, fp, fe, p_star, area, d_area, d_mass, d_mom, d_energy, wave = bore_rhs(
+            q, u, p, e, c, w, nodes, None if right == "wall" else right(q, u, p, e, c), chamber)
         p_breech = p_star[0]
         p_base = p_star[-1] if right == "wall" else p[-1]
         rates = [d_mass, d_mom, d_energy, v_p, 0.0]
@@ -378,7 +410,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         force = ((p_breech + bed_breech - ambient_pressure) * area[0]
                  + np.sum((p - ambient_pressure) * d_area) + bed_walls
                  - bore * resist - held)
-        dt_max = cfg.cfl * min((nodes[1] - nodes[0]) / np.max(np.abs(u - 0.5 * (w[:-1] + w[1:])) + c), dt_bed)
+        dt_max = cfg.cfl * min((nodes[1] - nodes[0]) / wave, dt_bed)
         diag = {"p": p, "u": u, "rho": rho, "c": c, "e": e, "p_breech": p_breech, "p_base": p_base,
                 "breech_push": p_breech + bed_breech, "force": force, "dt_max": dt_max, "flux": (fm, fp, fe),
                 "v_cell": v_cell, "nodes": nodes, "outflow": outflow}
@@ -428,6 +460,11 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
     def wall_losses(dt, nodes, rho):
         """Wall friction and heat loss over dt. Returns the momentum friction gives the barrel."""
         nonlocal mom, energy
+        if kernels.ENABLED:
+            mom, energy, q, diameter, friction = kernels.bore_wall_losses(
+                mass, mom, energy, rho, nodes, chamber.edges, chamber.area, chamber.bore_area, dt, cv, gamma,
+                WALL_FRICTION, GAS_VISCOSITY, GAS_PRANDTL, WALL_TEMPERATURE)
+            return heat_flux(dt, nodes, q, diameter, friction)
         diameter = np.sqrt(4 / np.pi * chamber.area_at(0.5 * (nodes[:-1] + nodes[1:])))
         # Friction (implicit, so it can only slow the gas) turns kinetic energy into heat.
         u_old = mom / mass
@@ -441,12 +478,16 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         t_gas = (energy / mass - 0.5 * u_new**2) / cv
         q = mass * cv * np.maximum(t_gas - WALL_TEMPERATURE, 0.0) * (1 - np.exp(-gamma * k_h * dt))
         energy = energy - q
+        return heat_flux(dt, nodes, q, diameter, np.sum(mass * (u_old - u_new)))
+
+    def heat_flux(dt, nodes, q, diameter, friction):
+        """Record the heat the cells lost (q) and the flux into the wall at the throat; returns friction."""
         heat["total"] += float(q.sum())
         dx = nodes[1] - nodes[0]
         j = int(x_throat / dx)
         heat["t"].append(t + dt)
         heat["flux"].append(q[j] / (np.pi * diameter[j] * dx * dt) if j < n else 0.0)
-        return np.sum(mass * (u_old - u_new))
+        return friction
 
     def exchange(dt, new):
         """Unpack a step's new state and, for a two-phase bed, let the grains and the gas trade over it.

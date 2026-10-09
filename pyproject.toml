@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Customisable gun simulator with fluid-dynamics interior ballistics"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26", "pywebview>=6.0"]
+dependencies = ["numpy>=1.26", "numba>=0.61", "pywebview>=6.0"]
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.8"]

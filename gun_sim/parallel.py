@@ -25,8 +25,10 @@ _lock = threading.Lock()
 
 
 def _init() -> None:
-    # Import the whole simulator up front, so the first job doesn't pay for it.
+    # Import the whole simulator and compile its kernels up front, so the first job doesn't pay for them.
+    from . import kernels
     from .ui import api  # noqa: F401
+    kernels.warm()
 
 
 def _job(seed, fn, args, kwargs):

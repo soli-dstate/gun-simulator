@@ -52,6 +52,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import kernels
+
 DTYPE = np.float32  # half the memory traffic of float64; plenty for a few cells across a bore
 R_AIR = 287.05
 GAMMA_AIR = 1.4
@@ -266,6 +268,18 @@ class Axisymmetric:
         return left, right
 
     def _rhs(self, U):
+        """dU/dt, the flows out through the edges, the force on the device, and the time step allowed."""
+        if kernels.ENABLED:
+            rhs = kernels.axisym_rhs_parallel if self.solid.size >= kernels.PARALLEL_CELLS else kernels.axisym_rhs
+            dU, flows, force, rate = rhs(
+                U, self.open_x, self.open_r, self.solid, self.fixed, self.area_x, self.area_r, self.d_area_r,
+                self.volume, self.force_faces, self.out_right, self.out_left, self.out_top, self.size,
+                float(self.p0), float(self.cva), float(self.cvp), float(self.rp))
+            return dU, flows, force, self.cfl / max(rate, 1e-9)
+        dU, flows, force, prims = self._rhs_numpy(U)
+        return dU, flows, force, self.max_dt(prims)
+
+    def _rhs_numpy(self, U):
         rho, u, v, p, Y, cv, rg = self.primitives(U)
         W = np.stack((rho, u, v, p, Y) + ((np.clip(U[5] / rho, 0.0, 1.0),) if self.afterburn else ()))
         # x faces: normal u, tangential v.
@@ -312,17 +326,27 @@ class Axisymmetric:
 
     def step(self, dt_max: float) -> float:
         """One SSP-RK2 step of at most dt_max. Returns the step taken."""
-        k1, f1, force1, prims = self._rhs(self.U)
-        dt = min(self.max_dt(prims), dt_max)
+        k1, f1, force1, dt_allowed = self._rhs(self.U)
+        dt = float(min(dt_allowed, dt_max))  # a NumPy float64 would turn U into float64
         U1 = self.U + dt * k1
         self._apply_fixed(U1)
         k2, f2, force2, _ = self._rhs(U1)
         U = 0.5 * (self.U + U1 + dt * k2)
         self._apply_fixed(U)
-        if self.wall_heat:
-            self._cool(U, dt)
-        if self.afterburn:
-            self._burn(U, dt)
+        if kernels.ENABLED and (self.wall_heat or self.afterburn):
+            a = self.afterburn or Afterburn(1.0, 1.0, 1.0)
+            lost, released = kernels.axisym_sources(
+                U, dt, self.solid, self.fixed, self.volume, float(self.cva), float(self.cvp), float(self.rp),
+                self.wall_ratio if self.wall_heat else self.wall_ratio[:0], WALL_STANTON, WALL_TEMPERATURE,
+                self.afterburn is not None, a.fuel, a.heat, a.oxygen, float(a.inhibition), a.rate, a.activation,
+                a.ceiling, O2_IN_AIR)
+            self.heat += lost
+            self.burnt += released
+        else:
+            if self.wall_heat:
+                self._cool(U, dt)
+            if self.afterburn:
+                self._burn(U, dt)
         self.U = U
         self.out += 0.5 * dt * (f1 + f2)
         self.impulse += 0.5 * dt * (force1 + force2)

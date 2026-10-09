@@ -570,7 +570,8 @@ Where the geometry really is two-dimensional, a 2D solver takes over from the
   and propellant gas (a conserved mass fraction tracks the propellant). Finite
   volumes on a uniform grid of square cells (rings and cylinders, with the hoop
   term so gas at rest stays at rest). It uses HLL fluxes, MUSCL reconstruction
-  (minmod) and SSP-RK2 time stepping, in float32 NumPy.
+  (minmod) and SSP-RK2 time stepping, in float32 (the fluxes compiled with
+  Numba, on several threads for the larger grids).
 - **Walls** are face apertures, the share of each face that is open. Solid cells
   have every face shut. A partly open face is a perforated plate: flux passes
   through the open part, and each side pushes on the shut part with its own
@@ -884,6 +885,8 @@ gun_sim/
   lumped.py      0-D reference model
   action.py      recoil and action cycling: gun, bolt, gas system, shooter, bursts
   axisym.py      2D axisymmetric compressible flow solver (face apertures for walls and ports)
+  kernels.py     the two flow solvers' inner loops, compiled with Numba
+  parallel.py    worker processes, so a shot's separate solves run at the same time
   devices.py     muzzle brake/suppressor/flash hider and gas port geometry, coupling to the bore, discharge coefficient
   plume.py       muzzle flash and smoke: the bore's outflow solved in 2D into the air, with afterburning
   propellants.py propellant compositions and grain shapes -> form function
@@ -922,13 +925,16 @@ build_exe.ps1    one-command Windows build
 
 ## Why Python?
 
-- NumPy makes the vectorised solver short and readable. A shot takes about
-  0.5 s at 100 cells.
+- NumPy makes the solver short and readable. The steps are small (a few
+  hundred cells), so in NumPy the time goes on the calls rather than the
+  arithmetic: the inner loops (fluxes, cell states, wall losses, and the 2D
+  solver's step) are compiled with Numba in [kernels.py](gun_sim/kernels.py),
+  which makes a shot 3 to 4 times faster (an AKM: 2.5 s down to 0.6 s for the
+  bore). The first run compiles them, which takes several seconds (once per
+  install or build: they are cached). `GUN_SIM_JIT=0` runs the NumPy versions,
+  which the tests hold the compiled ones to.
 - The scientific tooling (plotting, SciPy, notebooks for experiments) is
   hard to beat for a physics project still being worked out.
-- If performance becomes a limit (2D solvers, many shots for optimisation),
-  the solver kernels can move to Numba or to a Rust/C++ extension without
-  changing the rest of the code.
 
 ## Roadmap
 
