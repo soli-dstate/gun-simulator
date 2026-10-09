@@ -261,7 +261,7 @@ _cache_lock = threading.Lock()
 
 def simulate_cached(gun, blowdown_time: float, ambient_pressure: float = fluid.ATMOSPHERE) -> tuple:
     """simulate() on the cached fluid shot, remembered for the last couple of guns. Returns (plume, shot)."""
-    key = json.dumps([asdict(gun), blowdown_time, ambient_pressure], sort_keys=True)
+    key = fluid._cache_key(gun, blowdown_time, ambient_pressure)
     with _cache_lock:
         if key not in _cache:
             shot = fluid.simulate_cached(gun, blowdown_time=blowdown_time, ambient_pressure=ambient_pressure)

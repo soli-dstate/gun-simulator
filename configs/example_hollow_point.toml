@@ -72,3 +72,8 @@ pressure = 5e6  # Pa
 cells        = 100
 cfl          = 0.5
 record_every = 5
+
+[feed]
+# Detachable box magazine.
+type     = "single_stack"
+capacity = 5

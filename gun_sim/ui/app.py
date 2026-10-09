@@ -36,6 +36,9 @@ class Bridge:
     def simulate(self, payload):
         return self._call(api.simulate, payload)
 
+    def cycle(self, payload):
+        return self._call(api.cycle, payload)
+
     def synthesize(self, payload):
         return self._call(api.synthesize, payload)
 

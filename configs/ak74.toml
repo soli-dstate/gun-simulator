@@ -113,3 +113,7 @@ shoulder_damping   = 400.0
 
 [appearance]
 style = "ak"
+
+[feed]
+type     = "double_stack"
+capacity = 30

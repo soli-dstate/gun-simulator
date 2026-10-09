@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .feed import FEED_TYPES
 from .propellants import COMPOSITIONS, form_coefficients, grain_geometry, is_multi_perf, sliver_phase, suppressant
 
 
@@ -427,6 +428,32 @@ class Action:
 
 
 @dataclass
+class Feed:
+    """The magazine or belt the rounds come from (gun_sim/feed.py).
+
+    "single_stack", "double_stack" and "quad_stack" are box magazines (one
+    column, two staggered, two double stacks side by side under a funnel);
+    "drum" winds them in a spiral on a sprung rotor under a short tower; "belt"
+    links them in a belt drawn across a feed tray by a cam on the bolt group.
+    None = filled in for the type.
+    """
+    type: str = "double_stack"
+    capacity: int | None = None             # rounds (None = 10, 30, 60, 75, 100)
+    spring_empty: float | None = None       # N, magazine spring on the follower, empty
+    spring_full: float | None = None        # N, on the top round, full
+    follower_mass: float | None = None      # kg (a drum's rotor, as felt at the lips)
+    friction: float = 0.15                  # top round on the bolt and the feed lips (lubricated brass on steel)
+    hold_open: bool = True                  # the follower lifts the bolt catch on an empty magazine
+    feed_angle: float | None = None         # degrees the lips tip the round's nose towards the bore; None = aimed at it
+    ramp_angle: float = 35.0                # degrees, feed ramp from the bore axis
+    # Belt.
+    link_mass: float = 0.004                # kg per link
+    belt_hang: float = 0.25                 # m of belt hanging from the feed tray
+    belt_cam_start: float | None = None     # m of carrier travel where the feed cam starts drawing the belt (None = 20 % of the stroke)
+    belt_cam: float | None = None           # m of carrier travel over which it draws one link (None = 35 % of the stroke)
+
+
+@dataclass
 class Shooter:
     """What holds the gun. "free" is free recoil: nothing holds it at all."""
     stance: str = "shoulder"
@@ -461,6 +488,7 @@ class Gun:
     action: Action = field(default_factory=Action)
     shooter: Shooter = field(default_factory=Shooter)
     muzzle_device: MuzzleDevice = field(default_factory=MuzzleDevice)
+    feed: Feed = field(default_factory=Feed)
     appearance: Appearance = field(default_factory=Appearance)
 
     def __post_init__(self):
@@ -509,6 +537,7 @@ class Gun:
             raise ValueError("ignition.grain_ignition_temperature must be between 320 and 1500 K")
         self._validate_action()
         self._validate_device()
+        self._validate_feed()
         if self.appearance.style not in STYLES:
             raise ValueError(f"appearance.style must be one of {", ".join(STYLES)}, not {self.appearance.style!r}")
         solid_volume = p.charge_mass / p.density
@@ -568,6 +597,33 @@ class Gun:
             if getattr(s, name) < 0:
                 raise ValueError(f"shooter.{name} cannot be negative")
 
+    def _validate_feed(self) -> None:
+        f = self.feed
+        if f.type not in FEED_TYPES:
+            raise ValueError(f"feed.type must be one of {', '.join(FEED_TYPES)}, not {f.type!r}")
+        if f.capacity is not None:
+            if f.capacity != int(f.capacity) or not 1 <= f.capacity <= 250:
+                raise ValueError("feed.capacity must be a whole number of rounds from 1 to 250")
+            f.capacity = int(f.capacity)
+        for name in ("spring_empty", "spring_full", "follower_mass"):
+            value = getattr(f, name)
+            if value is not None and value < 0:
+                raise ValueError(f"feed.{name} cannot be negative")
+        if f.spring_empty is not None and f.spring_full is not None and f.spring_full < f.spring_empty:
+            raise ValueError("feed.spring_full must be at least spring_empty (the spring is most compressed when full)")
+        if not 0 <= f.friction <= 1:
+            raise ValueError("feed.friction must be between 0 and 1")
+        if f.feed_angle is not None and not -45 <= f.feed_angle <= 45:
+            raise ValueError("feed.feed_angle must be between -45 and 45 degrees")
+        if not 5 <= f.ramp_angle <= 80:
+            raise ValueError("feed.ramp_angle must be between 5 and 80 degrees")
+        if f.link_mass < 0 or f.belt_hang < 0:
+            raise ValueError("feed.link_mass and belt_hang cannot be negative")
+        for name in ("belt_cam_start", "belt_cam"):
+            value = getattr(f, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"feed.{name} must be positive (or left out)")
+
     def _validate_device(self) -> None:
         d, cfg = self.muzzle_device, self.solver
         if d.type not in DEVICE_TYPES:
@@ -613,6 +669,7 @@ class Gun:
             "action": Action,
             "shooter": Shooter,
             "muzzle_device": MuzzleDevice,
+            "feed": Feed,
             "appearance": Appearance,
         }
         kwargs = {"name": data.get("name", "unnamed")}

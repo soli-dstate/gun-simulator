@@ -116,3 +116,8 @@ shoulder_damping   = 400.0
 
 [appearance]
 style = "ar15"
+
+[feed]
+# STANAG magazine: two staggered columns, slightly curved by the case taper.
+type     = "double_stack"
+capacity = 30

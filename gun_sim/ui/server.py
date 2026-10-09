@@ -55,6 +55,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length)
             if self.path == "/api/simulate":
                 self._json(200, api.simulate(json.loads(body)))
+            elif self.path == "/api/cycle":
+                self._json(200, api.cycle(json.loads(body)))
             elif self.path == "/api/synthesize":
                 self._json(200, api.synthesize(json.loads(body)))
             elif self.path == "/api/plume":

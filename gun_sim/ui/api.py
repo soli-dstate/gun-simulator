@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import action, devices, exterior, fluid, lumped, parallel, plume, rifling, sound
-from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, STANCES, STYLES, Gun
+from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, FEED_TYPES, STANCES, STYLES, Gun
 from ..propellants import COMPOSITIONS, GRAINS, SUPPRESSANTS
 from ..results import ShotResult
 from ..sound import GROUNDS, PRESET_LABELS, PRESETS, SoundSettings
@@ -157,6 +157,21 @@ FIELDS = {
         ("vent_fraction", "Vent opening round the circumference (brake, flash hider)", "", 1),
         ("flare_angle", "Bore flare half-angle (flash hider)", "°", 1),
         ("mass", "Mass (blank = from its steel)", "g", 1e-3),
+    ],
+    "feed": [
+        ("type", "Feed", "choice", list(FEED_TYPES)),
+        ("capacity", "Capacity (blank = 10 / 30 / 60 / 75 / 100)", "rounds", 1),
+        ("feed_angle", "Feed angle, nose towards the bore (blank = aimed at it)", "°", 1),
+        ("ramp_angle", "Feed ramp angle", "°", 1),
+        ("spring_empty", "Magazine spring, empty (blank = by type and round)", "N", 1),
+        ("spring_full", "Magazine spring, full (blank = by type and round)", "N", 1),
+        ("follower_mass", "Follower / drum rotor mass (blank = by type)", "g", 1e-3),
+        ("friction", "Friction of the top round on the bolt and lips", "", 1),
+        ("hold_open", "Bolt held open on an empty magazine", "flag", None),
+        ("link_mass", "Belt link mass", "g", 1e-3),
+        ("belt_hang", "Belt hanging from the feed tray", "mm", 1e-3),
+        ("belt_cam_start", "Feed cam starts (carrier travel; blank = 20 % of stroke)", "mm", 1e-3),
+        ("belt_cam", "Feed cam travel per link (blank = 35 % of stroke)", "mm", 1e-3),
     ],
     "appearance": [
         ("style", "3D model", "choice", list(STYLES)),
@@ -339,15 +354,24 @@ def action_to_json(a: action.ActionResult) -> dict:
             "unlock_pressure", "gas_peak_pressure", "port_cd", "gun_mass", "lock_time", "hammer_energy")},
         "port_cd_2d": a.port_cd_2d,
         "shot_times": [float(t) for t in a.shot_times],
+        "feed": None if a.feed is None else [round(float(v), 4) for v in a.feed],
+        "rounds": [int(n) for n in a.rounds],
+        "rounds_left": int(a.rounds_left),
+        "capacity": int(a.capacity),
+        "chambered": bool(a.chambered),
+        "held_open": bool(a.held_open),
+        "jam": None if a.jam is None else {k: (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
+                                           for k, v in a.jam.items()},
+        "feed_angle": float(a.feed_angle),
     }
 
 
-def result_to_json(r: ShotResult, gun: Gun | None = None, burst: int = 1) -> dict:
+def result_to_json(r: ShotResult, gun: Gun | None = None, burst: int = 1, rounds: int | None = None) -> dict:
     t, x, v, pb, pbase = _downsample(r.time, r.travel, r.velocity, r.breech_pressure, r.base_pressure)
     spin = {k: float(v) for k, v in rifling.spin_report(gun, r).items()} if gun else None
     recoil = None
     if gun and r.left_muzzle and r.loads is not None:
-        recoil = action_to_json(action.simulate(gun, r, shots=burst))
+        recoil = action_to_json(action.simulate(gun, r, shots=burst, rounds=rounds))
     return {
         "model": r.model,
         "left_muzzle": bool(r.left_muzzle),
@@ -385,9 +409,7 @@ def simulate(payload: dict) -> dict:
     # The UI passes the sound's air and blowdown time, so this run is the one the sound uses too.
     blowdown = float(payload.get("blowdown", BLOWDOWN))
     ambient = float(payload.get("ambient_pressure", fluid.ATMOSPHERE))
-    burst = int(payload.get("burst", 1))
-    if not 1 <= burst <= action.MAX_BURST:
-        raise ValueError(f"burst must be between 1 and {action.MAX_BURST} shots")
+    burst, rounds = _burst_rounds(payload)
     for name in models:
         if name not in MODELS:
             raise ValueError(f"unknown model {name!r}")
@@ -396,16 +418,59 @@ def simulate(payload: dict) -> dict:
     fitted = gun.muzzle_device.type != "none"
     jobs = {}
     if "lumped" in models and not fitted:
-        jobs["lumped"] = parallel.submit("lumped", _model_json, "lumped", gun, blowdown, ambient, burst)
+        jobs["lumped"] = parallel.submit("lumped", _model_json, "lumped", gun, blowdown, ambient, burst, rounds)
     rest = [name for name in models if name not in jobs]
     if rest:
         seed = _shot(gun, blowdown, ambient)
         for name in rest:
-            jobs[name] = parallel.submit(name, _model_json, name, gun, blowdown, ambient, burst, seed=seed)
+            jobs[name] = parallel.submit(name, _model_json, name, gun, blowdown, ambient, burst, rounds, seed=seed)
     return {"results": [jobs[name].result() for name in models], "travel": gun.barrel.travel}
 
 
-def _model_json(name: str, gun: Gun, blowdown: float, ambient: float, burst: int) -> dict:
+def _burst_rounds(payload: dict) -> tuple[int, int | None]:
+    """Shots per trigger pull, and rounds in the magazine besides the chambered one (None = full)."""
+    burst = int(payload.get("burst", 1))
+    if not 1 <= burst <= action.MAX_BURST:
+        raise ValueError(f"burst must be between 1 and {action.MAX_BURST} shots")
+    rounds = payload.get("rounds")
+    if rounds is not None:
+        rounds = int(rounds)
+        if rounds < 0:
+            raise ValueError("rounds in the magazine cannot be negative")
+    return burst, rounds
+
+
+def cycle(payload: dict) -> dict:
+    """The action cycle (and recoil) of a shot already simulated, fired with `rounds` in the magazine.
+
+    payload: gun, model, burst, rounds, and the blowdown and ambient_pressure the shot was simulated with.
+    The firing range replays a shot this way, so its feed follows the rounds it has left.
+    """
+    gun = Gun.from_dict(payload["gun"])
+    gun.solver.cells = int(gun.solver.cells)
+    gun.solver.record_every = int(gun.solver.record_every)
+    name = payload.get("model", "fluid")
+    if name not in MODELS:
+        raise ValueError(f"unknown model {name!r}")
+    blowdown = float(payload.get("blowdown", BLOWDOWN))
+    ambient = float(payload.get("ambient_pressure", fluid.ATMOSPHERE))
+    burst, rounds = _burst_rounds(payload)
+    seed = _shot(gun, blowdown, ambient) if name == "fluid" or gun.muzzle_device.type != "none" else None
+    return parallel.run(name, _action_json, name, gun, blowdown, ambient, burst, rounds, seed=seed)
+
+
+def _action_json(name: str, gun: Gun, blowdown: float, ambient: float, burst: int, rounds: int | None) -> dict:
+    r = _model_result(name, gun, blowdown, ambient)
+    if not r.left_muzzle or r.loads is None:
+        raise ValueError("the projectile did not leave the muzzle, so the action did not cycle")
+    return action_to_json(action.simulate(gun, r, shots=burst, rounds=rounds))
+
+
+def _model_json(name: str, gun: Gun, blowdown: float, ambient: float, burst: int, rounds: int | None = None) -> dict:
+    return result_to_json(_model_result(name, gun, blowdown, ambient), gun, burst, rounds)
+
+
+def _model_result(name: str, gun: Gun, blowdown: float, ambient: float) -> ShotResult:
     if name == "fluid":
         r = fluid.simulate_cached(gun, blowdown_time=blowdown, ambient_pressure=ambient)
     else:
@@ -419,7 +484,7 @@ def _model_json(name: str, gun: Gun, blowdown: float, ambient: float, burst: int
                 r.recoil_impulse = r.loads.impulse
     if not math.isfinite(r.muzzle_velocity) or not math.isfinite(r.peak_breech_pressure):
         raise ValueError(f"the {name} model went unstable (non-finite values); check the inputs")
-    return result_to_json(r, gun, burst)
+    return r
 
 
 def plume_field(payload: dict) -> dict:

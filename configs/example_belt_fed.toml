@@ -1,12 +1,12 @@
-# A generic full-power rifle cartridge, roughly in the 7.62 mm class.
-# These are illustrative values, not data for any specific load.
+# The example rifle cartridge in a belt-fed, gas-operated machine gun: the gas rifle
+# fed from a 100-round belt. Illustrative values, not data for any specific gun.
 # All units are SI (m, kg, s, Pa, J).
 
-name = "Example 7.62 mm rifle"
+name = "Example 7.62 mm belt-fed machine gun"
 
 [barrel]
 bore_diameter  = 7.82e-3   # m
-travel         = 0.56      # m, seated base to muzzle
+travel         = 0.48      # m, seated base to muzzle
 chamber_volume = 3.6e-6    # m^3 (3.6 cm^3)
 # Outside shape, used by the 3D view only.
 breech_diameter = 30.0e-3  # m
@@ -70,21 +70,33 @@ cfl          = 0.5
 record_every = 5
 
 [action]
-# Recoil and the action cycle (gun_sim/action.py). type = "bolt" is worked by
-# hand; see example_gas_rifle.toml for a self-loading one.
-type        = "bolt"
-gun_mass    = 4.0     # kg, unloaded
-bolt_mass   = 0.45    # kg
-bore_height = 0.03    # m, bore axis above the shoulder (muzzle rise)
-cg_distance = 0.40    # m, butt to centre of mass
+# Short-stroke gas piston: gas bled from a port near the muzzle fills a small
+# cylinder; its piston kicks the bolt carrier back, which unlocks the bolt,
+# ejects the case and strips the next round on the way home.
+type              = "gas"
+gun_mass          = 4.3       # kg, unloaded
+bolt_mass         = 0.45      # kg, bolt + carrier + piston
+spring_rate       = 700.0     # N/m, return spring
+spring_preload    = 50.0      # N
+unlock_travel     = 6.0e-3    # m of carrier travel before the bolt unlocks
+gas_port_position = 0.36      # m of projectile travel from its seat
+gas_port_diameter = 1.6e-3    # m
+piston_diameter   = 10.0e-3   # m
+gas_volume        = 1.0e-6    # m^3 (1 cm^3)
+gas_stroke        = 8.0e-3    # m, piston travel before the cylinder vents
+bore_height       = 0.02      # m, a straighter stock than the bolt rifle's
+cg_distance       = 0.38      # m
 
 [shooter]
-stance             = "shoulder"  # or "free" for free recoil
-body_mass          = 5.0         # kg of shooter moving with the gun
-shoulder_stiffness = 15e3        # N/m
-shoulder_damping   = 400.0       # N s/m
+stance             = "shoulder"
+body_mass          = 5.0
+shoulder_stiffness = 15e3
+shoulder_damping   = 400.0
 
 [feed]
-# Detachable box magazine.
-type     = "single_stack"
-capacity = 5
+# Linked rounds drawn across the feed tray by a cam on the carrier, through a
+# feed lever and slide in the top cover; 30 cm of belt hangs to the box.
+type      = "belt"
+capacity  = 100
+link_mass = 0.005     # kg per link
+belt_hang = 0.30      # m

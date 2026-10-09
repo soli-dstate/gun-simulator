@@ -11,6 +11,7 @@ let lastResult = null;
 let lastSound = null;
 let lastGun = null;      // the gun of the last successful shot (sound is resynthesised for it)
 let lastShot = null;     // the result the range animates, for Replay
+let lastRequest = null;  // what it was simulated with (burst, air), so a replay can re-run its cycle
 let soundRequest = 0;    // only the newest synthesis result is used
 let soundForShot = null; // which shot the loaded sound belongs to
 let playOnLoad = null;   // shot on the range whose sound was not ready when it fired
@@ -445,7 +446,10 @@ function initRange() {
         rangeClock = { tSim, rate };
         player.syncTo(tSim, rate);
       },
-      onChange: () => { $("cycle").disabled = !!range.cycle; },
+      onChange: () => {
+        $("cycle").disabled = !!(range.cycle || range.reload);
+        $("reload").disabled = !!(range.cycle || range.reload);
+      },
     });
   } catch (e) {
     $("range-warnings").textContent = `3D view unavailable: ${e.message}`;
@@ -473,9 +477,28 @@ function initRange() {
   if (params.has("burst")) $("burst").value = params.get("burst");
   range.setCutaway($("cutaway").checked);
   $("cycle").onclick = () => range.startCycle();
-  $("replay").onclick = () => {
+  $("reload").onclick = () => range.startReload();
+  $("replay").onclick = async () => {
     if (!lastShot) return;
     unlockAudio();
+    // The feed depends on the rounds left: re-simulate the action cycle (not the bore) for this magazine.
+    const rounds = range.roundsAtNextShot();
+    if (lastShot.action && lastRequest && lastShot.action.rounds?.[0] !== rounds) {
+      const btn = $("replay");
+      btn.disabled = true;
+      try {
+        const action = await backend.cycle({
+          gun: lastGun, model: lastShot.model, burst: lastRequest.burst, rounds,
+          blowdown: lastRequest.blowdown, ambient_pressure: lastRequest.ambient_pressure,
+        });
+        lastShot = { ...lastShot, action };
+      } catch (e) {
+        showError(`Replay: ${e.message}`);
+        return;
+      } finally {
+        btn.disabled = false;
+      }
+    }
     range.fire(lastShot);
   };
 }
@@ -671,12 +694,15 @@ function actionRows(a) {
       <span>Peak shoulder force</span><span>${a.peak_shoulder_force.toFixed(0)} N</span>`;
   }
   rows += `<span>Muzzle rise</span><span>${deg(a.max_pitch)}°</span>`;
+  if (a.rounds?.length) {
+    rows += `<span>Feed</span><span>${a.rounds[0]} of ${a.capacity} rounds in, ${a.rounds_left} left · fed at ${deg(Math.abs(a.feed_angle))}°</span>`;
+  }
   if (a.kind === "bolt") return rows;
   if (a.shot_times.length > 1) {
     const climb = (a.max_pitch * 180 / Math.PI).toFixed(2);
     rows += `<span>Burst</span><span>${a.shot_times.length} shots in ${((a.shot_times.at(-1) - a.shot_times[0]) * 1e3).toFixed(0)} ms, muzzle climbs to ${climb}°</span>`;
   }
-  const ok = a.status === "cycled";
+  const ok = a.status === "cycled" || a.status.startsWith("empty");
   const kind = a.kind.replace("_", " ");
   rows += `<span>${kind[0].toUpperCase() + kind.slice(1)} action</span><span class="${ok ? "" : "bad"}">${a.status}` +
     (a.cycle_time ? ` in ${(a.cycle_time * 1e3).toFixed(1)} ms (${a.cyclic_rate.toFixed(0)} rounds/min)` : "") + "</span>";
@@ -727,7 +753,8 @@ async function fire(animate = true) {
   btn.disabled = true;
   btn.textContent = gun.muzzle_device?.type && gun.muzzle_device.type !== "none" ? "Simulating (2D)…" : "Simulating…";
   // The sound's air and blowdown time, so the shot, its sound and its flash share one bore (and 2D device) run.
-  const request = { gun, models, burst: burstCount() };
+  // The range's magazine: the shot is simulated with the rounds it will have left.
+  const request = { gun, models, burst: burstCount(), rounds: range ? range.roundsAtNextShot() : null };
   try {
     const snd = getSound();
     request.blowdown = snd.blast_time;
@@ -743,6 +770,7 @@ async function fire(animate = true) {
     showCards(lastResult, gun);
     drawAll();
     lastGun = gun;
+    lastRequest = request;
     updateTrajectory();
     lastShot = lastResult.results.find((r) => r.model === "fluid") || lastResult.results[0];
     if (lastShot.left_muzzle) {

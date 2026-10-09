@@ -25,9 +25,10 @@
 // [appearance] style dresses it: "rifle" a sporting stock round a turned
 // receiver; "ar15" an aluminium upper and lower, rail, A-frame front sight,
 // round handguard, buffer tube and collapsible stock; "ak" a stamped receiver
-// and dust cover, rear sight block, gas tube with its wooden handguards, curved
-// magazine and a wooden stock. A muzzle device is turned from the same
-// dimensions the 2D solver draws (gun_sim/devices.py).
+// and dust cover, rear sight block, gas tube with its wooden handguards and a
+// wooden stock. A muzzle device is turned from the same dimensions the 2D
+// solver draws (gun_sim/devices.py). The magazine or belt is [feed]'s, built
+// by feed.js.
 //
 // Units are millimetres. x runs along the bore towards the muzzle, with x = 0
 // at the case head of a chambered round (= the bolt face when the bolt is
@@ -35,6 +36,7 @@
 // ejection port are.
 
 import { buildCartridge } from "./cartridge.js";
+import { buildFeed, feedGeometry } from "./feed.js";
 import { lathe } from "./lathe.js";
 import { chain, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { box, prism, rodProfile, sphereProfile, torusProfile, tubeProfile } from "./shapes.js";
@@ -99,19 +101,13 @@ const rodY = (r, y0, y1, x, z = 0, seg = 24) => [lathe(rodProfile(r, y0, y1), se
 const gripAt = (x, yTop, h, w, rake, sz) =>
   prism([[x + w / 2, yTop], [x - w / 2, yTop], [x - w / 2 - rake * h, yTop - h], [x + w / 2 - rake * h, yTop - h]], sz);
 
-/** A box magazine centred on x0 under yTop, curving forwards by `curve` of its depth at the bottom. */
-function curvedMag(x0, yTop, len, depth, width, curve, segs = 5) {
-  const dx = (k) => curve * depth * (k / segs) ** 2;
-  const parts = [];
-  for (let k = 0; k < segs; k++) {
-    const y0 = yTop - (depth * k) / segs, y1 = yTop - (depth * (k + 1)) / segs;
-    parts.push(prism([[x0 - len / 2 + dx(k), y0], [x0 + len / 2 + dx(k), y0],
-                      [x0 + len / 2 + dx(k + 1), y1], [x0 - len / 2 + dx(k + 1), y1]], width));
-  }
-  // Floorplate, a little proud all round, tilted with the bottom of the curve.
-  const slope = Math.atan2(2 * curve * depth / segs, depth / segs);
-  parts.push([box(len + 5, 4, width + 3), chain(translation(x0 + dx(segs), yTop - depth - 1.5, 0), rotationZ(slope))]);
-  return parts;
+/** Boxes along x from x0 to x1, leaving out [a, b]: a receiver part with the feed opening cut from it. */
+function cutX(x0, x1, a, b, make) {
+  if (b <= x0 || a >= x1) return [make(x0, x1)];
+  const out = [];
+  if (a - x0 > 0.5) out.push(make(x0, a));
+  if (x1 - b > 0.5) out.push(make(b, x1));
+  return out;
 }
 
 /** Muzzle device dimensions in mm, filled in as gun_sim/devices.py dimensions() does; null for none. */
@@ -283,8 +279,11 @@ export function buildRifle(gun) {
   const portX = cart.seat + (act.gas_port_position ?? (kind === "gas_delayed" ? 0.1 : 0.75) * gun.barrel.travel) * MM;
   const cylLen = Math.max((act.gas_stroke ?? 8e-3) * MM + 12, 22);
   const pivotY = -(act.bore_height ?? 0.03) * MM;
-  const magLen = oal + 5, magW = 2 * (d.rimR + 2.5);
-  const magX = -oal / 2 - 2;                // under the round as the bolt strips it
+  // The feed (feed.js): a magazine under the round as the bolt strips it, or a belt over it.
+  const fgeo = feedGeometry(gun, d), belt = fgeo.belt;
+  const magLen = oal + 6, magX = -oal / 2 - 2.5;
+  const magW = (fgeo.type === "single_stack" ? fgeo.d : 1.8 * fgeo.d) + 3;   // the magazine's top, in the magwell
+  const [openA, openB] = belt ? [-oal - 24, -1] : [0, 0];                   // a belt's opening in the receiver's top
   const portRear = -(d.length + 14);        // ejection port, the AR and AK; the rifle's is longer
 
   const steelParts = [], furnParts = [], woodParts = [];
@@ -311,27 +310,31 @@ export function buildRifle(gun) {
     frontOfReceiver = upF + 14;
     const H = yTop - yBot, xm = (upF + upR) / 2;
     const pTop = boltR * 0.75, pBot = -boltR * 0.75;
+    // A belt's tray comes in over the left wall, through an opening in the top.
+    const cutA = Math.max(openA, upR), cutB = Math.min(openB, upF);
     furnParts.push(
-      boxAt(upLen, H, wall, xm, (yTop + yBot) / 2, -(wi + wall / 2)),                                  // left wall
+      ...cutX(upR, upF, openA, openB, (a, b) => boxAt(b - a, H, wall, (a + b) / 2, (yTop + yBot) / 2, -(wi + wall / 2))),  // left wall
+      ...(belt ? [boxAt(cutB - cutA, boltR - yBot, wall, (cutA + cutB) / 2, (boltR + yBot) / 2, -(wi + wall / 2))] : []),
+      ...cutX(upR, upF, openA, openB, (a, b) => boxAt(b - a, 3, 2 * W, (a + b) / 2, yTop + 1.5, 0)),                      // top
+      ...cutX(upR + 3, upF - 3, openA, openB, (a, b) => boxAt(b - a, 3, 21, (a + b) / 2, yTop + 4.5, 0)),                  // rail
       boxAt(upF - portFront, H, wall, (upF + portFront) / 2, (yTop + yBot) / 2, wi + wall / 2),       // right, ahead of the port
       boxAt(portRear - upR, H, wall, (portRear + upR) / 2, (yTop + yBot) / 2, wi + wall / 2),         // right, behind it
       boxAt(portFront - portRear, yTop - pTop, wall, (portFront + portRear) / 2, (yTop + pTop) / 2, wi + wall / 2),
       boxAt(portFront - portRear, pBot - yBot, wall, (portFront + portRear) / 2, (pBot + yBot) / 2, wi + wall / 2),
-      boxAt(upLen, 3, 2 * W, xm, yTop + 1.5, 0),                                                      // top
       boxAt(3, H, 2 * W, upF - 1.5, (yTop + yBot) / 2, 0),                                            // front
-      boxAt(upLen - 6, 3, 21, xm, yTop + 4.5, 0),                                                     // rail
-      boxAt(10, 10, 4, portRear - 5, pTop + 4, W + 2),                                                // brass deflector
+      boxAt(10, 10, 4, portRear - 5, pTop + 4, W + 2),                                              // brass deflector
       [lathe(rodProfile(4, 0, 20), 24), translation(upR + 8, boltR * 0.55, W + 4)],                    // forward assist
       boxAt(8, 4, 2 * W + 16, upR - 2, yTop - 1, 0),                                                  // charging handle
     );
-    for (let x = upR + 8; x < upF - 6; x += 10) furnParts.push(boxAt(5, 3, 21, x, yTop + 7.5, 0));   // rail teeth
-    // Lower: body, magazine well, magazine, grip, guard and trigger.
+    for (let x = upR + 8; x < upF - 6; x += 10) {
+      if (x + 2.5 < openA || x - 2.5 > openB) furnParts.push(boxAt(5, 3, 21, x, yTop + 7.5, 0));   // rail teeth
+    }
+    // Lower: body, magazine well, grip, guard and trigger.
     const lowB = yBot - 16, mwF = magX + magLen / 2 + 4, mwR = magX - magLen / 2 - 4;
     const gx = mwR - 40;
     furnParts.push(
       boxAt(mwF + 10 - (upR + 6), 16, 2 * W - 1, (mwF + 10 + upR + 6) / 2, yBot - 8, 0),
-      boxAt(mwF - mwR, 26, magW + 6, magX, lowB - 13 + 0.5, 0),
-      ...curvedMag(magX, lowB - 4, magLen, 2.4 * oal, magW, 0.12),
+      ...(belt ? [] : [boxAt(mwF - mwR, 26, magW + 6, magX, lowB - 13 + 0.5, 0)]),
       gripAt(gx, lowB, 85, 26, 0.38, 24),
       boxAt(mwR - (gx + 13), 3, 12, (mwR + gx + 13) / 2, lowB - 24, 0),
       boxAt(4, 14, 4, gx + 24, lowB - 9, 0),
@@ -379,14 +382,16 @@ export function buildRifle(gun) {
     magTop = rbot;
     frontOfReceiver = rxF + 38;
     // Stamped receiver: walls (the right one low, for the carrier's handle), floor, rear trunnion.
+    const well = belt ? [0, 0] : [magX - magLen / 2 - 1, magX + magLen / 2 + 1];   // the magazine goes through the floor
     steelParts.push(
       boxAt(rxLen, -rbot, 1.2, xm, rbot / 2, -(rw - 0.6)),
       boxAt(rxLen, yRight - rbot, 1.2, xm, (yRight + rbot) / 2, rw - 0.6),
-      boxAt(rxLen, 1.2, 2 * rw, xm, rbot + 0.6, 0),
+      ...cutX(rxR, rxF, well[0], well[1], (a, b) => boxAt(b - a, 1.2, 2 * rw, (a + b) / 2, rbot + 0.6, 0)),
       boxAt(10, -rbot, 2 * rw - 0.2, rxR + 5, rbot / 2, 0),
     );
     // Dust cover: a half-round shell stretched up over the carrier, and its back.
-    steelParts.push(scaled(lathe(tubeProfile(rw - 1.2, rw, rxR, rxF), 48, -Math.PI / 2, Math.PI / 2), 1, hDC / rw, 1));
+    steelParts.push(...cutX(rxR, rxF, openA, openB,
+      (a, b) => scaled(lathe(tubeProfile(rw - 1.2, rw, a, b), 48, -Math.PI / 2, Math.PI / 2), 1, hDC / rw, 1)));
     const back = [];
     for (let k = 0; k <= 12; k++) { const a = -Math.PI / 2 + (k / 12) * Math.PI; back.push([rw * Math.sin(a), hDC * Math.cos(a)]); }
     steelParts.push([prism(back, 3), chain(translation(rxR + 1.5, 0, 0), rotationY(Math.PI / 2))]);
@@ -415,9 +420,8 @@ export function buildRifle(gun) {
     if (portX - 62 > rxF + 50) woodParts.push([lathe(tubeProfile(pistonR + 1.8, pistonR + 5.5, rxF + 40, portX - 62), 48), translation(0, yGas, 0)]);
     woodParts.push(prism([[hg0, yU], [hg1, yU], [hg1 - 4, yL], [hg0 + 4, yL]], 2 * (breechR + 5)));
     steelParts.push(boxAt(8, yU - yL + 2, 2 * (breechR + 5) + 2, hg1 + 4, (yU + yL) / 2, 0));
-    // Magazine, trigger guard, grip, selector lever and the stock.
+    // Trigger guard, grip, selector lever and the stock.
     const xg0 = magX - magLen / 2 - 6, gx = xg0 - 42;
-    furnParts.push(...curvedMag(magX, rbot - 1, magLen, 3.1 * oal, magW, 0.45, 7));
     steelParts.push(
       boxAt(xg0 - gx - 8, 2.5, 9, (xg0 + gx + 8) / 2, rbot - 26, 0),
       boxAt(2.5, 26, 9, xg0, rbot - 13, 0),
@@ -457,11 +461,12 @@ export function buildRifle(gun) {
     steelParts.push(lathe(tubeProfile(boltR + 0.3, recR, bridgeRear, portRearL, rc)));
     const floorTop = -(boltR + 0.6);
     const floorLen = ringFront - bridgeRear - 2;
-    steelParts.push([box(floorLen, recR + floorTop, recR * 1.3), translation(bridgeRear + 1 + floorLen / 2, (-recR + floorTop) / 2, 0)]);
-    // Magazine, floorplate, trigger and guard; the stock is a low wrist the bolt can run back over,
-    // rising to the butt. The centre of mass is taken to be over the magazine.
-    const mLen = portLen - 6, magDepth = d.rimR * 3.6 + 6;
-    const mX = (portRearL + portFront) / 2;
+    const well = belt ? [0, 0] : [magX - magLen / 2 - 1, magX + magLen / 2 + 1];   // the magazine comes up through it
+    steelParts.push(...cutX(bridgeRear + 1, ringFront - 1, well[0], well[1],
+      (a, b) => [box(b - a, recR + floorTop, recR * 1.3), translation((a + b) / 2, (-recR + floorTop) / 2, 0)]));
+    // Trigger and guard; the stock is a low wrist the bolt can run back over, rising to the butt.
+    // The centre of mass is taken to be over the magazine.
+    const mX = magX;
     const guardR = Math.max(13, recR * 0.85), guardX = portRearL - guardR * 0.7, guardY = -recR - guardR * 0.55;
     const boltBack = Math.max(oal + 15, stroke + 10);
     const wristRear = bridgeRear - boltBack - 40;
@@ -472,12 +477,17 @@ export function buildRifle(gun) {
       prism([[bridgeRear + 6, -recR * 0.2], [bridgeRear + 6, wristBottom], [wristRear, wristBottom], [wristRear, wristTop]], 2 * recR * 0.7),
       prism([[wristRear + 1, wristTop], [wristRear + 1, wristBottom], [buttX, Math.min(pivotY - 60, wristBottom - 15)],
              [buttX, Math.max(pivotY + 45, wristTop)]], 2 * recR * 0.75),
-      boxAt(mLen, magDepth, magW, mX, -recR - magDepth / 2 + 0.5, 0),
-      boxAt(mLen + 8, 2.5, magW + 4, mX, -recR - magDepth - 0.75, 0),
       [lathe(torusProfile(guardR, 2.2), 64), chain(translation(guardX, guardY, 0), rotationY(Math.PI / 2))],
       boxAt(4, guardR * 1.15, 5, guardX + 3, guardY + guardR * 0.05, 0),                     // trigger
     );
   }
+
+  // ---- the feed: magazine or belt, and the feed cam the bolt group carries for a belt ----
+  const groupFront = kind === "gas" || kind === "direct_impingement" ? -(lugLen + 10)
+    : delayed ? -Math.max(14, boltR * 1.6) : -2;
+  const feed = buildFeed(gun, { dims: d, boltR, recR, stroke, camTop: boltR, groupFront, lowest: magTop - 10 });
+  furnParts.push(...feed.furniture);
+  steelParts.push(...feed.steel);
 
   // ---- the moving parts (local: bolt face at x = 0, closed) ----
   /** Body of a bolt or bolt head of radius r from `rear` to the face: nose ring, recess, firing-pin channel. */
@@ -615,6 +625,11 @@ export function buildRifle(gun) {
     boltMesh = merge(...head);
     carrier = merge(...carrierParts);
   }
+  // A belt's feed cam rides on the carrier (on a one-piece bolt, or a gas-delayed slide's bolt).
+  if (feed.cam.length) {
+    if (carrier && kind !== "gas_delayed") carrier = merge(carrier, ...feed.cam);
+    else boltMesh = merge(boltMesh, ...feed.cam);
+  }
   // Firing pin and cocking piece move together; tip 0.9 mm behind the face when cocked.
   const pinTravel = 1.3;
   const striker = merge(
@@ -651,6 +666,9 @@ export function buildRifle(gun) {
       ...(barrelMesh ? { barrel: barrelMesh } : {}), ...(lock ? { lock } : {}),
       ...(rollers ? { rollerRight: rollers.right, rollerLeft: rollers.left } : {}), ...(lever ? { lever } : {}),
       ...(hammer ? { hammer } : {}),
+      ...(feed.magazine.length ? { magazine: merge(...feed.magazine) } : {}),
+      ...(feed.meshes.follower ? { magFollower: feed.meshes.follower } : {}),
+      ...(feed.meshes.link ? { link: feed.meshes.link, feedSlide: feed.meshes.feedSlide, feedLever: feed.meshes.feedLever } : {}),
       case: lathe(cart.parts.case),
       primer: lathe(cart.parts.primer),
       projectile: lathe(cart.parts.projectile),
@@ -664,7 +682,7 @@ export function buildRifle(gun) {
       stroke, pinTravel,
       seat: cart.seat, projectileLength: cart.projectileLength, coreMaterial: cart.coreMaterial,
       caseLength: d.length, head: d.head, caseInnerR: d.innerR, neckX: d.xn, rimR: d.rimR,
-      magTop,
+      feed: feed.layout,
     },
     warnings,
   };

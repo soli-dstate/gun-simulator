@@ -100,6 +100,18 @@ Friction. `friction` drags on the bolt group whenever it slides (the rails,
 and the tilt a gas piston's off-axis push gives the carrier), as well as the
 feeding drag and the hammer's.
 
+Feeding (gun_sim/feed.py). The rounds come from a magazine or a belt holding
+`rounds` (full unless given) besides the one chambered. A magazine's spring
+presses the top round against the bolt, which drags on it, and lifts it once the
+bolt is back past it, against gravity and the gun's muzzle-up swing; the bolt
+rides over a round that hasn't risen far enough. A belt is drawn across by a cam
+on the carrier, through which the carrier feels the hanging belt. Each round is
+then driven at the feed angle into the chamber mouth or up the feed ramp
+(meeting the ramp costs the bolt the round's deflection), or jams there, which
+stops the bolt where the round wedges. On an empty magazine the bolt catch holds
+the bolt open (feed.hold_open), or it closes on an empty chamber; either ends a
+burst.
+
 Approximations: the bolt and carrier move as one mass (a real carrier runs
 free for its unlock travel before it picks up the bolt), except in a delayed
 blowback, whose delay ratio is constant (real roller and lever angles change
@@ -118,6 +130,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
+
+from . import feed as feeding
 
 if TYPE_CHECKING:
     from .config import Gun
@@ -272,6 +286,8 @@ def strokes(gun: Gun) -> dict:
         cock = a.hammer_trip_travel + a.hammer_cock_travel / (1 + HAMMER_OVERTRAVEL)
         out["hammer"] = cock / delay(gun)[0] if a.type in DELAYED and cock < unlock else (
             cock - (delay(gun)[0] - 1) * out["unlock"] if a.type in DELAYED else cock)
+    if gun.feed.type == "belt":
+        out["belt_cam"] = list(feeding.belt_cam(gun, stroke))
     return out
 
 
@@ -333,6 +349,15 @@ class ActionResult:
     port_cd_2d: bool = False              # True if it came from the 2D solution of the port
     lock_time: float = LOCK_TIME          # s from tripping the hammer (or back in battery) to ignition
     hammer_energy: float | None = None    # J the hammer hits the firing pin with, falling freely
+    # Feeding: magazine lift (share of the way up) or the belt's draw this cycle (share of a link).
+    feed: np.ndarray | None = None
+    rounds: list = field(default_factory=list)  # in the magazine or belt at each shot's ignition
+    rounds_left: int = 0                  # in the magazine or belt at the end
+    chambered: bool = False               # a live round in the chamber at the end
+    held_open: bool = False               # the bolt catch holds the bolt open on the empty magazine
+    jam: dict | None = None               # feed.check() of the round that jammed, with "shot"
+    feed_angle: float = 0.0               # rad, nose towards the bore
+    capacity: int = 0
 
     @property
     def shots(self) -> int:
@@ -368,6 +393,9 @@ class ActionResult:
             lines.append(line)
             if self.port_cd is not None:
                 lines.append(f"  gas port Cd          {self.port_cd:9.2f}" + (" (2D)" if self.port_cd_2d else ""))
+            if self.rounds:
+                lines.append(f"  feed                 {self.rounds[0]:9d} of {self.capacity} rounds in, {self.rounds_left} left; "
+                             f"fed at {math.degrees(abs(self.feed_angle)):.1f}°")
             if self.hammer_energy is not None:
                 lines.append(f"  hammer               {self.lock_time * 1e3:9.1f} ms from the sear to ignition, "
                              f"hits the firing pin with {self.hammer_energy:.2f} J")
@@ -402,14 +430,16 @@ class _Loads:
         return fb, fr, p, T
 
 
-def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
+def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = None) -> ActionResult:
     """Recoil of the gun and the cycle of its action, from a shot's loads.
 
     shots > 1 fires a burst (self-loading actions only): each shot is fired
     when the hammer the closing bolt trips reaches the firing pin (without a
     hammer, LOCK_TIME after the bolt is back in battery), with the gun's motion
     carried over, so recoil and muzzle climb build up. The burst stops early if
-    a cycle fails.
+    a cycle fails or the magazine runs dry.
+
+    rounds: in the magazine (or belt) besides the chambered one; None = full.
     """
     from . import devices
     loads = shot.loads
@@ -479,7 +509,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     shot_times = [0.0]
     cyc = {}                  # this shot's cycle: ejected, can_feed, feeding, battery, s_max, cocked
     next_shot = None
-    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas", "hammer")}
+    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas", "hammer", "feed")}
     next_out = 0.0
     # Hammer: angle back from the firing pin and its rate; "down" (on the pin, or riding the
     # carrier short of the sear), "cocked" (on the sear, or held past it by the carrier) or "falling".
@@ -492,11 +522,41 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
     on_carrier = False
     light_strike = None
 
-    def event(t, name, detail="", speed=None):
-        events.append({"time": t, "name": name, "detail": detail, "shot": len(shot_times), "speed": speed})
+    # Feeding: rounds left, the top round's rise once the bolt is past it (m, m/s), the belt's draw.
+    fd = gun.feed
+    belted = fd.type == "belt"
+    cap = feeding.capacity(gun)
+    mag = cap if rounds is None else int(min(max(rounds, 0), cap))
+    counts = [mag]
+    fgeo = feeding.geometry(gun)
+    present = fgeo["present"]
+    m_round = feeding.round_mass(gun)
+    lift = lift_v = 0.0
+    released = False          # the bolt is back past the top round: the spring may lift it
+    belt_adv = 0.0            # share of a link the belt has been drawn this cycle
+    on_cam = False
+    cam0, cam1 = geo.get("belt_cam", (0.0, 0.0))
+    cam_ratio = feeding.link_pitch(gun) / (cam1 - cam0) if belted else 0.0
+    frozen = False            # the bolt is stopped: held open, or a round has jammed
+    held_open = False
+    jam = None
+    jam_at = None             # bolt travel at which the round being fed wedges
+    alpha = 0.0               # the gun's pitch acceleration (rad/s^2)
+
+    def event(t, name, detail="", speed=None, **extra):
+        events.append({"time": t, "name": name, "detail": detail, "shot": len(shot_times), "speed": speed, **extra})
 
     def new_cycle():
-        cyc.update(ejected=False, can_feed=False, feeding=False, battery=None, s_max=0.0, cocked=False)
+        cyc.update(ejected=False, can_feed=False, feeding=False, battery=None, s_max=0.0, cocked=False,
+                   empty=False, misfeed=None)
+
+    def stop_bolt():
+        # The bolt stops dead against whatever holds it (this step's share and m_r); the gun takes its momentum.
+        nonlocal u, v, w
+        dv = u * share
+        v += dv
+        w += h * m_r * dv / inertia
+        u = 0.0
 
     def masses():
         m_g = m_bolt + (m_bar if carry else 0.0)
@@ -565,6 +625,16 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                 torque = hammer_torque(a, ph)
                 f_spring += max(0.0, slope * (torque + a.hammer_inertia * slope * gear * rel))
                 f_spring += a.hammer_friction * torque * rub_arm * slide
+        if kind != "bolt" and not frozen:
+            if belted:
+                # The feed cam: the carrier draws the belt across, lifting the hanging belt.
+                if u > 0 and cam0 <= carrier < cam1 and belt_adv < 1 and mag > 0:
+                    tension, m_belt = feeding.belt_load(gun, mag)
+                    r = cam_ratio * gear
+                    f_spring += cam_ratio * tension + m_belt * cam_ratio * r * rel
+            elif mag > 0 and s < feed_at:
+                # The top round pressed against the bolt's underside by the magazine spring.
+                f_spring += fd.friction * feeding.spring(gun, mag) * slide
         f_int = f_piston - f_spring
         if cyc["feeding"] and u < 0 and s < feed_at:
             f_int += a.feed_force
@@ -580,16 +650,19 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             acc_g = (g_ext + f_int) / m_g
             acc_r = (r_ext - f_int + f_sh) / m_r
             rel = acc_g - acc_r
-        held = kind == "bolt" or (s <= 0 and u <= 0 and rel <= 0)
-        if held:  # the bolt is shut and stays shut: one body
+        held = kind == "bolt" or frozen or (s <= 0 and u <= 0 and rel <= 0)
+        if held:  # the bolt is shut (or stuck open) and stays there: one body
             acc_r = (g_ext + r_ext + f_sh) / (m_g + m_r)
             axial = g_ext + r_ext
-            s = u = rel = 0.0
+            if not frozen:
+                s = 0.0
+            u = rel = 0.0
         else:
             axial = m_r * acc_r - f_sh   # what acts on the gun body (the shooter's share aside)
         v += acc_r * dt
         x += v * dt
-        w += (h * axial - k_th * th - c_th * w) / inertia * dt
+        alpha = (h * axial - k_th * th - c_th * w) / inertia
+        w += alpha * dt
         th += w * dt
         t_end = t + dt
 
@@ -632,7 +705,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                     event(t_end, "back in battery", f"{speed:.1f} m/s", speed)
                     if len(shot_times) < shots and not hammer:
                         next_shot = t_end + LOCK_TIME
-                elif cyc["ejected"] and not cyc["can_feed"] and cyc["battery"] is None:
+                elif cyc["ejected"] and cyc["battery"] is None and (not cyc["can_feed"] or cyc["empty"] or cyc["misfeed"]):
                     cyc["battery"] = -1.0
                     event(t_end, "closes on an empty chamber", f"{speed:.1f} m/s", speed)
             s_max = max(s_max, s)
@@ -672,9 +745,68 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                 event(t_end, "case ejected", f"bolt at {u:.1f} m/s", u)
             if not cyc["can_feed"] and s >= feed_at:
                 cyc["can_feed"] = True
-            if cyc["can_feed"] and not cyc["feeding"] and u < 0 and s < feed_at:
-                cyc["feeding"] = True
-                event(t_end, "strips the next round")
+            carrier =ratio * s if delayed else s + carrier_gap
+            gear = ratio if delayed else 1.0
+            if belted:
+                if mag > 0 and u > 0 and carrier > cam0 and belt_adv < 1:
+                    if not on_cam:
+                        # The feed slide picks the belt up: they share the carrier's momentum through the cam.
+                        on_cam = True
+                        u *= m_g / (m_g + feeding.belt_load(gun, mag)[1] * (cam_ratio * gear) ** 2)
+                    belt_adv = min(1.0, max(belt_adv, (carrier - cam0) / (cam1 - cam0)))
+            else:
+                if not released and s >= feed_at:
+                    released = True
+                if released and mag > 0 and lift < present:
+                    # The spring lifts the stack, against gravity and the gun swinging the magazine up.
+                    acc = feeding.spring(gun, mag) / feeding.stack_mass(gun, mag) - feeding.G - alpha * arm
+                    lift_v += acc * dt
+                    lift += lift_v * dt
+                    if lift <= 0:
+                        lift, lift_v = 0.0, max(lift_v, 0.0)
+                    elif lift >= present:
+                        lift, lift_v = present, 0.0
+
+            if (cyc["can_feed"] and not (cyc["feeding"] or cyc["empty"] or cyc["misfeed"])
+                    and u < 0 and s < feed_at):
+                if mag == 0:
+                    cyc["empty"] = True
+                    if not belted and fd.hold_open:
+                        # The follower has lifted the bolt catch into the bolt's way.
+                        speed = -u
+                        stop_bolt()
+                        frozen = held_open = True
+                        event(t_end, "bolt held open", "on the empty magazine", speed)
+                    else:
+                        event(t_end, "belt runs out" if belted else "magazine empty", "nothing to feed")
+                elif belted and belt_adv < 0.999:
+                    cyc["misfeed"] = (f"the feed cam drew the belt only {belt_adv * 100:.0f} % of a link; the carrier "
+                                      f"has to come back {cam1 * 1e3:.0f} mm to draw it all")
+                    event(t_end, "misses the next round", cyc["misfeed"])
+                elif not belted and lift < feeding.CATCH * present:
+                    cyc["misfeed"] = (f"the bolt rode over the next round: the magazine spring had lifted it "
+                                      f"{lift * 1e3:.1f} of the {present * 1e3:.1f} mm it needed. A stronger spring "
+                                      f"(or a slower cycle) would let it rise in time")
+                    event(t_end, "bolt rides over the next round", cyc["misfeed"])
+                else:
+                    verdict = feeding.check(fgeo, lift / present if present else 1.0, feed_at)
+                    mag -= 1
+                    cyc["feeding"] = True
+                    lift = lift_v = belt_adv = 0.0
+                    released = on_cam = False
+                    event(t_end, "strips the next round", f"{mag} left", rounds=mag, angle=verdict["angle"])
+                    if verdict["jam"]:
+                        jam = {**verdict, "shot": len(shot_times)}
+                        jam_at = max(s - verdict["travel"], 1e-3)
+                    elif verdict["incidence"] is not None:
+                        # The ramp turns the round's nose up, at the bolt's expense.
+                        u *= m_g / (m_g + m_round * math.tan(min(verdict["incidence"], 1.2)) ** 2)
+            if jam_at is not None and not frozen and s <= jam_at:
+                speed = -u
+                stop_bolt()
+                frozen = True
+                jam["travel_at"] = s
+                event(t_end, "jams", jam["detail"], speed, kind=jam["jam"], angle=jam["angle"])
 
             # How far the case has backed out of the chamber while still pressed into it.
             free = s - unlock if kind in (*LOCKED_GAS, "short_recoil") else s
@@ -733,18 +865,24 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             out["shoulder"].append(-f_sh)
             out["gas"].append(p_c)
             out["hammer"].append(ph)
+            out["feed"].append(belt_adv if belted else (lift / present if present else 0.0))
         t = t_end
 
         # Back in battery: fire the next shot of the burst.
         if next_shot is not None and t >= next_shot:
             next_shot = None
             shot_times.append(t)
+            counts.append(mag)
             new_cycle()
             event(t, "fires")
             end = t + DURATION
 
     status = "manual" if kind == "bolt" else "cycled"
-    if kind != "bolt":
+    if kind == "bolt":
+        by_hand = feeding.check(fgeo, 1.0, feed_at)
+        if by_hand["jam"]:
+            warnings.append(f"feeding: {by_hand['detail']}")
+    else:
         n = len(shot_times)
         which = f" on shot {n}" if requested > 1 else ""
         if not cyc["ejected"]:
@@ -755,6 +893,14 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
             status = "failed to feed"
             warnings.append(f"short stroke{which}: the bolt came back {cyc['s_max'] * 1e3:.0f} mm, ejecting "
                             f"the case, but it needs {feed_at * 1e3:.0f} mm to pick up the next round")
+        elif jam is not None:
+            status = f"jammed: {jam['jam']}"
+            warnings.append(f"jam{which}: {jam['detail']}")
+        elif cyc["misfeed"]:
+            status = "failed to feed"
+            warnings.append(f"failed to feed{which}: {cyc['misfeed']}")
+        elif cyc["empty"]:
+            status = "empty, bolt held open" if held_open else "empty"
         elif cyc["battery"] is None or cyc["battery"] < 0:
             status = "did not return to battery"
             warnings.append(f"the return spring did not close the bolt on the new round{which}")
@@ -770,7 +916,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
                    if energy < 0.5 * hammer_fall(gun)[1] else "a stronger hammer spring would fix it")
             warnings.append(f"light strike on shot {shot_no}: the hammer hit the firing pin with {energy:.2f} J "
                             f"(a primer needs {LIGHT_STRIKE:.2f} J); {why}")
-        if status != "cycled" and n < requested:
+        if status not in ("cycled", "empty", "empty, bolt held open") and n < requested:
             warnings.append(f"the burst stopped after {n} of {requested} shots")
     if rear_speed is not None and rear_speed > REAR_SPEED_WARNING:
         cure = {"gas": "over-gassed; a smaller gas port, a heavier carrier or a stiffer spring would ease it",
@@ -820,4 +966,12 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1) -> ActionResult:
         port_cd_2d=port_2d,
         lock_time=fall[0] + PRIMER_DELAY if hammer else LOCK_TIME,
         hammer_energy=fall[1] if hammer else None,
+        feed=arr["feed"],
+        rounds=counts,
+        rounds_left=mag,
+        chambered=kind != "bolt" and cyc["feeding"] and jam is None and (cyc["battery"] or -1) >= 0,
+        held_open=held_open,
+        jam=jam,
+        feed_angle=fgeo["angle"],
+        capacity=cap,
     )

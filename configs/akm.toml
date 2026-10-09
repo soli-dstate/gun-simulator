@@ -109,3 +109,8 @@ shoulder_damping   = 400.0
 
 [appearance]
 style = "ak"
+
+[feed]
+# Steel magazine, curved hard by the 7.62x39 case's taper.
+type     = "double_stack"
+capacity = 30

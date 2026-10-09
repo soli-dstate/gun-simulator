@@ -89,3 +89,8 @@ stance             = "shoulder"  # or "free" for free recoil
 body_mass          = 5.0         # kg of shooter moving with the gun
 shoulder_stiffness = 15e3        # N/m
 shoulder_damping   = 400.0       # N s/m
+
+[feed]
+# Detachable box magazine.
+type     = "single_stack"
+capacity = 5

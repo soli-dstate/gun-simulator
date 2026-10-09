@@ -209,7 +209,9 @@ _cache_lock = threading.Lock()
 
 
 def _cache_key(gun: Gun, blowdown_time: float, ambient_pressure: float) -> str:
-    return json.dumps([asdict(gun), blowdown_time, ambient_pressure], sort_keys=True)
+    data = asdict(gun)
+    data.pop("feed", None)   # the magazine doesn't change the shot
+    return json.dumps([data, blowdown_time, ambient_pressure], sort_keys=True)
 
 
 def _store(key: str, shot: ShotResult) -> None:

@@ -57,6 +57,20 @@ def test_gas_preset_cycles(base_url):
     assert [e["name"] for e in recoil["events"]][-1] == "back in battery"
 
 
+def test_rounds_and_cycle_endpoint(base_url):
+    # A shot fired with a part-empty magazine, then replayed with fewer rounds: only its cycle is re-run.
+    with urllib.request.urlopen(base_url + "/api/schema") as r:
+        schema = json.load(r)
+    assert "feed" in schema["fields"]
+    gun = schema["presets"]["m4a1"]
+    data = post(base_url + "/api/simulate", json.dumps({"gun": gun, "models": ["lumped"], "burst": 3, "rounds": 5}).encode())
+    recoil = data["results"][0]["action"]
+    assert recoil["rounds"] == [5, 4, 3] and recoil["rounds_left"] == 2 and recoil["capacity"] == 30
+    again = post(base_url + "/api/cycle", json.dumps({"gun": gun, "model": "lumped", "burst": 3, "rounds": 1}).encode())
+    assert again["rounds"] == [1, 0] and again["held_open"] and again["status"] == "empty, bolt held open"
+    assert len(again["feed"]) == len(again["time"])
+
+
 def test_bad_gun_returns_400(base_url):
     with urllib.request.urlopen(base_url + "/api/schema") as r:
         gun = json.load(r)["presets"]["example_rifle"]
