@@ -1,0 +1,117 @@
+# Colt Single Action Army: .45 Colt, 255 gr lead round-nose flat-point, from
+# the 7½" cavalry barrel. A single-action revolver: the shooter's thumb draws
+# the hammer back, the hand turning the cylinder a chamber on, and the trigger
+# only lets it go. It is loaded and unloaded one chamber at a time through the
+# loading gate, the ejector rod punching each case out. Gas escapes through the
+# 0.15 mm gap between the cylinder and the barrel. Dimensions are the published
+# ones where there are any; the burn law (of a modern smokeless load, not the
+# original black powder) is tuned to about 262 m/s (860 ft/s) at a pressure
+# well under the cartridge's 97 MPa. All units are SI (m, kg, s, Pa, J).
+
+name = "Colt Single Action Army (.45 Colt 255 gr lead)"
+
+[barrel]
+bore_diameter   = 11.48e-3  # m, groove diameter (.452")
+travel          = 0.2098    # m, seated base to muzzle: through the cylinder, across the gap, down the 190.5 mm barrel
+chamber_volume  = 2.00e-6   # m^3, the case's powder space under the bullet (the solver uses the case)
+chamber_shape   = "case"
+breech_diameter = 19.5e-3   # m, the barrel's shank at the frame
+muzzle_diameter = 15.5e-3   # m
+twist           = -0.4064   # m per turn: 1 in 16", left-hand
+groove_depth    = 0.1e-3    # m
+freebore        = 8.7e-3    # m, the jump from the chamber's throat across the gap into the forcing cone
+leade_angle     = 5.0       # degrees
+cylinder_gap    = 0.15e-3   # m
+cylinder_length = 40.9e-3   # m (1.61")
+
+[projectile]
+# 255 gr cast lead, round nose with a flat point, a lube and crimp groove.
+mass                = 16.52e-3  # kg
+shot_start_pressure = 12e6      # Pa, soft lead
+bore_resistance     = 3e6       # Pa
+length              = 18.5e-3   # m
+ogive_length        = 7.0e-3    # m
+meplat_diameter     = 6.5e-3    # m
+boat_tail_length    = 0.0
+cannelure_position  = 10.8e-3   # m, the crimp groove at the case mouth
+cannelure_width     = 1.2e-3    # m
+cannelure_depth     = 0.3e-3    # m
+jacket_thickness    = 0.0       # solid lead
+core_material       = "lead"
+drag_model          = "G1"
+ballistic_coefficient = 108.0   # kg/m^2 (0.154 lb/in^2)
+
+[case]
+# .45 Colt: a straight, rimmed case.
+length            = 32.6e-3   # m
+overall_length    = 40.3e-3   # m
+rim_diameter      = 12.95e-3  # m
+rim_thickness     = 1.52e-3   # m
+groove_diameter   = 12.95e-3  # m: no extractor groove
+groove_width      = 1.0e-3    # m
+base_diameter     = 12.17e-3  # m
+shoulder_diameter = 12.16e-3  # m: straight to the mouth
+shoulder_position = 31.0e-3   # m
+shoulder_angle    = 85.0      # degrees
+neck_wall         = 0.33e-3   # m
+body_wall         = 0.40e-3   # m
+head_thickness    = 3.8e-3    # m
+primer_diameter   = 5.33e-3   # m, large pistol
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+# A single-base flake powder.
+composition     = "single_base"
+grain           = "flake"
+charge_mass     = 0.41e-3   # kg (6.3 gr)
+web             = 0.10e-3   # m
+grain_length    = 1.5e-3    # m
+burn_rate_coeff = 9.0e-9    # (m/s)/Pa^n, tuned to the 7½" barrel
+
+[ignition]
+pressure      = 4e6     # Pa
+strike_energy = 0.08    # J
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+type          = "revolver"
+gun_mass      = 1.10     # kg, unloaded (39 oz)
+bolt_mass     = 0.05     # kg, unused
+cylinder_mass = 0.21     # kg
+# A long hammer on a flat mainspring, with the firing pin on its face.
+hammer             = true
+hammer_inertia     = 1.4e-5  # kg m^2
+hammer_spring_torque = 0.55  # N m
+hammer_spring_rate = 0.35    # N m/rad
+hammer_angle       = 62.0    # degrees
+bore_height        = 0.048   # m, a high bore over the plow-handle grip
+cg_distance        = 0.070   # m
+radius_of_gyration = 0.105   # m
+
+[trigger]
+type      = "single_action"
+mode      = "semi"
+pull      = 18.0      # N (4 lb)
+travel    = 1.5e-3    # m
+pull_time = 0.30      # s for the thumb to cock the hammer
+split     = 0.75      # s between shots: cock, aim, press
+
+[shooter]
+stance             = "hands"
+body_mass          = 1.4        # kg: one hand and arm, the old way
+shoulder_stiffness = 5e3
+shoulder_damping   = 110.0
+hold_stiffness     = 18.0
+hold_damping       = 0.5
+
+[feed]
+type     = "cylinder"
+capacity = 6
+loading  = "gate"
+
+[appearance]
+style = "single_action"

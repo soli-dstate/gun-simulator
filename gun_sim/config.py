@@ -44,6 +44,11 @@ class Barrel:
     evacuator_nozzles: int = 0               # count, round the barrel
     evacuator_nozzle_diameter: float = 0.0   # m
     evacuator_angle: float = 30.0            # degrees the nozzles lean from the bore axis, towards the muzzle
+    # Revolver (gun_sim/revolver.py): the cylinder's chambers run `cylinder_length` from the case head to
+    # its front face, and the barrel's rear face stands `cylinder_gap` ahead of that. Once the projectile's
+    # base is out of the cylinder, gas escapes through the gap all round. 0 = no gap.
+    cylinder_gap: float = 0.0                # m
+    cylinder_length: float | None = None     # m; None = the overall length + 1 mm
 
     @property
     def bore_area(self) -> float:
@@ -344,6 +349,9 @@ CASE_MATERIALS = {"brass": 8500.0, "steel": 7850.0}   # kg/m^3
 @dataclass
 class Ignition:
     pressure: float = 5e6  # Pa, chamber pressure produced by the igniter/primer
+    # Energy the firing pin has to strike the primer with to fire it (a rifle primer's 0.15 J; a pistol
+    # primer's cup is softer). Less, and it is a light strike (gun_sim/action.py).
+    strike_energy: float = 0.15            # J
     # Two-phase grain bed only (solver.two_phase; gun_sim/grainbed.py): the primer's gas comes out
     # of the flash hole over `duration`, and a grain lights when its surface reaches this temperature.
     duration: float = 2e-4                     # s
@@ -405,8 +413,12 @@ class MuzzleDevice:
 
 
 ACTION_TYPES = ("bolt", "gas", "direct_impingement", "blowback", "short_recoil", "roller_delayed", "lever_delayed",
-                "gas_delayed", "chain", "sliding_wedge")
-STANCES = ("shoulder", "free", "mount")
+                "gas_delayed", "chain", "sliding_wedge", "revolver")
+STANCES = ("shoulder", "hands", "free", "mount")
+LOCKINGS = ("block", "tilt")
+TRIGGER_TYPES = ("single_action", "double_action", "double_action_only", "striker")
+FIRE_MODES = ("auto", "semi")
+CYLINDER_LOADING = ("swing_out", "gate")
 
 
 @dataclass
@@ -432,6 +444,12 @@ class Action:
     (bolt_mass is the block, bolt_travel its drop, spring_rate and
     spring_preload its closing spring), and whose extractors throw the case or
     its stub out.
+
+    "revolver": the rounds sit in the chambers of a cylinder that the hand turns
+    a chamber on as the hammer is cocked (by the trigger, or a single action's
+    by the thumb) and the cylinder stop locks in line with the bore. Nothing
+    moves under the shot; the gas escapes through the gap between the cylinder
+    and the barrel (barrel.cylinder_gap). bolt_mass is unused.
     """
     type: str = "bolt"
     gun_mass: float = 4.0               # kg, the whole gun unloaded, bolt included
@@ -464,6 +482,21 @@ class Action:
     # Rate reducer (AKM): an inertial lever the hammer swings with it over the start of its fall.
     rate_reducer_inertia: float = 0.0   # kg m^2; 0 = none
     rate_reducer_angle: float = 20.0    # degrees of the hammer's fall it drags the lever through
+    # Striker (trigger.type = "striker"): a spring-driven firing pin in the slide. Closing, the slide
+    # compresses its spring the first striker_precock of its travel against the trigger bar; the trigger
+    # pull compresses it the rest of the way and lets it go.
+    striker_mass: float = 6e-3          # kg, the striker and its spring's moving share
+    striker_spring_preload: float = 5.0  # N with the striker forward on the primer
+    striker_spring_rate: float = 2500.0  # N/m
+    striker_travel: float = 6.5e-3      # m from forward to fully cocked
+    striker_precock: float = 0.6        # share of the travel the slide cocks it
+    # Short recoil: how the barrel unlocks from the slide (the 3D view's): "block", a locking block that
+    # drops out from under the slide (Walther, Beretta), or "tilt", the barrel's breech dropping on a link
+    # or cam (Browning).
+    locking: str = "block"
+    # Revolver: the cylinder, turned a chamber by the hand as the hammer is cocked, then locked by the stop.
+    cylinder_mass: float = 0.3          # kg, empty
+    cylinder_radius: float | None = None  # m, its axis to the chambers' (the bore's); None = room for the rims
     # Gas system.
     gas_port_position: float | None = None  # m of projectile travel from its seat to the port; None = 75 % of travel
     gas_port_diameter: float = 1.2e-3   # m
@@ -500,10 +533,13 @@ class Feed:
     links them in a belt drawn across a feed tray by a cam on the bolt group;
     "dual_belt" has a belt coming in from each side, `capacity` each, and feeds
     from the `select`ed one; "hand" is a loader putting each round into the
-    breech, from a ready rack of `capacity` rounds. None = filled in for the type.
+    breech, from a ready rack of `capacity` rounds; "cylinder" is a revolver's,
+    `capacity` chambers, reloaded by swinging it out (all the cases ejected at
+    once, a speedloader putting the rounds in) or one at a time through a
+    loading `gate`. None = filled in for the type.
     """
     type: str = "double_stack"
-    capacity: int | None = None             # rounds (None = 10, 30, 60, 75, 100)
+    capacity: int | None = None             # rounds (None = 10, 30, 60, 75, 100; a cylinder's 6 chambers)
     spring_empty: float | None = None       # N, magazine spring on the follower, empty
     spring_full: float | None = None        # N, on the top round, full
     follower_mass: float | None = None      # kg (a drum's rotor, as felt at the lips)
@@ -517,6 +553,34 @@ class Feed:
     belt_cam_start: float | None = None     # m of carrier travel where the feed cam starts drawing the belt (None = 20 % of the stroke)
     belt_cam: float | None = None           # m of carrier travel over which it draws one link (None = 35 % of the stroke)
     select: str = "left"                    # dual belt: the belt that feeds ("left" or "right")
+    loading: str = "swing_out"              # cylinder: "swing_out" (crane and ejector star) or "gate" (one at a time)
+
+
+@dataclass
+class Trigger:
+    """The trigger, and how the shooter works it (gun_sim/action.py).
+
+    "single_action": the pull only lets a cocked hammer go (cocked by the
+    action, or a single-action revolver's by the shooter's thumb).
+    "double_action": the first pull cocks the hammer and lets it go; after that
+    the action leaves it cocked (DA/SA). A double-action revolver's every pull
+    cocks it and turns the cylinder. "double_action_only": every pull cocks it.
+    "striker": the pull finishes cocking a striker the slide has part-cocked,
+    and lets it go.
+
+    mode "auto" fires a burst as the closing action trips the auto sear (or,
+    without a hammer, as soon as it is back in battery); "semi" fires each shot
+    with a pull of its own, `split` seconds after the last, once the action is
+    back in battery. A revolver is always fired a pull at a time.
+    """
+    type: str = "single_action"
+    mode: str = "auto"
+    pull: float = 25.0          # N, single action (or a striker's) pull
+    travel: float = 3.0e-3      # m
+    da_pull: float = 50.0       # N, double action
+    da_travel: float = 12e-3    # m
+    pull_time: float = 0.12     # s the shooter takes over a double-action pull, or to thumb-cock a hammer
+    split: float = 0.3          # s between shots fired as fast as the shooter can
 
 
 @dataclass
@@ -553,7 +617,10 @@ class Mount:
 
 @dataclass
 class Shooter:
-    """What holds the gun. "free" is free recoil: nothing holds it at all; "mount" is a mount's recoil system ([mount])."""
+    """What holds the gun. "shoulder" and "hands" are a spring and damper to the rest of the body, with
+    some of it moving with the gun (for a handgun, the hands and forearms; bore_height is then the bore
+    over the web of the hand, cg_distance from there forwards to the centre of mass); "free" is free
+    recoil: nothing holds it at all; "mount" is a mount's recoil system ([mount])."""
     stance: str = "shoulder"
     body_mass: float = 5.0              # kg of shooter that moves with the gun (shoulder and arms)
     shoulder_stiffness: float = 15e3    # N/m
@@ -562,7 +629,8 @@ class Shooter:
     hold_damping: float = 9.0           # N m s/rad
 
 
-STYLES = ("rifle", "ar15", "ak", "autocannon", "tank")
+STYLES = ("rifle", "ar15", "ak", "autocannon", "tank", "1911", "beretta", "polymer", "revolver", "single_action")
+HANDGUN_STYLES = ("1911", "beretta", "polymer", "revolver", "single_action")
 
 
 @dataclass
@@ -573,7 +641,13 @@ class Appearance:
     (stamped receiver and dust cover, gas tube over the barrel, curved magazine),
     "autocannon" a chain gun's box receiver and drive on a recoil-adapter mount,
     "tank" a tank gun's breech ring, cradle, recoil cylinders, thermal sleeve and
-    bore evacuator."""
+    bore evacuator. Handguns: "1911" a steel slide and frame with a grip safety,
+    spur hammer and wooden grips; "beretta" an open-top slide over the barrel,
+    a locking block and an aluminium frame; "polymer" a squared-off slide on a
+    polymer frame, striker-fired; "revolver" a double-action revolver's frame,
+    swing-out cylinder on its crane, full-lug barrel and ventilated rib;
+    "single_action" a single-action army's frame, loading gate, ejector rod and
+    one-piece grip."""
     style: str = "rifle"
 
 
@@ -592,6 +666,7 @@ class Gun:
     feed: Feed = field(default_factory=Feed)
     appearance: Appearance = field(default_factory=Appearance)
     mount: Mount = field(default_factory=Mount)
+    trigger: Trigger = field(default_factory=Trigger)
 
     def __post_init__(self):
         scale = self.barrel.bore_diameter / _REF_BORE
@@ -672,11 +747,15 @@ class Gun:
             raise ValueError("ignition.pressure cannot be negative and ignition.duration must be between 1 µs and 5 ms")
         if not 320 <= ig.grain_ignition_temperature <= 1500:
             raise ValueError("ignition.grain_ignition_temperature must be between 320 and 1500 K")
+        if not 0.005 <= ig.strike_energy <= 2:
+            raise ValueError("ignition.strike_energy must be between 0.005 and 2 J")
         self._validate_action()
+        self._validate_trigger()
         self._validate_device()
         self._validate_feed()
         self._validate_mount()
         self._validate_evacuator()
+        self._validate_cylinder()
         if self.appearance.style not in STYLES:
             raise ValueError(f"appearance.style must be one of {", ".join(STYLES)}, not {self.appearance.style!r}")
         c = self.case
@@ -755,9 +834,62 @@ class Gun:
                                  "set shooter.stance = \"mount\"")
             if a.cam_travel >= self.mount.stroke:
                 raise ValueError("action.cam_travel must be shorter than the recoil stroke (mount.stroke)")
+        if a.locking not in LOCKINGS:
+            raise ValueError(f"action.locking must be one of {', '.join(LOCKINGS)}, not {a.locking!r}")
+        if (a.striker_mass <= 0 or a.striker_travel <= 0 or a.striker_spring_preload < 0
+                or a.striker_spring_rate < 0 or not 0 <= a.striker_precock <= 1):
+            raise ValueError("action: striker_mass and striker_travel must be positive, its spring not negative, "
+                             "and striker_precock between 0 and 1")
+        if a.cylinder_mass <= 0 or (a.cylinder_radius is not None and a.cylinder_radius <= 0):
+            raise ValueError("action.cylinder_mass must be positive, and cylinder_radius positive (or left out)")
         for name in ("body_mass", "shoulder_stiffness", "shoulder_damping", "hold_stiffness", "hold_damping"):
             if getattr(s, name) < 0:
                 raise ValueError(f"shooter.{name} cannot be negative")
+
+    def _validate_trigger(self) -> None:
+        t, kind = self.trigger, self.action.type
+        if t.type not in TRIGGER_TYPES:
+            raise ValueError(f"trigger.type must be one of {', '.join(TRIGGER_TYPES)}, not {t.type!r}")
+        if t.mode not in FIRE_MODES:
+            raise ValueError(f"trigger.mode must be one of {', '.join(FIRE_MODES)}, not {t.mode!r}")
+        if t.pull <= 0 or t.travel <= 0 or t.da_pull <= 0 or t.da_travel <= 0:
+            raise ValueError("trigger: the pulls and their travels must be positive")
+        if not 0.01 <= t.pull_time <= 2 or not 0.02 <= t.split <= 10:
+            raise ValueError("trigger.pull_time must be between 0.01 and 2 s, and split between 0.02 and 10 s")
+        if kind == "revolver":
+            if t.type == "striker":
+                raise ValueError("a revolver is fired by its hammer: trigger.type single_action, double_action "
+                                 "or double_action_only")
+            if t.split <= t.pull_time:
+                raise ValueError("trigger.split must be longer than pull_time: the hammer is cocked between shots")
+        if t.type in ("double_action", "double_action_only") and kind not in ("revolver", "bolt", "chain", "sliding_wedge"):
+            if not self.action.hammer:
+                raise ValueError("a double-action trigger cocks a hammer: set action.hammer = true")
+            if t.type == "double_action_only" and t.split <= t.pull_time:
+                raise ValueError("trigger.split must be longer than pull_time: each pull cocks the hammer")
+        if t.type == "striker" and (kind in ("bolt", "chain", "sliding_wedge") or self.action.hammer):
+            raise ValueError("a striker is cocked by a self-loading action instead of a hammer: "
+                             "set action.hammer = false and a self-loading action.type")
+
+    def _validate_cylinder(self) -> None:
+        b, kind, f = self.barrel, self.action.type, self.feed
+        if (kind == "revolver") != (f.type == "cylinder"):
+            raise ValueError("a revolver's rounds are in its cylinder: action.type \"revolver\" goes with "
+                             "feed.type \"cylinder\", and only with it")
+        if f.loading not in CYLINDER_LOADING:
+            raise ValueError(f"feed.loading must be one of {', '.join(CYLINDER_LOADING)}, not {f.loading!r}")
+        if b.cylinder_gap < 0 or b.cylinder_gap > 2e-3:
+            raise ValueError("barrel.cylinder_gap must be between 0 and 2 mm")
+        if b.cylinder_gap and kind != "revolver":
+            raise ValueError("barrel.cylinder_gap is a revolver's: set action.type = \"revolver\" (or the gap to 0)")
+        if b.cylinder_length is not None:
+            if b.cylinder_length < self.case.overall_length:
+                raise ValueError("barrel.cylinder_length must be at least the case's overall length: "
+                                 "the bullet may not stand out of the cylinder")
+            if b.cylinder_length - self.seat >= b.travel:
+                raise ValueError("barrel.cylinder_length leaves no barrel ahead of the cylinder")
+        if kind == "revolver" and f.capacity is not None and not 2 <= f.capacity <= 12:
+            raise ValueError("a revolver's cylinder has 2 to 12 chambers (feed.capacity)")
 
     def _validate_feed(self) -> None:
         f = self.feed
@@ -874,6 +1006,7 @@ class Gun:
             "feed": Feed,
             "appearance": Appearance,
             "mount": Mount,
+            "trigger": Trigger,
         }
         kwargs = {"name": data.get("name", "unnamed")}
         for key, section_cls in sections.items():

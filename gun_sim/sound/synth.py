@@ -2,10 +2,16 @@
 
     bore blowdown (fluid.py) --+--> spherical blast solver (blast.py) --> probes
     precursor (ballistic.py) --+                                           |
+    revolver's cylinder gap -----> spherical blast solver --> probes       |
                                     directivity, weak shocks, absorption,  |
     supersonic crack (ballistic.py) --> ground reflection, head (propagation.py)
                                                                            v
                                                        left / right ear, Pa
+
+A revolver's cylinder gap blows its own blast out sideways, from beside the
+shooter's hands, a little before the muzzle's: the gas that escapes it
+(fluid.py's gap_flow) feeds a second spherical solution, heard without the
+muzzle jet's forward throw.
 
 Nothing here is a recording or a sample: every sound comes from the gun's
 configuration and the air it is fired in.
@@ -61,6 +67,8 @@ class _Physics:
     ejected_energy: float
     directivity: float = 1.0   # share of the jet's forward momentum that survives a muzzle device
     source_x: float = 0.0      # m, where the blast comes from, ahead of the muzzle
+    gap_probes: np.ndarray | None = None   # a revolver's cylinder gap blast, on the same time base and radii
+    gap_x: float = 0.0         # m, where the gap is (behind the muzzle: negative)
 
 
 _cache: dict = {}
@@ -113,11 +121,27 @@ def _physics(gun: Gun, s: SoundSettings) -> _Physics:
                            max(bar.bore_diameter, 2.5 * dx), radii)
 
     fs = s.sample_rate * OVERSAMPLE
-    t = np.arange(blast.time[0], blast.time[-1], 1 / fs)
+    gap = shot.gap_flow
+    gap_blast = None
+    if gap is not None and gap["mass"] > 0:
+        dt_gap = np.diff(gap["t"], prepend=gap["t"][0])
+        mass = np.cumsum(gap["mdot"] * dt_gap)
+        gap_source = BlastSource(t=np.concatenate(([gap["t"][0] - 1e-6], gap["t"])),
+                                 mass=np.concatenate(([0.0], mass)),
+                                 energy=np.concatenate(([0.0], np.cumsum(gap["edot"] * dt_gap))),
+                                 propellant=np.concatenate(([0.0], mass)))
+        gap_blast = simulate_blast(gap_source, gun.propellant.gas_constant, gun.propellant.gamma, s.pressure,
+                                   s.temperature_k, s.blast_radius, s.blast_cells, mf.exit_time + s.blast_time,
+                                   max(2 * bar.bore_diameter, 2.5 * dx), radii)
+    start = min(blast.time[0], gap_blast.time[0]) if gap_blast is not None else blast.time[0]
+    t = np.arange(start, blast.time[-1], 1 / fs)
     fade = np.clip((t[-1] - t) / 3e-3, 0.0, 1.0)  # the record ends; fade rather than cut
-    probes = np.array([propagation.shock_fit(t, np.interp(t, blast.time, p)) * fade for p in blast.pressure])
+    probes = np.array([propagation.shock_fit(t, np.interp(t, blast.time, p, left=0.0)) * fade for p in blast.pressure])
+    gap_probes = None if gap_blast is None else np.array(
+        [propagation.shock_fit(t, np.interp(t, gap_blast.time, p, left=0.0)) * fade for p in gap_blast.pressure])
 
-    phys = _Physics(shot, blast, t, probes, ejected, directivity, source_x)
+    phys = _Physics(shot, blast, t, probes, ejected, directivity, source_x, gap_probes,
+                    -(bar.travel - gap["position"]) if gap_probes is not None else 0.0)
     while len(_cache) >= 2:
         _cache.pop(next(iter(_cache)))
     _cache[key] = phys
@@ -184,6 +208,29 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
         shift, wave = blast_at(r, vec[0] / r)
         arrivals.append(dict(name=f"muzzle blast ({name})", t0=t_u[0] + shift, wave=wave, r=r,
                              grazing=grazing, direction=vec / r))
+
+    # ---- a revolver's cylinder gap: a blast of its own, out sideways all round, without the jet's throw ----
+    if phys.gap_probes is not None:
+        def gap_at_range(r: float):
+            k = max(int(np.searchsorted(radii, r, side="right")) - 1, 0)
+            rk, p = radii[k], phys.gap_probes[k]
+            ia = int(np.argmax(p >= 0.5 * p.max()))
+            ipk = int(np.argmax(p))
+            zero = ipk + int(np.argmax(p[ipk:] < 0))
+            stretch = propagation.weak_shock_stretch(p.max(), t_u[zero] - t_u[ia], rk, r, rho0, c0)
+            local = np.where(t_u >= t_u[ia], t_u[ia] + (t_u - t_u[ia]) / stretch, t_u)
+            return (r - rk) / c0, np.interp(local, t_u, p) * (rk / r / stretch)
+
+        from_gap = listener - np.array([phys.gap_x, 0.0, 0.0])
+        gap_paths = [("direct", from_gap, None)]
+        if len(paths) > 1:
+            image = from_gap + np.array([0.0, 0.0, 2 * h_s])
+            gap_paths.append(("ground", image, math.asin(min(image[2] / float(np.linalg.norm(image)), 1.0))))
+        for name, vec, grazing in gap_paths:
+            r = max(float(np.linalg.norm(vec)), 0.05)
+            shift, wave = gap_at_range(r)
+            arrivals.append(dict(name=f"cylinder gap blast ({name})", t0=t_u[0] + shift, wave=wave, r=r,
+                                 grazing=grazing, direction=vec / r))
 
     # ---- the supersonic crack ----
     proj = gun.projectile
@@ -322,6 +369,7 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
             "momentum_ratio": shot.device.momentum_ratio, "peak_pressure": float(shot.device.pressure.max()),
         },
         "recoil_impulse": shot.recoil_impulse,
+        "gap_gas": None if shot.gap_flow is None else shot.gap_flow["mass"],
         "muzzle_velocity": shot.muzzle_velocity,
         "muzzle_mach": shot.muzzle_velocity / c0,
         "sound_speed": c0,
@@ -425,7 +473,8 @@ def _stems(groups: dict, out, references: dict, rate: int, start: float) -> list
         i0 = max(0, int(idx[0]) - int(0.002 * rate))
         i1 = min(len(env), int(idx[-1]) + 1 + int(0.020 * rate))
         kind = ("blast" if name.startswith("muzzle blast") else "crack" if name.startswith("supersonic")
-                else "device" if name == "suppressor ring" else "action")
+                else "device" if name == "suppressor ring" else "gap" if name.startswith("cylinder gap")
+                else "action")
         refs = {k: v[i0:i1] for k, v in references.items()} if kind == "blast" else None
         stems.append(dict(name=name, kind=kind, time=start + i0 / rate, left=left[i0:i1], right=right[i0:i1],
                           peak=peak, reference=refs["side"] if refs else None, references=refs))

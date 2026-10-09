@@ -28,7 +28,10 @@
 // and dust cover, rear sight block, gas tube with its wooden handguards and a
 // wooden stock. A muzzle device is turned from the same dimensions the 2D
 // solver draws (gun_sim/devices.py). The magazine or belt is [feed]'s, built
-// by feed.js.
+// by feed.js. Handguns ("1911", "beretta", "polymer"; and any revolver,
+// "revolver" or "single_action") are handgun.js's: a pistol's slide, frame
+// and raked grip, or a revolver's frame, cylinder and barrel; they pivot in
+// the hand at the web of the grip.
 //
 // Units are millimetres. x runs along the bore towards the muzzle, with x = 0
 // at the case head of a chambered round (= the bolt face when the bolt is
@@ -37,8 +40,11 @@
 
 import { buildCartridge, roundMeshes } from "./cartridge.js";
 import { buildFeed, feedGeometry } from "./feed.js";
+import { HANDGUN_STYLES, buildHandgunFrame, buildPistolParts, buildRevolverParts, cylinderDims, gripRake,
+         handgunReceiver, revolverBarrel } from "./handgun.js";
 import { lathe } from "./lathe.js";
 import { chain, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
+import { bake, boxAt, cutX, gripAt, merge, rodX, rodY, scaled } from "./meshops.js";
 import { box, prism, rodProfile, sphereProfile, torusProfile, tubeProfile } from "./shapes.js";
 
 const MM = 1e3;
@@ -46,6 +52,7 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 // As gun_sim/action.py fills them in: unlock travel (mm; carrier travel for a delayed blowback) and delay ratio.
 const UNLOCK = { gas: 6, direct_impingement: 7, short_recoil: 3, roller_delayed: 5, lever_delayed: 6, chain: 5 };
 const CHAIN_PITCH = 12.7;   // mm, a chain gun's drive chain (half-inch roller chain)
+const GATE_ANGLE = Math.PI / 3;   // a single-action revolver's loading gate: the chamber this far round from the top, to the right
 
 /**
  * A chain gun's track as gun_sim/action.py chain_track() has it (mm): its legs from the firing point,
@@ -83,69 +90,6 @@ export function chainTrack(gun, stroke) {
   return { width, radius: r, stroke, perimeter, legs, at, rearStart: starts.rear, rearLength: dwell };
 }
 const DELAY_RATIO = { roller_delayed: 4, lever_delayed: 6 };
-
-/** Apply a rigid transform to mesh data. */
-function bake(mesh, m) {
-  const p = mesh.positions, n = mesh.normals;
-  const positions = new Float32Array(p.length), normals = new Float32Array(n.length);
-  for (let i = 0; i < p.length; i += 3) {
-    const x = p[i], y = p[i + 1], z = p[i + 2];
-    positions[i] = m[0] * x + m[4] * y + m[8] * z + m[12];
-    positions[i + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
-    positions[i + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
-    const a = n[i], b = n[i + 1], c = n[i + 2];
-    normals[i] = m[0] * a + m[4] * b + m[8] * c;
-    normals[i + 1] = m[1] * a + m[5] * b + m[9] * c;
-    normals[i + 2] = m[2] * a + m[6] * b + m[10] * c;
-  }
-  return { positions, normals, indices: mesh.indices };
-}
-
-/** Scale mesh data about the origin; normals by the inverse scale, renormalised. */
-function scaled(mesh, sx, sy, sz) {
-  const p = mesh.positions, n = mesh.normals;
-  const positions = new Float32Array(p.length), normals = new Float32Array(n.length);
-  for (let i = 0; i < p.length; i += 3) {
-    positions[i] = p[i] * sx; positions[i + 1] = p[i + 1] * sy; positions[i + 2] = p[i + 2] * sz;
-    const a = n[i] / sx, b = n[i + 1] / sy, c = n[i + 2] / sz, l = Math.hypot(a, b, c) || 1;
-    normals[i] = a / l; normals[i + 1] = b / l; normals[i + 2] = c / l;
-  }
-  return { positions, normals, indices: mesh.indices };
-}
-
-/** Join several meshes into one. Pass [mesh, transform] pairs or bare meshes. */
-function merge(...entries) {
-  const meshes = entries.map((e) => (Array.isArray(e) ? bake(e[0], e[1]) : e));
-  const nv = meshes.reduce((s, m) => s + m.positions.length, 0);
-  const ni = meshes.reduce((s, m) => s + m.indices.length, 0);
-  const positions = new Float32Array(nv), normals = new Float32Array(nv), indices = new Uint32Array(ni);
-  let vo = 0, io = 0;
-  for (const m of meshes) {
-    positions.set(m.positions, vo);
-    normals.set(m.normals, vo);
-    for (let i = 0; i < m.indices.length; i++) indices[io + i] = m.indices[i] + vo / 3;
-    vo += m.positions.length;
-    io += m.indices.length;
-  }
-  return { positions, normals, indices };
-}
-
-const boxAt = (sx, sy, sz, x, y, z) => [box(sx, sy, sz), translation(x, y, z)];
-/** Rods of radius r along x (at y, z) and along y (at x, z). */
-const rodX = (r, x0, x1, y = 0, z = 0, seg = 24) => [lathe(rodProfile(r, x0, x1), seg), translation(0, y, z)];
-const rodY = (r, y0, y1, x, z = 0, seg = 24) => [lathe(rodProfile(r, y0, y1), seg), chain(translation(x, 0, z), rotationZ(Math.PI / 2))];
-/** A pistol grip: top edge centred on x at yTop, raked back by `rake` per unit of height. */
-const gripAt = (x, yTop, h, w, rake, sz) =>
-  prism([[x + w / 2, yTop], [x - w / 2, yTop], [x - w / 2 - rake * h, yTop - h], [x + w / 2 - rake * h, yTop - h]], sz);
-
-/** Boxes along x from x0 to x1, leaving out [a, b]: a receiver part with the feed opening cut from it. */
-function cutX(x0, x1, a, b, make) {
-  if (b <= x0 || a >= x1) return [make(x0, x1)];
-  const out = [];
-  if (a - x0 > 0.5) out.push(make(x0, a));
-  if (x1 - b > 0.5) out.push(make(b, x1));
-  return out;
-}
 
 /** Muzzle device dimensions in mm, filled in as gun_sim/devices.py dimensions() does; null for none. */
 export function deviceDims(gun) {
@@ -241,6 +185,11 @@ export function buildRifle(gun) {
   const wedge = kind === "sliding_wedge", chainGun = kind === "chain";
   const mounted = gun.shooter?.stance === "mount";
   const mountStroke = (gun.mount?.stroke ?? 0.03) * MM;
+  // A handgun (handgun.js): a pistol's slide and frame, or a revolver's frame and cylinder.
+  const revolverGun = kind === "revolver";
+  const handgun = HANDGUN_STYLES.includes(style) || revolverGun;
+  const pistol = handgun && !revolverGun && !["bolt", "chain", "sliding_wedge"].includes(kind);
+  const cyl = revolverGun ? cylinderDims(gun, d) : null;
 
   // ---- barrel ----
   const rearX = d.rimT + 0.6;               // the bolt nose fits in front of the case head
@@ -284,7 +233,8 @@ export function buildRifle(gun) {
   const chamberBody = d.bodyStart > rearX
     ? [[d.shR + c, d.xs], [d.baseR + c, d.bodyStart], [r0, rearX]]
     : [[d.shR + c, d.xs], [r0, rearX]];
-  const barrel = lathe([
+  // A revolver's barrel starts across the gap from its cylinder, which holds the chambers.
+  const barrel = revolverGun ? revolverBarrel({ boreR, muzzleX, barrelR, style, cyl, leade: gun.barrel.leade_angle }) : lathe([
     [[r0, rearX], [breechR - ch, rearX]],
     [[breechR - ch, rearX], [breechR, rearX + ch]],
     [[breechR, rearX + ch], [breechR, shankEnd]],
@@ -332,6 +282,7 @@ export function buildRifle(gun) {
   // Painted parts that recoil (a tank gun's thermal sleeve and evacuator), and the mount's: the cradle
   // and what is on it (pitched with the gun, not recoiling), and the pedestal (fixed).
   const paintParts = [], mountParts = [], pedestalParts = [];
+  const brightParts = [];                   // stainless or bright parts that don't move (a revolver's frame)
   const shortRecoil = kind === "short_recoil";
   let chainLayout = null, wedgeLayout = null, rackGround = null, crankMesh = null;
   if (!shortRecoil) {
@@ -342,7 +293,8 @@ export function buildRifle(gun) {
   // ---- receiver and furniture, by style. Each sets where the bolt group ends at the back
   // (boltRear), the receiver's size for the camera (recR), and where the gas runs. ----
   let recR, boltRear, magTop, cgX, buttX, portFront, portRearL, bridgeRear, yGas, yTube, frontOfReceiver;
-  let pivotX = null;                        // a mount's trunnions (else the butt)
+  let pivotX = null;                        // a mount's trunnions, or the web of the hand on a handgun's grip (else the butt)
+  let handR = null;                         // a handgun's slide, or its frame round the cylinder (handgun.js)
   /** Rods along x at (y, z), and cylinders round them. */
   const rodAt = (r, x0, x1, y, z, seg = 24) => [lathe(rodProfile(r, x0, x1), seg), translation(0, y, z)];
   const tubeAt = (ri, ro, x0, x1, y, z, seg = 48) => [lathe(tubeProfile(ri, ro, x0, x1), seg), translation(0, y, z)];
@@ -355,7 +307,12 @@ export function buildRifle(gun) {
     boxAt(x1 - x0, 2 * hb, w - hb, (x0 + x1) / 2, 0, -(w + hb) / 2),
     boxAt(x1 - x0, 2 * hb, w - hb, (x0 + x1) / 2, 0, (w + hb) / 2),
   ];
-  if (tank) {
+  if (handgun) {
+    // A pistol's slide or a revolver's frame; the frame and grip follow once the magazine is known.
+    handR = handgunReceiver({ d, oal, boltR, breechR, muzzleX, style, revolver: revolverGun, cyl });
+    ({ recR, boltRear, portFront, bridgeRear, magTop, frontOfReceiver, yGas, yTube } = handR);
+    portRearL = handR.portRearL;
+  } else if (tank) {
     // A tank gun. The breech ring: behind the case head, cheeks either side of the slot the wedge
     // drops in, a bridge over it and a floor under it; ahead, slabs round the barrel's breech end.
     // The cradle round the barrel ahead of the ring carries the recoil cylinders (their rods are
@@ -695,9 +652,22 @@ export function buildRifle(gun) {
   const rack = wedgeLayout
     ? { x: wedgeLayout.guardRear - 250 - oal, y: 0, z: -(wedgeLayout.ringHalf + 0.6 * d.rimR + 2 * d.rimR) }
     : { x: -2 * oal - 60, y: -(recR + 2 * d.rimR + 20), z: -(recR + 2 * d.rimR + 30) };
-  const feed = buildFeed(gun, { dims: d, boltR, recR, stroke, camTop: boltR, groupFront, rack, chainDriven: chainGun });
+  const feed = buildFeed(gun, { dims: d, boltR, recR, stroke, camTop: boltR, groupFront, rack, chainDriven: chainGun,
+                                rake: handgun ? gripRake(style) : 0 });
   furnParts.push(...feed.furniture);
   steelParts.push(...feed.steel);
+  // A handgun's frame, grip and trigger guard, round its magazine; it pivots in the hand at the web.
+  let hand = null, pivotYAt = pivotY;
+  if (handgun) {
+    hand = buildHandgunFrame({ d, oal, act, style, pivotY, breechR, muzzleR, muzzleX, boreR, gateAngle: GATE_ANGLE },
+                             handR, feed.layout);
+    steelParts.push(...hand.steel);
+    furnParts.push(...hand.furniture);
+    woodParts.push(...hand.wood);
+    brightParts.push(...hand.bright);
+    ({ pivotX, cgX, buttX, recR } = hand);
+    pivotYAt = hand.pivotY;
+  }
   if (autocannon) {
     // The pedestal, from the yoke down to the ground the belts lie on.
     const floor = feed.layout.floor ?? rackGround - 600;
@@ -737,7 +707,27 @@ export function buildRifle(gun) {
 
   let boltMesh, carrier = null, shroud = null, barrelMesh = null, lock = null, rollers = null, lever = null;
   const extra = {};                         // layout of the parts that follow the bolt
-  if (kind === "bolt") {
+  const handMeshes = {};                    // a handgun's own: slide, trigger, spring coil, cylinder, crane...
+  let handHammer = null;
+  if (revolverGun) {
+    // Nothing slides: the cylinder turns. The cylinder stop (a revolver's "bolt") pops up into it from the frame.
+    const P = buildRevolverParts({ d, style, act, boreR }, handR);
+    boltMesh = merge(boxAt(6, 3, 3, cyl.Lc * 0.6, -cyl.rC - cyl.Ro - 0.2, 0));
+    Object.assign(handMeshes, { cylinder: P.cylinder, ...(P.star ? { star: P.star } : {}),
+      ...(hand.crane ? { crane: hand.crane, ejector: hand.ejector } : {}),
+      ...(hand.gate ? { gate: hand.gate, ejectorRod: hand.ejectorRod } : {}) });
+    handHammer = P;
+  } else if (pistol) {
+    // The slide is the bolt group; its breech face and extractor are bright steel inside it.
+    const P = buildPistolParts({ d, style, barrel, deviceMesh, breechR, muzzleR, act, kind, rearX }, handR);
+    boltMesh = P.bolt;
+    handMeshes.slide = P.slide;
+    barrelMesh = P.barrelMesh;
+    lock = P.lock;
+    if (lock) extra.lockDrop = P.lockDrop;
+    if (P.tilt) extra.tilt = P.tilt;
+    if (P.hammer) handHammer = P;
+  } else if (kind === "bolt") {
     const handleLen = recR + 24;
     const handleAt = chain(translation(boltRear + 8, 0, 0), rotationX(0.3), rotationY(-Math.PI / 2));
     const lugY = boltR - 1 + (lugH + 1) / 2;
@@ -881,10 +871,11 @@ export function buildRifle(gun) {
     if (carrier && kind !== "gas_delayed") carrier = merge(carrier, ...feed.cam);
     else boltMesh = merge(boltMesh, ...feed.cam);
   }
-  // Firing pin and cocking piece move together; tip 0.9 mm behind the face when cocked.
-  const pinTravel = 1.3;
+  // Firing pin and cocking piece move together; tip 0.9 mm behind the face when cocked (a striker its travel).
+  const pinTravel = gun.trigger?.type === "striker" ? (act.striker_travel ?? 6.4e-3) * MM : 1.3;
+  const pinTip = -0.9 - (pinTravel - 1.3);   // a cocked striker sits back by its travel, less its protrusion
   const striker = merge(
-    lathe(rodProfile(pinR - 0.15, boltRear - 10, -0.9, 0.3), 24),
+    lathe(rodProfile(pinR - 0.15, boltRear - 10, pinTip, 0.3), 24),
     lathe(rodProfile(boltR * 0.45, boltRear - 24, boltRear - 12, 1.0), 48),
   );
   // Hammer: pivoted below the bolt's path, its head resting on the tail of the firing pin. It
@@ -892,7 +883,11 @@ export function buildRifle(gun) {
   // it; sized so the head sweeps about the carrier travel that cocks it, and lies below the
   // carrier when it is fully back.
   let hammer = null;
-  if (act.hammer && !["bolt", "chain", "sliding_wedge"].includes(kind)) {
+  if (handHammer?.hammer) {
+    // A handgun's own: a spur hammer at a pistol frame's rear, or a revolver's big one behind its recoil shield.
+    hammer = handHammer.hammer;
+    extra.hammer = handHammer.hammerAt;
+  } else if (act.hammer && !["bolt", "chain", "sliding_wedge"].includes(kind) && !handgun) {
     const sear = ((act.hammer_angle ?? 60) * Math.PI) / 180;
     const top = Math.min(sear * 1.15, Math.PI / 2);
     const w = Math.max(3, boltR * 0.45), t = Math.max(4, boltR * 0.8), headH = Math.max(5, boltR * 0.7);
@@ -919,14 +914,35 @@ export function buildRifle(gun) {
                       boxAt(2 * Math.max(r - 1.5, 2), 3, 6, 0, 0, 0)),
     });
   }
-  // A wedge's striker is its firing mechanism's pin, in the block.
-  const strikerMesh = wedge ? lathe(rodProfile(pinR, boltRear - 0.3 * d.rimR, -0.9, 0.3), 24) : striker;
+  // A wedge's striker is its firing mechanism's pin, in the block; a revolver's is in its recoil shield.
+  const strikerMesh = wedge ? lathe(rodProfile(pinR, boltRear - 0.3 * d.rimR, -0.9, 0.3), 24)
+    : revolverGun ? hand.firingPin : striker;
+  // A handgun's trigger, recoil spring and slide finish; a revolver's cylinder and its loading.
+  let handLayout = null;
+  if (hand) {
+    const tr = gun.trigger ?? {};
+    handMeshes.trigger = hand.trigger;
+    if (hand.coil) handMeshes.coil = hand.coil;
+    handLayout = {
+      revolver: revolverGun, rake: hand.rake, gripBottom: hand.gripBottom,
+      trigger: { ...hand.triggerAt, travel: (tr.travel ?? 3e-3) * MM, da: (tr.da_travel ?? 12e-3) * MM,
+                 type: tr.type ?? "single_action", pullTime: tr.pull_time ?? 0.12 },
+      spring: hand.spring ?? null,
+      slideMaterial: style === "1911" ? "steel" : "black",
+      finish: style === "revolver" ? "bright" : "steel",
+      ...(revolverGun ? { cyl: { ...cyl, shield: handR.shield, top: handR.top, crane: hand.craneAt ?? null,
+                                 gate: hand.gateAt ?? null, rod: hand.rod ?? null, gateAngle: GATE_ANGLE,
+                                 loading: gun.feed?.loading ?? "swing_out" } } : {}),
+    };
+  }
 
   return {
     cartridge: cart,
     meshes: {
       steel: merge(...steelParts), furniture: merge(...furnParts), bolt: boltMesh, striker: strikerMesh,
       ...(paintParts.length ? { paint: merge(...paintParts) } : {}),
+      ...(brightParts.length ? { bright: merge(...brightParts) } : {}),
+      ...handMeshes,
       ...(mountParts.length ? { mount: merge(...mountParts) } : {}),
       ...(pedestalParts.length ? { pedestal: merge(...pedestalParts) } : {}),
       ...(crankMesh ? { crank: crankMesh } : {}),
@@ -944,7 +960,7 @@ export function buildRifle(gun) {
     },
     layout: {
       bore: 2 * rb, boreR, muzzleX, rearX, breechR, muzzleR, recR, boltR,
-      buttX, pivot: [pivotX ?? buttX, pivotY], cgX, style, mech, ...extra,
+      buttX, pivot: [pivotX ?? buttX, pivotYAt], cgX, style, mech, ...extra, hand: handLayout,
       mounted, mountStroke, chain: chainLayout, wedge: wedgeLayout,
       round: { apfsds: cart.apfsds, petals: cart.sabot?.petals ?? 0, solidMetal: cart.solidMetal, caseMetal: cart.caseMetal,
                combustible: cart.combustible, rodRadius: cart.rodRadius, sabotLength: cart.sabot?.length ?? 0 },

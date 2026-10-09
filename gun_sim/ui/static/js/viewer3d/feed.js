@@ -21,6 +21,11 @@
 // * Hand: a loader's ready rack, the rounds lying side by side in rows, noses
 //   forwards, beside and behind the breech. It is fixed in the turret, so it
 //   doesn't recoil with the gun.
+// * Cylinder: a revolver's. Its rounds sit in the cylinder's chambers, which
+//   handgun.js builds and range.js turns, so there is nothing here.
+//
+// A handgun's box magazine rakes back with its grip (ctx.rake): each round
+// lies level on the one below, a little behind it.
 //
 // The feed ramp runs from the chamber's edge back towards the magazine (from
 // the top, for a belt). Units are mm, in the gun's frame (gun.js).
@@ -30,7 +35,7 @@ import { chain, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { box, prism, rodProfile, tubeProfile } from "./shapes.js";
 
 const MM = 1e3;
-export const CAPACITY = { single_stack: 10, double_stack: 30, quad_stack: 60, drum: 75, belt: 100, dual_belt: 100, hand: 15 };
+export const CAPACITY = { single_stack: 10, double_stack: 30, quad_stack: 60, drum: 75, belt: 100, dual_belt: 100, hand: 15, cylinder: 6 };
 const RACK_ROW = 8;         // rounds side by side in each row of a ready rack
 // As gun_sim/feed.py.
 const PITCH = { single_stack: 1.0, double_stack: 0.6, quad_stack: 0.3, drum: 1.0 };
@@ -42,16 +47,16 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 /** Where the next round is presented and the feed angle (mm, rad), as feed.py geometry(). */
 export function feedGeometry(gun, dims) {
   const f = gun.feed ?? {}, type = f.type ?? "double_stack", belt = type === "belt" || type === "dual_belt";
-  const hand = type === "hand";
+  const hand = type === "hand", cylinder = type === "cylinder";
   const d = 2 * dims.rimR, oal = Math.max(gun.case.overall_length * MM, dims.length);
   const boltR = Math.max(dims.rimR + 2.2, dims.baseR * 1.3);
   const sign = belt ? -1 : 1;
-  const present = belt || hand ? 0 : PRESENT * d;
+  const present = belt || hand || cylinder ? 0 : PRESENT * d;
   let under = boltR + d / 2, drop;
-  if (belt) { drop = under = under + BELT_RAISE * d; } else if (hand) { drop = under = 0; } else { drop = -(under - present); under = -under; }
+  if (belt) { drop = under = under + BELT_RAISE * d; } else if (hand || cylinder) { drop = under = 0; } else { drop = -(under - present); under = -under; }
   const angle = f.feed_angle != null ? sign * f.feed_angle * Math.PI / 180 : Math.asin(Math.min(-drop / oal, 0.9));
   return {
-    type, belt, hand, dual: type === "dual_belt", sign, d, oal, present, drop, under, angle,
+    type, belt, hand, cylinder, dual: type === "dual_belt", sign, d, oal, present, drop, under, angle,
     capacity: Math.round(f.capacity ?? CAPACITY[type]),
     mouth: dims.baseR + 0.05, tip: Math.max((gun.projectile.meplat_diameter ?? 0) * MM / 2, 0.3),
     ramp: (f.ramp_angle ?? 35) * Math.PI / 180, face: dims.rimT + 0.6,
@@ -111,6 +116,11 @@ export function buildFeed(gun, ctx) {
   }
   if (g.hand) {
     buildRack(ctx, g, { meshes, layout });
+    return { geo: g, furniture, magazine, steel, meshes, cam, layout };
+  }
+  if (g.cylinder) {
+    // A revolver's rounds are in its cylinder (handgun.js; range.js puts them in their chambers).
+    Object.assign(layout, { cylinder: true, rounds: () => [], lowered: () => 0, depth: 0 });
     return { geo: g, furniture, magazine, steel, meshes, cam, layout };
   }
 
@@ -181,8 +191,12 @@ export function buildFeed(gun, ctx) {
     : i * (g.type === "quad_stack" ? PITCH.double_stack * d : pitch));
   const sEnd = sigma(g.capacity) + 0.5 * d + 6;
   kappa = Math.min(kappa, 1.0 / Math.max(sEnd, 1));           // no more than a radian in all
-  const P = (s) => (kappa < 1e-7 ? [0, -s, 0]
-    : [(1 - Math.cos(kappa * s)) / kappa, -Math.sin(kappa * s) / kappa, kappa * s]);
+  // In a handgun's grip the stack rakes back with it: each round lies on the one below, a little behind it.
+  const rake = Math.tan(ctx.rake ?? 0);
+  const P = (s) => {
+    const [px, py, th] = kappa < 1e-7 ? [0, -s, 0] : [(1 - Math.cos(kappa * s)) / kappa, -Math.sin(kappa * s) / kappa, kappa * s];
+    return [px + rake * py, py, th];
+  };
   const sFunnel = sigma(FUNNEL);
   const inner = (s) => {
     if (g.type === "single_stack") return d + 1;
@@ -236,6 +250,7 @@ export function buildFeed(gun, ctx) {
   };
   layout.width = inner(0) + 2 * WALL;
   layout.depth = yTop - e.y;
+  layout.rake = ctx.rake ?? 0;
   return { geo: g, furniture, magazine, steel, meshes, cam, layout };
 }
 

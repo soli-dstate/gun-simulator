@@ -1,0 +1,117 @@
+# Glock 17: 9x19 mm, 124 gr full metal jacket, from a 114 mm polygonal
+# barrel. Short recoil on the Browning pattern (the barrel's breech drops on
+# a cam under it), and striker-fired: the slide cocks the striker part-way
+# as it closes, and the trigger pull finishes cocking it and lets it go. A
+# polymer frame, a seventeen-round double-stack magazine. Dimensions are the
+# published ones where there are any; the burn law is tuned to about 355 m/s
+# (1,165 ft/s) for a 124 gr load. All units are SI (m, kg, s, Pa, J).
+
+name = "Glock 17 (9x19 mm 124 gr FMJ)"
+
+[barrel]
+bore_diameter   = 9.02e-3   # m, across the polygon's flats and lands
+travel          = 0.0997    # m, seated base to muzzle (a 114 mm barrel)
+chamber_volume  = 0.55e-6   # m^3, the case's powder space under the bullet (the solver uses the case)
+chamber_shape   = "case"
+breech_diameter = 17.5e-3   # m, the barrel's hood and chamber
+muzzle_diameter = 13.5e-3   # m
+twist           = 0.250     # m per turn, right-hand (1 in 9.84")
+groove_depth    = 0.08e-3   # m: polygonal rifling, shallow and smooth
+freebore        = 0.3e-3    # m
+leade_angle     = 1.5       # degrees
+
+[projectile]
+mass                = 8.04e-3   # kg (124 gr)
+shot_start_pressure = 25e6      # Pa
+bore_resistance     = 5e6       # Pa
+length              = 15.5e-3   # m
+ogive_length        = 8.2e-3    # m
+meplat_diameter     = 2.6e-3    # m
+boat_tail_length    = 0.0
+jacket_thickness    = 0.45e-3   # m
+core_material       = "lead"
+drag_model          = "G1"
+ballistic_coefficient = 105.0   # kg/m^2 (0.150 lb/in^2)
+
+[case]
+length            = 19.15e-3  # m
+overall_length    = 29.70e-3  # m
+rim_diameter      = 9.96e-3   # m
+rim_thickness     = 1.27e-3   # m
+groove_diameter   = 8.79e-3   # m
+groove_width      = 1.0e-3    # m
+base_diameter     = 9.93e-3   # m
+shoulder_diameter = 9.68e-3   # m: no shoulder, the body tapers to the mouth
+shoulder_position = 18.6e-3   # m
+shoulder_angle    = 85.0      # degrees
+neck_wall         = 0.315e-3  # m
+body_wall         = 0.35e-3   # m
+head_thickness    = 3.2e-3    # m
+primer_diameter   = 4.45e-3   # m, small pistol
+primer_depth      = 2.9e-3    # m
+
+[propellant]
+composition     = "double_base"
+grain           = "flake"
+charge_mass     = 0.29e-3   # kg (4.5 gr)
+web             = 0.09e-3   # m
+grain_length    = 1.2e-3    # m
+burn_rate_coeff = 2.3e-8    # (m/s)/Pa^n, tuned to a 124 gr load
+
+[ignition]
+pressure      = 4e6     # Pa
+strike_energy = 0.06    # J, a small pistol primer
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+type             = "short_recoil"
+locking          = "tilt"
+gun_mass         = 0.625     # kg, unloaded
+bolt_mass        = 0.270     # kg, the slide with its striker, extractor and sights
+barrel_mass      = 0.100     # kg
+unlock_travel    = 3.5e-3    # m
+spring_rate      = 900.0     # N/m: the captive dual spring, 40 N in battery, 76 N (17 lb) at the stop
+spring_preload   = 40.0      # N
+friction         = 3.0       # N, steel rails in the polymer frame
+rear_restitution = 0.3
+battery_restitution = 0.05
+feed_force       = 6.0       # N
+hammer           = false
+# The striker: its spring is part-compressed by the closing slide (the trigger
+# bar holds the lug), and the pull takes it the rest of the way.
+striker_mass           = 6.5e-3  # kg
+striker_spring_preload = 9.0     # N with the striker forward
+striker_spring_rate    = 2350.0  # N/m: about 24 N (5.5 lb) fully cocked
+striker_travel         = 6.4e-3  # m
+striker_precock        = 0.6
+bore_height        = 0.028   # m, a low bore over the web of the hand
+cg_distance        = 0.040   # m
+radius_of_gyration = 0.070   # m
+
+[trigger]
+type      = "striker"
+mode      = "semi"
+pull      = 25.0      # N (5.5 lb)
+travel    = 12.5e-3   # m, the whole pull, safety lever and all
+pull_time = 0.08      # s
+split     = 0.22      # s
+
+[shooter]
+stance             = "hands"
+body_mass          = 1.6
+shoulder_stiffness = 7e3
+shoulder_damping   = 140.0
+hold_stiffness     = 28.0
+hold_damping       = 0.7
+
+[feed]
+type       = "double_stack"
+capacity   = 17
+ramp_angle = 30.0
+
+[appearance]
+style = "polymer"

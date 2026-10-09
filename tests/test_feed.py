@@ -90,6 +90,8 @@ def test_lift_needs_more_time_with_a_heavier_stack(gun):
 
 def test_magazine_types_and_capacities(gun, m4):
     for kind, cap in feed.CAPACITY.items():
+        if kind == "cylinder":
+            continue   # a revolver's (tests/test_handguns.py)
         with_feed(gun, type=kind, capacity=None)
         a = action.simulate(gun, m4[1], shots=2)
         assert a.status == "cycled", kind

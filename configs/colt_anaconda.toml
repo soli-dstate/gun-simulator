@@ -1,0 +1,122 @@
+# Colt Anaconda (2021): .44 Remington Magnum, 240 gr jacketed soft point,
+# from a 6" barrel. A double-action revolver: each pull of the trigger draws
+# the hammer back, the hand turning the six-shot cylinder a chamber on as it
+# goes, until the cylinder stop locks it and the hammer falls. The cylinder
+# swings out on its crane to reload; the ejector star throws all six cases out
+# at once and a speedloader puts six rounds in. Gas escapes through the 0.15 mm
+# gap between the cylinder and the barrel. Dimensions are the published ones
+# where there are any; the burn law is tuned to about 395 m/s (1,300 ft/s) from
+# the 6" barrel. All units are SI (m, kg, s, Pa, J).
+
+name = "Colt Anaconda (.44 Magnum 240 gr JSP)"
+
+[barrel]
+bore_diameter   = 10.90e-3  # m, groove diameter (.429")
+travel          = 0.1745    # m, seated base to muzzle: through the cylinder, across the gap, down the 152 mm barrel
+chamber_volume  = 1.50e-6   # m^3, the case's powder space under the bullet (the solver uses the case)
+chamber_shape   = "case"
+breech_diameter = 19.0e-3   # m, the barrel's shank at the frame
+muzzle_diameter = 17.0e-3   # m, the full-lug barrel's bore wall at the muzzle
+twist           = -0.3556   # m per turn: 1 in 14", left-hand, as Colt's
+groove_depth    = 0.1e-3    # m
+freebore        = 12.0e-3   # m, the jump from the chamber's throat across the gap into the forcing cone
+leade_angle     = 5.5       # degrees, the forcing cone (11° included)
+cylinder_gap    = 0.15e-3   # m (0.006")
+cylinder_length = 44.5e-3   # m
+
+[projectile]
+# 240 gr jacketed soft point: a flat lead nose standing out of the jacket.
+mass                = 15.55e-3  # kg
+shot_start_pressure = 20e6      # Pa
+bore_resistance     = 5e6       # Pa
+engraving_pressure  = 15e6      # Pa, the forcing cone sizing it into the rifling
+length              = 18.0e-3   # m
+ogive_length        = 7.0e-3    # m
+meplat_diameter     = 6.0e-3    # m
+boat_tail_length    = 0.0
+cannelure_position  = 10.0e-3   # m, the crimp groove at the case mouth
+cannelure_width     = 1.2e-3    # m
+cannelure_depth     = 0.15e-3   # m
+jacket_thickness    = 0.5e-3    # m
+core_material       = "lead"
+exposed_core_length = 2.5e-3    # m
+drag_model          = "G1"
+ballistic_coefficient = 120.0   # kg/m^2 (0.171 lb/in^2)
+
+[case]
+# .44 Remington Magnum: a straight, rimmed case headspacing on its rim.
+length            = 32.6e-3   # m
+overall_length    = 40.6e-3   # m
+rim_diameter      = 13.06e-3  # m
+rim_thickness     = 1.52e-3   # m
+groove_diameter   = 13.06e-3  # m: no extractor groove, the ejector star takes the rim
+groove_width      = 1.0e-3    # m
+base_diameter     = 11.61e-3  # m
+shoulder_diameter = 11.60e-3  # m: straight to the mouth
+shoulder_position = 31.0e-3   # m
+shoulder_angle    = 85.0      # degrees
+neck_wall         = 0.34e-3   # m
+body_wall         = 0.40e-3   # m
+head_thickness    = 4.0e-3    # m
+primer_diameter   = 5.33e-3   # m, large pistol magnum
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+# A slow double-base ball powder for magnum handgun loads.
+composition     = "double_base"
+charge_mass     = 1.50e-3   # kg (23 gr)
+web             = 0.14e-3   # m, effective web of the coated grain
+form_chi        = 1.0
+form_lambda     = 0.0
+burn_rate_coeff = 9.0e-9    # (m/s)/Pa^n, tuned to the 6" barrel
+
+[ignition]
+pressure      = 6e6     # Pa, a magnum primer
+strike_energy = 0.08    # J
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+type         = "revolver"
+gun_mass     = 1.67      # kg, unloaded (59 oz)
+bolt_mass    = 0.05      # kg, unused
+cylinder_mass = 0.28     # kg, the stainless six-shot cylinder
+# The hammer, with its firing pin, swung back by the trigger's double-action
+# sear (or by the thumb) and driven by the mainspring.
+hammer             = true
+hammer_inertia     = 8.0e-6  # kg m^2
+hammer_spring_torque = 0.55  # N m
+hammer_spring_rate = 0.3     # N m/rad
+hammer_angle       = 55.0    # degrees
+bore_height        = 0.046   # m, bore over the web of the hand
+cg_distance        = 0.065   # m, forwards from the web of the hand to the centre of mass
+radius_of_gyration = 0.100   # m
+
+[trigger]
+type      = "double_action"
+mode      = "semi"
+pull      = 22.0      # N (5 lb), thumb-cocked
+travel    = 2.5e-3    # m
+da_pull   = 44.0      # N (10 lb), double action
+da_travel = 15.0e-3   # m
+pull_time = 0.15      # s over the double-action pull
+split     = 0.45      # s between shots
+
+[shooter]
+stance             = "hands"
+body_mass          = 1.6
+shoulder_stiffness = 7e3
+shoulder_damping   = 140.0
+hold_stiffness     = 32.0
+hold_damping       = 0.9
+
+[feed]
+type     = "cylinder"
+capacity = 6
+loading  = "swing_out"
+
+[appearance]
+style = "revolver"

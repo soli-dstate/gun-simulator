@@ -1,0 +1,126 @@
+# Colt M1911A1: .45 ACP M1911 ball (230 gr full metal jacket) from a 5"
+# barrel. Short recoil, the Browning way: the barrel and slide recoil locked
+# together until a link under the barrel's breech draws it down out of the
+# slide's locking recesses. The slide cocks the hammer as it goes back; the
+# single-action trigger only lets it go. Single-stack seven-round magazine in
+# the grip. Dimensions are the published ones where there are any; the burn
+# law is tuned to M1911 ball's 253 m/s (830 ft/s) at a pressure well under the
+# 145 MPa maximum. All units are SI (m, kg, s, Pa, J).
+
+name = "Colt M1911A1 (.45 ACP 230 gr ball)"
+
+[barrel]
+bore_diameter   = 11.48e-3  # m, groove diameter (.452")
+travel          = 0.112     # m, seated base to muzzle (a 127 mm barrel)
+chamber_volume  = 0.86e-6   # m^3, the case's powder space under the bullet (the solver uses the case)
+chamber_shape   = "case"
+breech_diameter = 17.8e-3   # m, the barrel's hood and chamber
+muzzle_diameter = 14.7e-3   # m, in the bushing
+twist           = -0.4064   # m per turn: 1 in 16", left-hand
+groove_depth    = 0.076e-3  # m
+freebore        = 0.4e-3    # m
+leade_angle     = 2.0       # degrees
+
+[projectile]
+# 230 gr round nose, gilding-metal jacket over lead, flat base.
+mass                = 14.9e-3   # kg
+shot_start_pressure = 18e6      # Pa
+bore_resistance     = 4e6       # Pa
+length              = 17.0e-3   # m
+ogive_length        = 9.0e-3    # m, a round nose
+meplat_diameter     = 3.8e-3    # m
+boat_tail_length    = 0.0
+jacket_thickness    = 0.5e-3    # m
+core_material       = "lead"
+drag_model          = "G1"
+ballistic_coefficient = 112.0   # kg/m^2 (0.160 lb/in^2)
+
+[case]
+# .45 ACP: a straight, rimless case headspacing on its mouth.
+length            = 22.81e-3  # m
+overall_length    = 32.40e-3  # m
+rim_diameter      = 12.19e-3  # m
+rim_thickness     = 1.24e-3   # m
+groove_diameter   = 10.06e-3  # m
+groove_width      = 1.0e-3    # m
+base_diameter     = 12.09e-3  # m
+shoulder_diameter = 12.05e-3  # m: no shoulder, the body tapers to the mouth
+shoulder_position = 22.0e-3   # m
+shoulder_angle    = 85.0      # degrees
+neck_wall         = 0.27e-3   # m
+body_wall         = 0.38e-3   # m
+head_thickness    = 3.6e-3    # m
+primer_diameter   = 5.33e-3   # m, large pistol
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+# A fast double-base flake pistol powder.
+composition     = "double_base"
+grain           = "flake"
+charge_mass     = 0.30e-3   # kg (4.6 gr)
+web             = 0.08e-3   # m
+grain_length    = 1.2e-3    # m
+burn_rate_coeff = 1.9e-8    # (m/s)/Pa^n, tuned to M1911 ball
+
+[ignition]
+pressure      = 4e6     # Pa
+strike_energy = 0.08    # J, a pistol primer's softer cup
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# The slide (bolt_mass) and barrel recoil locked together for 4 mm, the barrel
+# swinging down on its link; the slide runs on, cocking the hammer, against
+# the 16 lb recoil spring and into the frame's stop.
+type             = "short_recoil"
+locking          = "tilt"
+gun_mass         = 1.105     # kg, unloaded
+bolt_mass        = 0.355     # kg, the slide with its firing pin and extractor
+barrel_mass      = 0.165     # kg, barrel and link
+unlock_travel    = 4.0e-3    # m
+spring_rate      = 650.0     # N/m: about 42 N in battery, 70 N at the stop
+spring_preload   = 42.0      # N
+friction         = 4.0       # N, the slide on the frame's rails
+rear_restitution = 0.35      # steel on steel, a recoil spring guide's plug
+battery_restitution = 0.05
+feed_force       = 8.0       # N
+# The slide rides over the hammer and rolls it back onto the sear.
+hammer             = true
+hammer_inertia     = 4.0e-6  # kg m^2
+hammer_spring_torque = 0.38  # N m, the mainspring through its strut
+hammer_spring_rate = 0.25    # N m/rad
+hammer_angle       = 55.0    # degrees
+hammer_cock_travel = 0.012   # m
+hammer_trip_travel = 2.0e-3  # m
+hammer_friction    = 0.15
+bore_height        = 0.032   # m, bore over the web of the hand
+cg_distance        = 0.045   # m, forwards from the web of the hand to the centre of mass
+radius_of_gyration = 0.075   # m
+
+[trigger]
+type      = "single_action"
+mode      = "semi"
+pull      = 22.0      # N (5 lb)
+travel    = 2.0e-3    # m
+pull_time = 0.08      # s
+split     = 0.25      # s between rapid shots
+
+[shooter]
+# Two hands: the arms give like a spring, the wrists resist the muzzle flip.
+stance             = "hands"
+body_mass          = 1.6       # kg of hands and forearms moving with the gun
+shoulder_stiffness = 7e3       # N/m, the arms
+shoulder_damping   = 140.0     # N s/m
+hold_stiffness     = 28.0      # N m/rad, the wrists
+hold_damping       = 0.7       # N m s/rad
+
+[feed]
+type      = "single_stack"
+capacity  = 7
+ramp_angle = 30.0
+
+[appearance]
+style = "1911"

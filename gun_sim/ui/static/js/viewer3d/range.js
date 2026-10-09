@@ -35,6 +35,19 @@
 // belt's end is laid in across the tray, the cover shuts, and the bolt is
 // worked.
 //
+// Handguns. A pistol's slide is its bolt group: it runs back over the hammer,
+// its recoil spring's coils bunching on the guide rod, while a short-recoil
+// barrel goes back with it until it unlocks (a Browning barrel's breech
+// dropping, a Beretta's locking block falling out of the slide); the trigger
+// moves as the shooter pulls it. A revolver's cylinder turns a chamber on as
+// its hammer is cocked (by the trigger, or a single action's thumb, before each
+// shot) and the fired cases stay in their chambers. Reloading swings the
+// cylinder out on its crane, the ejector star throws every case out and a
+// speedloader puts the rounds in; or, through a single action's loading gate,
+// it is turned a chamber at a time while the ejector rod punches each case out
+// and a round goes in. The gas out of the cylinder gap flashes and smokes
+// beside the frame.
+//
 // Throughout, the whole rifle moves as the recoil simulation says: back into
 // the shoulder and pitching about it, muzzle up. Gas and smoke stay in the air
 // where they left the gun; only their source, the barrel tip or the breech,
@@ -98,6 +111,15 @@ const BELT_BEND = 1.5;          // links two apart stay this many pitches apart:
 const BELT_FRICTION = 0.6;      // coefficient of friction of a link on the ground
 const BELT_DROPPED = 2.5;       // s an old belt lies on the ground before it is cleared away
 const G_MM = 9810;              // mm/s^2
+// Revolvers: display s to cock the hammer (a double-action pull, or a single action's thumb, at least),
+// and the steps of a reload: swinging the cylinder out, ejecting, the speedloader, swinging it back;
+// or through the loading gate, a chamber at a time.
+const COCK = 0.35;
+const SWING = { open: 0.45, eject: 0.4, load: 0.7, close: 0.4 };
+const GATE = { open: 0.3, turn: 0.22, eject: 0.35, load: 0.4, close: 0.3 };
+const CRANE_SWING = 1.25;       // rad the crane swings the cylinder out
+const GATE_SWING = 1.3;         // rad the loading gate opens
+const GAP_FLASH = 4e-4;         // s (sim) the cylinder gap's flash glows for
 const RAMP = 3.2;               // 1/s, growth of the clock rate after exit
 const RAMP_AUTO = 1.6;          // slower, so an automatic action's cycle can be seen
 const LUG_TURN = Math.PI / 8;   // a gas action's bolt turns this much to unlock
@@ -204,12 +226,30 @@ export class FiringRange {
     this.dropped = [];          // old belts falling out of the gun, {nodes, h, age}
     this.beltMoving = false;
     this.chainQ = 0;            // a chain gun's chain, m round its track from the firing point (between shots)
+    // A revolver's cylinder: each chamber "live", "spent" or null; the one under the hammer; how far it has
+    // turned (chambers); whether the hammer is cocked. Its hammer starts down: the first pull turns it on.
+    const C = this.rifle?.layout.hand?.cyl;
+    this.cyl = C ? { state: Array(C.n).fill("live"), at: 0, turn: 0, cocked: false, shotTurn: 0 } : null;
+    if (this.cyl) { this.chamber = null; this.mag = C.n; }
   }
 
-  /** The kind of breech: "chain" (a chain gun), "wedge" (a sliding wedge), or "bolt" (anything else). */
+  /** The kind of breech: "chain" (a chain gun), "wedge" (a sliding wedge), "revolver", or "bolt" (anything else). */
   get _breech() {
     const k = this.rifle?.layout.mech.kind;
-    return k === "chain" ? "chain" : k === "sliding_wedge" ? "wedge" : "bolt";
+    return k === "chain" ? "chain" : k === "sliding_wedge" ? "wedge" : k === "revolver" ? "revolver" : "bolt";
+  }
+
+  /** A revolver's live rounds, in every chamber. */
+  _liveCount() { return this.cyl ? this.cyl.state.filter((s) => s === "live").length : 0; }
+
+  /**
+   * A revolver: what is ready under the hammer (a live round only once it is cocked: until then the next
+   * pull turns another chamber up), and the live rounds besides it, as the simulation counts them.
+   */
+  _syncCylinder() {
+    const c = this.cyl, under = c.state[c.at];
+    this.chamber = c.cocked ? under : under === "spent" ? "spent" : null;
+    this.mag = this._liveCount() - (this.chamber === "live" ? 1 : 0);
   }
 
   /** True when a loader puts each round in by hand. */
@@ -238,6 +278,11 @@ export class FiringRange {
    */
   roundsAtNextShot() {
     if (!this.rifle) return null;
+    if (this.cyl) {
+      // The next pull turns a live round up (or a reload fills the cylinder): the rest of them follow it.
+      const live = this._liveCount();
+      return live > 0 ? live - 1 : this.cyl.state.length - 1;
+    }
     if (this.chamber === "live") return this.mag;
     return this.mag > 0 ? this.mag - 1 : this.layout.feed.capacity - 1;
   }
@@ -265,6 +310,7 @@ export class FiringRange {
   /** Change the magazine (or belt) for a full one. */
   startReload() {
     if (this.reload || this.cycle || !this.rifle) return;
+    if (this.cyl) return this._startCylinderReload();
     this.reload = { t: 0, swapped: false };
     this._kick();
     this.onChange?.();
@@ -290,6 +336,11 @@ export class FiringRange {
     // The simulation was fired with the rounds this magazine has (a replay is re-simulated to match).
     this.mag = result.action?.rounds?.[0] ?? this.mag;
     this.stuck = this.jam = null;
+    if (this.cyl) {
+      // The cocked hammer falls on the round under it; the cylinder turns on from here as the simulation has it.
+      this.cyl.cocked = false;
+      this.cyl.shotTurn = this.cyl.turn;
+    }
     this._kick();
     this.onShot?.(result);
     this.onChange?.();
@@ -299,6 +350,14 @@ export class FiringRange {
   startCycle() {
     if (this.cycle || this.reload || !this.rifle) return;
     if (this._breech === "wedge") return this._startLoad();
+    if (this.cyl) {
+      // Cock the hammer: the hand turns the next chamber up under it.
+      if (this.cyl.cocked) return;
+      this.cycle = { cock: true, t: 0, from: this.cyl.turn, indexed: false };
+      this._kick();
+      this.onChange?.();
+      return;
+    }
     if (this._breech === "chain") {
       // The crew turns the chain round once by hand: the bolt draws back, ejects, and rams the next round.
       this.cycle = { chain: true, t: 0, round: this.chamber === "jammed" ? null : this.chamber, ejected: false, fed: false, feeding: false, adv: 0 };
@@ -405,6 +464,7 @@ export class FiringRange {
         if (!s.fired) {
           s.fired = true;
           this.chamber = "spent";
+          if (this.cyl) this.cyl.state[this.cyl.at] = "spent";
         }
         const tEnd = r.time[r.time.length - 1] ?? 0;
         if (this.exitT === null && this.tSim >= (r.left_muzzle ? r.muzzle_time : tEnd)) {
@@ -421,9 +481,10 @@ export class FiringRange {
         // A manual bolt is worked now; so is an automatic one that failed to reload (once its cycle is over).
         const over = !this._auto || this.tSim > this._action.time[this._action.time.length - 1];
         // A bolt held open on an empty magazine, or a jam, stays as it is for the shooter to clear.
-        // A sliding wedge's breech, opened as the gun ran out, is loaded next.
+        // A sliding wedge's breech, opened as the gun ran out, is loaded next. A revolver's hammer is
+        // cocked by the next shot's pull.
         if (this.autoCycle && over && !this.cycle && (!this.stuck || this.stuck.open) && after > CYCLE_DELAY
-            && this.chamber !== "live" && !s.cycled) {
+            && this.chamber !== "live" && !s.cycled && !this.cyl) {
           s.cycled = true;
           this.startCycle();
         }
@@ -436,6 +497,7 @@ export class FiringRange {
 
     if (this.cycle?.loader) this._stepLoad(dt);
     else if (this.cycle?.chain) this._stepChainCycle(dt);
+    else if (this.cycle?.cock) this._stepCock(dt);
     else if (this.cycle) {
       const c = this.cycle;
       c.t += dt;
@@ -494,7 +556,8 @@ export class FiringRange {
       }
     }
 
-    if (this.reload) {
+    if (this.reload?.cylinder) this._stepCylinderReload(dt);
+    else if (this.reload) {
       const r = this.reload;
       r.t += dt;
       const { swap, end } = this._reloadTimes();
@@ -588,6 +651,169 @@ export class FiringRange {
     }
   }
 
+  // ---------- a revolver's cylinder ----------
+
+  /** Display s to cock the hammer: the trigger's double-action pull or the thumb, slowed enough to see. */
+  get _cockTime() { return Math.max(COCK, 2.5 * (this.layout.hand?.trigger.pullTime ?? 0.12)); }
+
+  /** Cocking the hammer: the hand turns the cylinder a chamber on over the middle of its swing. */
+  _stepCock(dt) {
+    const c = this.cycle, C = this.layout.hand.cyl;
+    c.t += dt;
+    if (!c.indexed && c.t >= C.index[1] * this._cockTime) {
+      c.indexed = true;
+      this.cyl.at = (this.cyl.at + 1) % C.n;
+      this.cyl.turn = c.from + 1;
+    }
+    if (c.t >= this._cockTime) {
+      this.cyl.cocked = true;
+      this._syncCylinder();
+      this._endCycle(this.chamber);
+    }
+  }
+
+  /** Reload the cylinder: swing it out, eject and speedload, or through the gate a chamber at a time. */
+  _startCylinderReload() {
+    const C = this.layout.hand.cyl, c = this.cyl, steps = [];
+    if (C.loading === "gate") {
+      steps.push({ name: "open", d: GATE.open });
+      for (let i = 1; i <= C.n; i++) {
+        const k = (c.at + i) % C.n;
+        if (c.state[k] === "live") continue;
+        steps.push({ name: "turn", d: GATE.turn, k });
+        if (c.state[k] === "spent") steps.push({ name: "eject", d: GATE.eject, k });
+        steps.push({ name: "load", d: GATE.load, k });
+      }
+      steps.push({ name: "close", d: GATE.close });
+    } else {
+      for (const [name, d] of Object.entries(SWING)) steps.push({ name, d });
+    }
+    c.cocked = false;
+    this.reload = { cylinder: true, t: 0, step: 0, steps };
+    this._kick();
+    this.onChange?.();
+  }
+
+  _stepCylinderReload(dt) {
+    const r = this.reload, c = this.cyl, C = this.layout.hand.cyl, n = C.n;
+    r.t += dt;
+    while (r.step < r.steps.length) {
+      const s = r.steps[r.step];
+      if (s.name === "turn" && s.from === undefined) {
+        // Turn on (the way the hand turns it) until chamber k is at the gate.
+        s.from = c.turn;
+        let to = s.k - (C.gateAngle * n) / (2 * Math.PI);
+        while (to < s.from - 1e-6) to += n;
+        s.to = to;
+      }
+      if (r.t < s.d) break;
+      r.t -= s.d;
+      this._finishReloadStep(s);
+      r.step++;
+    }
+    if (r.step >= r.steps.length) {
+      this.reload = null;
+      this._syncCylinder();
+      this.onChange?.();
+      if (this.pendingShot) this._prepare();
+    }
+  }
+
+  /** What a step of the reload leaves behind: cases thrown out, rounds in, the cylinder turned. */
+  _finishReloadStep(s) {
+    const c = this.cyl, C = this.layout.hand.cyl, n = C.n;
+    const fling = (k, vel) => {
+      if (!c.state[k]) return;
+      const p = apply(this._chamberMatrix(this._cylMatrix(this._cylPose()).cyl, k), [0, 0, 0]);
+      this.ejected.push({ kind: c.state[k], pos: p, vel, spin: 0, spinRate: 0, tumble: 0, tumbleRate: -3 - Math.random() * 3, age: 0 });
+      c.state[k] = null;
+    };
+    if (s.name === "eject" && s.k !== undefined) fling(s.k, [-500, -200, 700]);              // out of the gate
+    else if (s.name === "eject") for (let k = 0; k < n; k++) fling(k, [-700 - 200 * Math.random(), -400, -100]);   // off the star
+    else if (s.name === "load" && s.k !== undefined) c.state[s.k] = "live";
+    else if (s.name === "load") c.state.fill("live");
+    else if (s.name === "turn") c.turn = s.to;
+    else if (s.name === "close" && C.loading === "gate") {
+      // Out of the loading notch: a chamber comes up under the hammer.
+      c.turn = Math.ceil(c.turn - 1e-6);
+      c.at = ((c.turn % n) + n) % n;
+    }
+  }
+
+  /**
+   * Where the cylinder is: {turn (chambers), swing (0 shut .. 1 out on its crane), gate (0..1 open), star (mm
+   * the ejector star pushes every case back), rod (0..1, a single action's ejector rod punching), round: {k:
+   * {dx, dr}} rounds moved from their chambers (back along the bore, out from the axis), incoming: [k...]}.
+   */
+  _cylPose() {
+    const c = this.cyl, C = this.layout.hand.cyl, L = this.layout;
+    const pose = { turn: c.turn, swing: 0, gate: 0, star: 0, rod: 0, round: {}, incoming: [] };
+    const cy = this.cycle, a = this._action;
+    if (cy?.cock) {
+      const [i0, i1] = C.index, f = cy.t / this._cockTime;
+      pose.turn = cy.indexed ? c.turn : cy.from + clamp((f - i0) / (i1 - i0), 0, 1);
+      return pose;
+    }
+    if (this.shot && this._auto && this.T >= PIN_FALL && a?.cylinder?.length) {
+      pose.turn = c.shotTurn + interp(a.time, a.cylinder, Math.min(this.tSim, a.time[a.time.length - 1]));
+      return pose;
+    }
+    const r = this.reload;
+    if (!r?.cylinder) return pose;
+    const s = r.steps[Math.min(r.step, r.steps.length - 1)], f = clamp(r.t / s.d, 0, 1), e = smooth(f);
+    if (C.loading === "gate") {
+      pose.gate = s.name === "open" ? e : s.name === "close" ? 1 - e : 1;
+      if (s.name === "turn" && s.from !== undefined) pose.turn = s.from + (s.to - s.from) * e;
+      if (s.name === "eject") { pose.rod = Math.sin(Math.PI * f); pose.round[s.k] = { dx: -Math.min(f * 2, 1) * (L.caseLength + 6), dr: 0 }; }
+      if (s.name === "load") { pose.incoming.push(s.k); pose.round[s.k] = { dx: -(L.oal + 20) * (1 - e), dr: 14 * (1 - e) }; }
+    } else {
+      pose.swing = s.name === "open" ? e : s.name === "close" ? 1 - e : 1;
+      if (s.name === "eject") pose.star = Math.sin(Math.PI * f) * 0.8 * L.caseLength;
+      if (s.name === "load") {
+        for (let k = 0; k < C.n; k++) { pose.incoming.push(k); pose.round[k] = { dx: -(L.oal + 40) * (1 - e), dr: 0 }; }
+      }
+    }
+    return pose;
+  }
+
+  /** The cylinder's axis (swung out on its crane, if it is) and the cylinder turned on it. */
+  _cylMatrix(pose, gunAt = this._gunMatrix()) {
+    const C = this.layout.hand.cyl;
+    let axis = gunAt;
+    if (pose.swing && C.crane) {
+      axis = chain(gunAt, translation(0, C.crane.y, C.crane.z), rotationX(-CRANE_SWING * pose.swing),
+                   translation(0, -C.crane.y, -C.crane.z));
+    }
+    axis = chain(axis, translation(0, -C.rC, 0));
+    return { axis, cyl: chain(axis, rotationX((-pose.turn * 2 * Math.PI) / C.n)) };
+  }
+
+  /** Chamber k's round (its case head at the origin), moved dx back along it and dr out from the axis. */
+  _chamberMatrix(cyl, k, dx = 0, dr = 0) {
+    const C = this.layout.hand.cyl, a = (k * 2 * Math.PI) / C.n, r = C.rC + dr;
+    return chain(cyl, translation(dx, r * Math.cos(a), r * Math.sin(a)));
+  }
+
+  /** Follow the simulation's string of shots: each fires the chamber under the hammer, each cocking turns the next up. */
+  _stepRevolverAction() {
+    const s = this.shot, a = this._action, t = this.tSim, c = this.cyl;
+    s.done ??= new Set();
+    const once = (key, at, fn) => { if (!s.done.has(key) && t >= at) { s.done.add(key); fn(); } };
+    this._shotTimes.forEach((t0, i) => {
+      if (i) once(`fire${i + 1}`, t0, () => { c.state[c.at] = "spent"; c.cocked = false; this._syncCylinder(); this.pin = 1; });
+    });
+    a.events.forEach((e, i) => {
+      if (e.name === "cylinder locks") {
+        once(`lock${i}`, e.time, () => { c.at = (c.at + 1) % c.state.length; c.cocked = true; this._syncCylinder(); });
+      }
+    });
+    once("end", a.time[a.time.length - 1], () => {
+      c.turn = c.shotTurn + (a.cylinder?.[a.cylinder.length - 1] ?? 0);
+      c.cocked = false;
+      this._syncCylinder();
+    });
+  }
+
   // ---------- recoil and automatic actions ----------
 
   /** The shot's action simulation, if it has one. */
@@ -674,6 +900,7 @@ export class FiringRange {
 
   /** Fire, eject and chamber when the action simulation says so, shot by shot. */
   _stepAutoAction() {
+    if (this.cyl) return this._stepRevolverAction();
     const s = this.shot, a = this._action, t = this.tSim;
     s.done ??= new Set();
     const once = (key, at, fn) => { if (!s.done.has(key) && t >= at) { s.done.add(key); fn(); } };
@@ -989,10 +1216,41 @@ export class FiringRange {
    */
   _hammerAngle() {
     const sear = this.layout.hammer?.sear ?? 0, a = this._action;
-    if (!this.shot) return sear;
+    if (this.cycle?.cock) return sear * smooth(Math.min(this.cycle.t / this._cockTime, 1));
+    // A revolver's hammer rests down on the chamber it fired, until it is cocked again; so does a
+    // double-action-only hammer, which nothing leaves cocked.
+    const down = (this.cyl && !this.cyl.cocked) || this.layout.hand?.trigger.type === "double_action_only";
+    if (!this.shot) return down ? 0 : sear;
     if (this.T < PIN_FALL) return sear * (1 - this.pin);
     if (!a?.hammer) return 0;
     return interp(a.time, a.hammer, Math.min(this.tSim, a.time[a.time.length - 1]));
+  }
+
+  /**
+   * How far a handgun's trigger is pulled (mm): held through each shot's pull until just after it fires. A
+   * double-action pull draws it back as the hammer comes; before a thumb-cocked shot it is only pressed at the end.
+   */
+  _triggerTravel() {
+    const H = this.layout.hand;
+    if (!H) return 0;
+    const T = H.trigger, double = T.type === "double_action_only" || (this.cyl && T.type === "double_action");
+    const full = double ? T.da : T.travel;
+    if (this.cycle?.cock) return T.type === "single_action" ? 0 : full * smooth(Math.min(this.cycle.t / this._cockTime, 1));
+    const s = this.shot;
+    if (!s) return 0;
+    if (this.T < PIN_FALL) return full;
+    const a = this._action, t = this.tSim, times = this._shotTimes;
+    if (!a) return t < 0.06 ? full : 0;
+    for (let k = 1; k <= times.length; k++) {
+      const t0 = times[k - 1];
+      if (k === 1) { if (t <= t0 + 0.06) return full; continue; }
+      const p = a.events.find((e) => e.shot === k - 1 && (e.name === "trigger pulled" || e.name === "hammer cocked by the thumb"));
+      if (!p || t < p.time || t > t0 + 0.06) continue;
+      const r = a.events.find((e) => e.shot === k - 1 && (e.name === "hammer released" || e.name === "striker released")) ?? p;
+      if (t >= r.time) return full;
+      return p.name === "hammer cocked by the thumb" ? 0 : full * smooth((t - p.time) / Math.max(r.time - p.time, 1e-6));
+    }
+    return 0;
   }
 
   get animating() {
@@ -1003,6 +1261,8 @@ export class FiringRange {
   _boltPose() {
     const L = this.layout;
     const c = this.cycle;
+    // A revolver's rounds are in its cylinder (drawn with it); nothing slides.
+    if (this.cyl) return { travel: 0, round: null, ...this._mechPose(0) };
     // Once the bolt has been worked by hand (or a wedge loaded), it is where that left it, not where the shot did.
     if (!c && this._auto && !this.shot?.cycled) return this._autoBoltPose();
     if (!c) {
@@ -1214,6 +1474,33 @@ export class FiringRange {
         }
       }
     }
+    // A revolver's cylinder gap: the gas that escapes it flashes, then smokes in a puff over the frame, from
+    // the moment the bullet's base clears the cylinder. One puff, thickening with each shot of a string.
+    const gap = s?.result.gap, C = L.hand?.cyl;
+    if (gap && C && this.T >= PIN_FALL) {
+      const opened = this._shotTimes.map((t0) => t0 + gap.t[0]).filter((t) => this.tSim >= t);
+      const latest = opened[opened.length - 1];
+      const age = latest !== undefined ? this.tSim - latest : -1;
+      if (age >= 0 && age < SMOKE_LIFE) {
+        const mass = gap.mass * Math.sqrt(opened.length) * (1 - Math.exp(-age / 2e-3));
+        const R = Math.cbrt(3 * mass * SEEP_DILUTION / (4 * Math.PI * 1.2)) * 1e3 + bore + 25 * age;
+        const density = mass / (4 / 3 * Math.PI * (R * 1e-3) ** 3);
+        const x = C.Lc + C.gap / 2, gE = gunAtT(latest), up = 0.4 * R + 40 * age;
+        const where = at(gE, x, C.top, 0);
+        state.smoke.push({
+          ...puff(at(gT, x, C.top, 0), [where[0], where[1] + up, where[2]]), radius: R,
+          extinction: SMOKE * density * Math.exp(-age / 2.5), rise: 0, age, group: 1, seed: 5.3, trail: 0.4,
+        });
+        if (age < GAP_FLASH) {
+          const g = Math.min(gap.energy / 250, 2.5) * (1 - age / GAP_FLASH);
+          const position = at(gE, x, 0, 0);
+          if (!light || g > light.color[0] / 14) {
+            light = { position, color: [14 * g, 7 * g, 2.6 * g], range: 14 * bore };
+            state.light = { position, color: [0.6 * g, 0.3 * g, 0.11 * g], range: 14 * bore };
+          }
+        }
+      }
+    }
     for (const w of this.wisps) {
       const r = 1.8 * bore + 14 * w.age, out = 2 * bore + 40 * w.age;
       const port = at(w.gun, L.rearX - 4, 0, 0);
@@ -1338,7 +1625,12 @@ export class FiringRange {
     // A sliding wedge drops to open; every other bolt draws back along the bore.
     const boltAt = chain(gunAt, wedge ? translation(0, -pose.travel, 0) : translation(-pose.travel, 0, 0));
     const pinBack = (this.cycle && this.cycle.t > CYCLE.lift * 0.5) || (this._auto && pose.travel > 0.5) ? 0 : this.pin;
-    const barrelAt = chain(gunAt, translation(-pose.barrel, 0, 0));   // a short-recoil barrel recoils on its own
+    // A short-recoil barrel recoils on its own; a Browning barrel's breech drops about its bushing as it unlocks.
+    const tl = L.tilt;
+    const barrelAt = tl
+      ? chain(gunAt, translation(-pose.barrel, 0, 0), translation(tl.x, 0, 0), rotationZ(Math.atan(tl.drop / tl.x) * pose.lock), translation(-tl.x, 0, 0))
+      : chain(gunAt, translation(-pose.barrel, 0, 0));
+    const H = L.hand;
     const mountAt = this._mountMatrix();       // a mount's cradle pitches with the gun but doesn't recoil
     const still = translation(0, 0, 0);
     const optional = (mesh, model, material, clip = false) => (mesh ? [{ mesh, model, material, clip }] : []);
@@ -1368,7 +1660,18 @@ export class FiringRange {
       ...optional(m.hammer, L.hammer && chain(gunAt, translation(L.hammer.px, L.hammer.py, 0), rotationZ(this._hammerAngle())), MATERIALS.bolt),
       // A wedge's firing pin is in its block.
       { mesh: m.striker, model: wedge ? boltAt : chain(gunAt, translation(-pose.travel + pinBack * L.pinTravel, 0, 0)), material: MATERIALS.bolt, clip: false },
+      // A pistol's slide, blued or black; a revolver's stainless frame; the trigger as the shooter pulls it.
+      ...optional(m.slide, boltAt, H?.slideMaterial === "steel" ? MATERIALS.steel : MATERIALS.black),
+      ...optional(m.bright, gunAt, MATERIALS.bolt),
+      ...optional(m.trigger, H && chain(gunAt, translation(H.trigger.x - this._triggerTravel(), H.trigger.y, 0)), MATERIALS.bolt),
     ];
+    // The recoil spring's coils, bunched between the guide rod's head and the slide's plug.
+    if (H?.spring && m.coil) {
+      const S = H.spring, front = S.x1 - pose.travel;
+      for (let k = 0; k < S.n; k++) {
+        items.push({ mesh: m.coil, model: chain(gunAt, translation(S.x0 + ((front - S.x0) * (k + 0.5)) / S.n, S.y, 0)), material: MATERIALS.steel });
+      }
+    }
     // A chain gun's chain round its track (the master link carrying the carrier's T-slot), and its sprockets turning.
     if (L.chain && m.chainLink) {
       const C = L.chain, tr = C.track, q = this._chainQ();
@@ -1401,10 +1704,33 @@ export class FiringRange {
       }
     };
     if (pose.round) addRound(pose.round.kind, pose.round.world ?? chain(gunAt, translation(pose.round.x, pose.round.y, 0), rotationZ(pose.round.angle ?? 0)));
-    // The magazine (dropped out while it is changed), its follower and the rounds left in it; a loader's
-    // ready rack, which stays put; or the belt.
+    if (this.cyl && m.cylinder) {
+      // The cylinder on its axis (out on its crane while a double action is reloaded), turned as far as the hand
+      // has taken it, with what is in each chamber; the ejector star and rod, the crane, a single action's gate.
+      const C = H.cyl, cp = this._cylPose(), { axis, cyl } = this._cylMatrix(cp, gunAt);
+      const finish = H.finish === "bright" ? MATERIALS.bolt : MATERIALS.steel;
+      items.push({ mesh: m.cylinder, model: cyl, material: finish });
+      if (m.star) items.push({ mesh: m.star, model: chain(cyl, translation(-cp.star, 0, 0)), material: finish });
+      if (m.crane) items.push({ mesh: m.crane, model: axis, material: finish });
+      if (m.ejector) items.push({ mesh: m.ejector, model: chain(axis, translation(-cp.star, 0, 0)), material: finish });
+      if (m.gate && C.gate) {
+        items.push({ mesh: m.gate, model: chain(gunAt, translation(C.gate.x, C.gate.y, C.gate.z), rotationX(GATE_SWING * cp.gate)), material: MATERIALS.steel });
+      }
+      if (m.ejectorRod && C.rod) {
+        items.push({ mesh: m.ejectorRod, model: chain(gunAt, translation(C.rod.x0 - cp.rod * (C.rod.x0 - 1), C.rod.y, C.rod.z)), material: MATERIALS.bolt });
+      }
+      this.cyl.state.forEach((kind, k) => {
+        const moved = cp.round[k], incoming = cp.incoming.includes(k);
+        if (!kind && !incoming) return;
+        const dx = (moved?.dx ?? 0) - cp.star;
+        addRound(incoming ? "live" : kind, this._chamberMatrix(cyl, k, dx, moved?.dr ?? 0));
+      });
+    }
+    // The magazine (dropped out while it is changed, along the grip's rake in a handgun), its follower and
+    // the rounds left in it; a loader's ready rack, which stays put; or the belt.
     const F = L.feed, feedState = this._feedState();
-    const magAt = chain(gunAt, translation(0, -this._magDrop(), 0));
+    const drop = this._magDrop(), rake = F.rake ?? 0;
+    const magAt = chain(gunAt, translation(-drop * Math.sin(rake), -drop * Math.cos(rake), 0));
     if (m.magazine) items.push({ mesh: m.magazine, model: magAt, material: MATERIALS.black });
     if (m.magFollower) items.push({ mesh: m.magFollower, model: chain(magAt, F.follower(this.mag, feedState.lift)), material: MATERIALS.black });
     if (F.rackStatic) {
@@ -1468,21 +1794,34 @@ export class FiringRange {
     const F = this.layout.feed;
     const where = F.rackStatic ? "in the ready rack" : F.sides?.length > 1 ? `in the ${F.feedSide > 0 ? "right" : "left"} belt`
       : F.belt ? "in the belt" : "in the magazine";
-    const ammo = ["rounds", `${this.chamber === "live" ? 1 : 0} + ${this.mag} / ${F.capacity} ${where}`];
-    const c = this.cycle;
+    const ammo = this.cyl ? ["rounds", `${this._liveCount()} / ${this.cyl.state.length} live in the cylinder`]
+      : ["rounds", `${this.chamber === "live" ? 1 : 0} + ${this.mag} / ${F.capacity} ${where}`];
+    const c = this.cycle, pistol = !!this.layout.hand && !this.cyl;
+    const thumb = this.layout.hand?.trigger.type === "single_action";
     const working = c?.loader ? (c.t < LOAD.open ? "Loader opens the breech" : c.t < LOAD.open + LOAD.fetch ? "Loader takes a round from the rack"
       : c.t < LOAD.open + LOAD.fetch + LOAD.ram ? "Loader rams the round" : "The block springs shut")
-      : c?.chain ? "Turning the chain by hand" : "Working the bolt";
+      : c?.chain ? "Turning the chain by hand"
+      : c?.cock ? (thumb ? "Thumbing the hammer back: the cylinder turns" : "Double-action pull: the hammer comes back, the cylinder turns")
+      : pistol ? "Racking the slide" : "Working the bolt";
     if (!s) {
       const belt = () => (this.reload.t < BELT_RELOAD.open ? "Opening the top cover"
         : this.reload.t < BELT_RELOAD.open + BELT_RELOAD.lay ? "Laying in a new belt" : "Closing the top cover");
-      const what = this.reload ? (F.belt ? belt() : F.rackStatic ? "Restocking the ready rack" : "Changing the magazine")
+      const cylinder = () => {
+        const st = this.reload.steps[Math.min(this.reload.step, this.reload.steps.length - 1)].name;
+        return { open: this.layout.hand.cyl.loading === "gate" ? "Opening the loading gate" : "Swinging out the cylinder",
+                 eject: "Ejecting the fired cases", load: this.layout.hand.cyl.loading === "gate" ? "Loading a round" : "Speedloader in",
+                 turn: "Turning the next chamber to the gate",
+                 close: this.layout.hand.cyl.loading === "gate" ? "Closing the gate" : "Closing the cylinder" }[st];
+      };
+      const what = this.reload ? (this.reload.cylinder ? cylinder() : F.belt ? belt() : F.rackStatic ? "Restocking the ready rack" : "Changing the magazine")
         : c ? working
-        : this.chamber === "jammed" ? `Jammed (${this.jam ?? "feed"}): work the bolt to clear it`
+        : this.cyl ? (this.chamber === "live" ? "Cocked: a round under the hammer"
+          : this._liveCount() ? "Hammer down: the next pull turns a round up" : "Empty: reload the cylinder")
+        : this.chamber === "jammed" ? `Jammed (${this.jam ?? "feed"}): ${pistol ? "rack the slide" : "work the bolt"} to clear it`
         : this.chamber === "live" ? "Ready: round chambered"
         : this.chamber === "spent" ? "Spent case in the chamber"
         : this.stuck?.open ? "Breech open: ready to load"
-        : this.stuck ? "Empty: bolt held open" : this.mag === 0 ? "Empty" : "Chamber empty";
+        : this.stuck ? (pistol ? "Empty: slide locked back" : "Empty: bolt held open") : this.mag === 0 ? "Empty" : "Chamber empty";
       this.hud.innerHTML = `<b>${what}</b><span>${ammo[0]}</span><span>${ammo[1]}</span>`;
       return;
     }
@@ -1499,11 +1838,13 @@ export class FiringRange {
       const done = this.tSim > a.time[a.time.length - 1];
       const label = (e) => (e.name === "fires" ? `Shot ${e.shot} fires` : e.name[0].toUpperCase() + e.name.slice(1));
       const breech = this._breech;
-      phase = this.cycle ? (breech === "bolt" ? "Clearing: working the bolt by hand" : working)
+      phase = this.cycle ? (breech === "bolt" ? (pistol ? "Clearing: racking the slide" : "Clearing: working the bolt by hand") : working)
         : s.cycled ? (this.chamber === "live" ? "Smoke · loaded by hand" : "Smoke")
         : last && !done ? label(last)
-        : !last && !done ? (breech === "wedge" ? "Recoiling" : breech === "chain" ? "The chain carries the bolt on" : "Gas drives the piston")
-        : a.status === "cycled" ? "Smoke · reloaded" : a.status === "breech opened" ? "Smoke · breech open" : `Smoke · ${a.status}`;
+        : !last && !done ? (breech === "wedge" ? "Recoiling" : breech === "chain" ? "The chain carries the bolt on"
+          : breech === "revolver" ? "Recoiling" : pistol && this.layout.mech.kind === "short_recoil" ? "Barrel and slide recoil locked together"
+          : "Gas drives the piston")
+        : a.status === "cycled" ? "Smoke · reloaded" : a.status === "fired" ? "Smoke" : a.status === "breech opened" ? "Smoke · breech open" : `Smoke · ${a.status}`;
     }
     else phase = this.cycle ? working : "Smoke";
     if (this.rate >= 0.999) slow = "real time";
@@ -1536,11 +1877,11 @@ export class FiringRange {
       const vel = this._actionAt("recoil_velocity", this.tSim);
       rows.push(["recoil", `${recoil.toFixed(1)} mm at ${vel.toFixed(2)} m/s`],
                 ["muzzle rise", `${(pitch * 180 / Math.PI).toFixed(2)}°`]);
-      if (this._auto && !s.cycled) {
+      if (this._auto && !s.cycled && !this.cyl) {
         const bolt = this._actionAt("bolt", this.tSim) * 1e3, bv = this._actionAt("bolt_velocity", this.tSim);
         // A sliding wedge's block drops (and is open, or shut) rather than going back and forward.
         rows.push(this._breech === "wedge" ? ["breech block", `${bolt.toFixed(0)} mm down at ${Math.abs(bv).toFixed(2)} m/s`]
-          : ["bolt", `${bolt.toFixed(0)} mm, ${bv >= 0 ? "back" : "forward"} at ${Math.abs(bv).toFixed(1)} m/s`]);
+          : [pistol ? "slide" : "bolt", `${bolt.toFixed(0)} mm, ${bv >= 0 ? "back" : "forward"} at ${Math.abs(bv).toFixed(1)} m/s`]);
       }
     }
     rows.push(ammo);

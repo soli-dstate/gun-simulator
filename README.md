@@ -55,8 +55,10 @@ load and save gun `.toml` files, and **Preset** picks one from `configs/`
 (the example rifle, the same cartridge in a gas-operated rifle, that rifle
 with a suppressor, a roller-delayed rifle, a two-phase grain bed, a
 7-perforated-grain load, a hollow-point round, and three real rifles: the
-M4A1, AKM and AK-74; and two cannon, the Mk44 Bushmaster II 30 mm chain gun and the
-Rheinmetall Rh-120 L/55 120 mm smoothbore tank gun).
+M4A1, AKM and AK-74; two cannon, the Mk44 Bushmaster II 30 mm chain gun and the
+Rheinmetall Rh-120 L/55 120 mm smoothbore tank gun; and five handguns: the Colt
+M1911A1, the Beretta M9, the Glock 17, the Colt Anaconda and the Colt Single
+Action Army).
 The window has two tabs.
 
 **Editor.** Everything about the gun and the shot, one section at a time:
@@ -107,18 +109,43 @@ Every action type has its own moving parts:
   running ahead of it while the delay lasts. Two rollers come in from the
   head's sides, or a lever on top of it tips back;
 - *gas_delayed*: a sleeve round the barrel, tied to the bolt by two rods, whose
-  front closes on a piston ring on the barrel just ahead of the port.
+  front closes on a piston ring on the barrel just ahead of the port;
+- *revolver*: a cylinder of chambers (fluted between them) that turns a
+  chamber on as the hammer is cocked, the fired cases staying in their
+  chambers; the gas out of the cylinder gap flashes and smokes beside the frame.
 
 With `hammer = true`, a hammer on its pivot pin stands behind the bolt group.
 It falls on the firing pin when you fire, is pushed down and back as the
 carrier rides over it, and in a burst falls again as the simulation has it.
 
+Handguns. A pistol (*1911*, *beretta* and *polymer* styles) is a slide over the
+barrel with its breech face, ejection port, sights and serrations, on a frame
+whose grip rakes back round the magazine. With *short_recoil* the barrel goes
+back with the slide until it unlocks: a Browning barrel (`locking = "tilt"`: the
+1911, the Glock) drops its breech about the bushing, a Beretta's locking block
+(`"block"`) drops out of the slide. The recoil spring's coils bunch on the guide
+rod as the slide comes back, the trigger moves as it is pulled, a spur hammer
+turns at the frame's rear (a striker-fired pistol's striker sits back in the
+slide), and the slide locks back on an empty magazine. **Rack slide** works it
+by hand. A revolver (*revolver* and *single_action*) has a frame round its
+cylinder, a recoil shield, a top strap and the barrel across the gap; the
+double action's cylinder swings out on its crane, the ejector star throws every
+case out and a speedloader puts six rounds in; the single action is reloaded
+through its loading gate, turned a chamber at a time while the ejector rod
+punches each case out. **Cock hammer** draws the hammer back (the trigger's
+double-action pull, or the thumb) while the hand turns the next chamber up.
+
 `[appearance] style` dresses the gun: *rifle* is a sporting stock round a
 turned receiver; *ar15* an aluminium upper and lower with a rail, A-frame
 front sight, round handguard, pistol grip, buffer tube and collapsible stock;
 *ak* a stamped receiver and dust cover, rear sight block, gas tube with
-wooden handguards, curved magazine and wooden stock. The moving parts follow
-the action type whatever the style. A brake,
+wooden handguards, curved magazine and wooden stock; *1911* a blued slide and
+steel frame with a grip safety, spur hammer and walnut grips; *beretta* an
+open-top black slide over the bare barrel on an aluminium frame; *polymer* a
+squared-off slide on a polymer frame; *revolver* a stainless double-action
+frame with a full-length underlug and ventilated rib; *single_action* the
+army's blued frame, ejector rod housing and one-piece walnut grip. The moving
+parts follow the action type whatever the style. A brake,
 suppressor or flash hider on the muzzle is turned from the same dimensions the
 2D solver uses; **Cutaway** shows its baffles. **Fire** runs the simulation,
 then animates the shot from its results. All the while the whole rifle
@@ -154,10 +181,12 @@ says: back into the shoulder, pitching muzzle-up about it, and settling again.
    the recoil, muzzle rise and bolt travel. If the action short-strokes, the
    case stays put (or the bolt closes on an empty chamber) and, with
    **Auto-cycle bolt** on, the bolt is worked by hand to clear it.
-   **Burst** fires several shots per trigger pull from a self-loading action:
-   each fires when the simulation has the bolt back in battery, with its own
-   projectile, flash, smoke and ejected case, while the recoil and muzzle climb
-   build up. The sound plays at the simulated shot times.
+   **Shots** fires several shots per press of **Fire** from a self-loading
+   action or a revolver: an automatic fires them as a burst, each when the
+   simulation has the bolt back in battery; a semi-automatic or a revolver
+   fires each with a pull of its own, the trigger's `split` apart. Each has its
+   own projectile, flash, smoke and ejected case, while the recoil and muzzle
+   climb build up. The sound plays at the simulated shot times.
 
 The **Camera** menu chooses between the *Director*, which follows the action,
 and fixed views of the whole rifle, the breech, the projectile or the muzzle.
@@ -242,17 +271,19 @@ example.
 
 | Section | Parameters |
 | --- | --- |
-| `[barrel]` | bore diameter, projectile travel, chamber volume; `chamber_shape` (`"cylinder"`, or `"case"` to solve inside the real case); outside diameter at the breech and muzzle (3D view only); rifling: `twist` (m per turn, negative for left-hand, 0 for a smooth bore), `groove_depth`, `freebore` (travel before the lands), `leade_angle` (forcing-cone half-angle, degrees); a bore evacuator: `evacuator_position` (travel from the seat to its nozzles, 0 = none), `evacuator_volume`, `evacuator_nozzles`, `evacuator_nozzle_diameter`, `evacuator_angle` |
+| `[barrel]` | bore diameter, projectile travel, chamber volume; `chamber_shape` (`"cylinder"`, or `"case"` to solve inside the real case); outside diameter at the breech and muzzle (3D view only); rifling: `twist` (m per turn, negative for left-hand, 0 for a smooth bore), `groove_depth`, `freebore` (travel before the lands), `leade_angle` (forcing-cone half-angle, degrees); a bore evacuator: `evacuator_position` (travel from the seat to its nozzles, 0 = none), `evacuator_volume`, `evacuator_nozzles`, `evacuator_nozzle_diameter`, `evacuator_angle`; a revolver's `cylinder_gap` (to the barrel, 0 = none) and `cylinder_length` (case head to the cylinder's front) |
 | `[case]` | case length, overall length, rim, extractor groove, base and shoulder diameters, shoulder position and angle, neck and body wall, head thickness, primer pocket (the solver uses it with `chamber_shape = "case"`); `material` (`"brass"` or `"steel"`); `combustible` (a felt body that burns with the charge, on a metal stub base `stub_length` long, which is all that is extracted) |
 | `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1, G7, or LR for a fin-stabilised long rod) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"`, `"copper"` or `"tungsten"`; a solid steel or tungsten projectile is drawn in it) and `exposed_core_length` (soft point). `type = "apfsds"`: a long rod (`length` tail to tip) in a discarding sabot; `mass` is the launch package, and `penetrator_mass`, `penetrator_diameter`, `fin_span`, `fin_length`, `sabot_length` and `sabot_offset` (rod tail to the sabot's rear face, where the gas pushes) describe it |
 | `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win. `flash_suppressant` (`potassium_sulfate`, `potassium_nitrate`, `potassium_cryolite`) with `suppressant_fraction` (share of the charge mass) puts out the secondary flash, at some impetus and more smoke |
-| `[ignition]` | igniter pressure; with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
-| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"`, `"gas_delayed"`, `"chain"` or `"sliding_wedge"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
+| `[ignition]` | igniter pressure; `strike_energy` (what the firing pin has to hit the primer with: 0.15 J a rifle's, 0.06 to 0.08 J a pistol's); with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
+| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"`, `"gas_delayed"`, `"chain"`, `"sliding_wedge"` or `"revolver"`); short recoil's `locking` (`"block"` or `"tilt"`, 3D view only); a striker's `striker_mass`, `striker_spring_preload`, `striker_spring_rate`, `striker_travel` and `striker_precock`; a revolver's `cylinder_mass` and `cylinder_radius`; gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
 direct impingement the "piston" is the bolt's tail in the carrier); `gas_tube_length` and `gas_tube_diameter` (direct impingement); chain gun: `chain_rate` (rounds/min with no load), `motor_power`, `drive_mass`, `chain_width`, `sprocket_radius`; sliding wedge: `cam_travel`, `extractor_ratio` (the block is `bolt_mass`, its drop `bolt_travel`, its closing spring `spring_rate` and `spring_preload`); bore height above the shoulder (or trunnions), butt to centre of mass, radius of gyration (muzzle rise) |
-| `[shooter]` | `stance` (`"shoulder"`, `"free"` for free recoil, or `"mount"` for a mount's recoil system); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
+| `[trigger]` | `type` (`"single_action"`, `"double_action"`, `"double_action_only"` or `"striker"`), `mode` (`"auto"` for an automatic's burst, `"semi"` for a pull a shot), the single-action (or striker) `pull` and `travel`, the double-action `da_pull` and `da_travel`, `pull_time` (over a double-action pull, or to thumb-cock a hammer) and `split` (between shots fired as fast as the shooter can) |
+| `[feed]` | `type` (`"single_stack"`, `"double_stack"`, `"quad_stack"`, `"drum"`, `"belt"`, `"dual_belt"`, `"hand"` for a loader's rack, or `"cylinder"` for a revolver's), `capacity`, the magazine spring and follower, feed angle and ramp, `hold_open`; a belt's links, hang and feed cam; a dual feed's `select`; a cylinder's `loading` (`"swing_out"` or `"gate"`) |
+| `[shooter]` | `stance` (`"shoulder"`, `"hands"` for a handgun, `"free"` for free recoil, or `"mount"` for a mount's recoil system); body mass moving with the gun, shoulder (or arms') stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"`, `"suppressor"` or `"flash_hider"`); length, outer diameter, number of baffles (prongs for a flash hider), baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake, flash hider), `flare_angle` (flash hider bore), mass. Missing sizes are scaled from the bore |
 | `[mount]` | a mount's recoil system: `stroke` to the recoil stop, a spring (`spring_rate`, `spring_preload`), linear `damping`, `friction`, a hydropneumatic recuperator (`recuperator_pressure`, `recuperator_volume`, `recuperator_area`), a hydraulic buffer (`buffer_area`, `buffer_orifice` closing to `buffer_orifice_end` along the stroke, `counter_orifice` for the run-out, `oil_density`), the `counter_buffer` length, `stop_restitution`, and the elevation gear's `elevation_stiffness` and `elevation_damping` |
-| `[appearance]` | `style` (`"rifle"`, `"ar15"`, `"ak"`, `"autocannon"` or `"tank"`): how the 3D view dresses the gun; the solvers ignore it |
+| `[appearance]` | `style` (`"rifle"`, `"ar15"`, `"ak"`, `"autocannon"`, `"tank"`, or the handguns' `"1911"`, `"beretta"`, `"polymer"`, `"revolver"` and `"single_action"`): how the 3D view dresses the gun; the solvers ignore it |
 | `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `two_phase` (a moving grain bed lit by the primer's flame); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
 
 You can leave out any geometry value (the barrel's outside diameters, twist
@@ -746,6 +777,76 @@ straight ramp over the rear dwell), the stub's flight inside the turret, the tur
 own motion, the gas the evacuator takes from the bore during the shot, and the sabot's
 aerodynamics (the petals' flight is drawn, not solved).
 
+### Handguns: triggers, strikers and revolvers (`gun_sim/action.py`, `gun_sim/revolver.py`)
+
+Five presets: the Colt M1911A1 (.45 ACP M1911 ball), the Beretta M9 (9x19 mm M882), the
+Glock 17 (9x19 mm 124 gr), the Colt Anaconda (.44 Magnum 240 gr, 6") and the Colt Single
+Action Army (.45 Colt 255 gr lead, 7½"). Each burn law is tuned to its published muzzle
+velocity under its cartridge's maximum pressure; the masses, springs, travels and trigger
+pulls are the published ones where there are any.
+
+- **Trigger** (`[trigger]`). `type` is what a pull does: `single_action` only lets a
+  cocked hammer go (the slide cocks it; a single-action revolver's is cocked by the
+  thumb); `double_action` cocks it on the first pull and lets it go, after which the
+  slide leaves it cocked (DA/SA, as the M9), while a double-action revolver's every pull
+  cocks it; `double_action_only` cocks it every pull (nothing leaves it on the sear);
+  `striker` finishes cocking a part-cocked striker and lets it go. `mode = "semi"` fires
+  each shot with a pull of its own: once the slide is back in battery on a round (the
+  disconnector holds the trigger off until then) and `split` after the last shot, the
+  shooter pulls again. A double-action pull takes `pull_time` to draw the hammer back
+  before it falls. `"auto"` is an automatic's burst, as before. The work of the pulls
+  (pull weight times travel, double action and single) is reported.
+- **Striker** (`trigger.type = "striker"`, `[action] striker_*`). The striker is a mass on
+  a spring in the slide. Let go from `striker_travel` back, it hits the primer with the
+  spring's energy, F0 L + k L^2 / 2, after the time the spring takes to drive it there
+  (the lock time). As the slide closes, the trigger bar catches the striker's lug the last
+  `striker_precock` of its travel from battery, so the slide compresses the striker
+  spring that far against it, and comes home slower for it.
+- **Primer** (`ignition.strike_energy`). A light strike is now measured against the
+  primer's own: a rifle primer's 0.15 J, a pistol primer's softer cup 0.06 to 0.08 J. A
+  weak striker spring fails to fire it.
+- **Revolver** (`action.type = "revolver"`, `feed.type = "cylinder"`). Nothing moves under
+  the shot: it pushes the whole gun. Between shots the hammer is cocked over `pull_time`
+  (by the trigger, or the single action's thumb), and the hand turns the cylinder a
+  chamber on over the middle of its swing (20 % to 85 % of it). The cylinder stop then
+  locks it, taking its spin: half the cylinder's moment of inertia (with its rounds and
+  cases, `cylinder_mass` and the chambers `cylinder_radius` out) times the hand's speed
+  squared, so a quicker double-action pull slams it onto the stop harder. The hammer
+  then falls on the round now under it, or, if the cylinder has run dry, on a fired case.
+  The cases stay in their chambers.
+- **Cylinder gap** (`barrel.cylinder_gap`, `cylinder_length`). While the bullet is in its
+  chamber it seals the gas in; once its base has left the cylinder's front face, gas
+  escapes through the gap between it and the barrel all round: an annular slot of the
+  bore's circumference, as an orifice (choked, almost always) at the gas's pressure and
+  temperature there. Both solvers take out its mass and the enthalpy it carries (the fluid
+  model from the cell at the gap, in the bore and during blowdown; the lumped model at the
+  Lagrange pressure there). The jet goes out sideways, so it doesn't push the gun along the
+  bore, but the bullet loses some speed: the Anaconda's 0.15 mm gap lets out about 7 % of
+  its gas, the single action army's, behind a slow bullet in a long barrel, nearly a
+  fifth. The sound model feeds that gas to a second spherical blast solution beside the
+  shooter's hands, heard without the muzzle jet's forward throw, a little before the
+  muzzle blast; the 3D view flashes and smokes it over the frame. The bullet's jump from
+  its chamber across the gap into the forcing cone is the barrel's `freebore` and
+  `leade_angle`.
+- **Hands** (`shooter.stance = "hands"`). As a shoulder: a spring and damper to the body,
+  the hands and forearms moving with the gun, and the wrists resisting the muzzle flip.
+  `bore_height` is the bore over the web of the hand, and a handgun's is high for its
+  mass, so the shot turns more of its recoil into muzzle flip: a 1911's flips about 8°,
+  an Anaconda's about 12°, a single action army's, over its plow-handle grip, about 14°.
+- **Slide and barrel** (`short_recoil`, `locking`). The pistols are short recoil: the
+  barrel and slide recoil locked together for `unlock_travel` (by then the bullet has gone
+  and the chamber is down to 15 MPa or less), the barrel stops, and the slide runs on, cocking
+  the hammer (or the striker) and stripping the next round from a magazine that rakes back
+  in the grip. `locking` only changes the 3D view.
+
+Between a semi-automatic's or revolver's shots the action rests, so the simulation steps
+coarsely there; a revolver's six-shot string solves in well under a second.
+
+Not modelled: the trigger's own mechanism (its pull is a weight over a travel; the
+disconnector is the rule that a pull fires only with the slide home); the shooter's
+pull disturbing the aim; the cylinder's timing (it always carries up to lock); the gas
+cutting the top strap; lead and powder fouling.
+
 ### External ballistics (`gun_sim/exterior.py`)
 
 After muzzle exit the projectile is a point mass (3 degrees of freedom) under
@@ -976,7 +1077,9 @@ gun_sim/
   grainbed.py    two-phase grain bed: moving grains, interphase drag, flame spread from the primer
   chamber.py     chamber cross-section along the axis (cylinder, or the inside of the case)
   lumped.py      0-D reference model
-  action.py      recoil and action cycling: gun, bolt, gas system, shooter, bursts
+  action.py      recoil and action cycling: gun, bolt, gas system, shooter, triggers, strikers, bursts
+  revolver.py    a revolver's cylinder (geometry, inertia) and the gas lost through its gap
+  feed.py        magazines, belts, a loader's rack and a revolver's cylinder; feed angle and jams
   axisym.py      2D axisymmetric compressible flow solver (face apertures for walls and ports)
   kernels.py     the two flow solvers' inner loops, compiled with Numba
   parallel.py    worker processes, so a shot's separate solves run at the same time
@@ -1008,7 +1111,9 @@ gun_sim/
       js/audio.js        Web Audio playback: reverb, hearing protection, limiter, bursts
       js/viewer3d/       WebGL 2 renderer, lathe (surface of revolution) mesher,
                          procedural case/primer/projectile profiles, cartridge viewer,
-                         gun.js (barrel, receiver, bolt, stock), range.js (the animated shot and recoil),
+                         gun.js (barrel, receiver, bolt, stock), handgun.js (pistol slides and frames,
+                         revolver frames and cylinders), feed.js (magazines, belts, racks), meshops.js,
+                         range.js (the animated shot and recoil),
                          volume.js (ray-marched plume field, smoke and bore gas)
 configs/         example gun definitions (shown as presets in the UI)
 tests/           pytest suite (physics checks + UI server API)
@@ -1054,6 +1159,7 @@ build_exe.ps1    one-command Windows build
 - [ ] Flash-suppressant propellant additives; afterburning in the coupled device run (sound, recoil)
 - [x] Projectile variants: secant ogive, hollow point, cannelure, jacket/core section
 - [x] Cannon: chain gun, sliding-wedge breech, mount recoil systems, bore evacuator, APFSDS, combustible cases
+- [x] Handguns: single action, DA/SA, double action only and striker-fired triggers, semi-automatic strings, revolvers with cylinder indexing and gap leakage, the hands stance
 - [ ] Richer GUI: side-by-side gun comparison, parameter sweeps, live animation of the bore flow
 
 ## Disclaimer

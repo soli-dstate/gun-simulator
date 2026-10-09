@@ -60,6 +60,11 @@ the quasi-1D compressible Euler equations on a finite-volume mesh:
 * The gas temperature along the column is recorded too (bore_gas), so the
   3D view can show it glowing as hot as it is, and fading as it expands
   and cools on the steel.
+* Revolver: once the projectile's base has left the cylinder, the gas in the
+  cell at the cylinder's front face escapes through the gap to the barrel
+  (revolver.py), taking its share of the cell's momentum and its total
+  enthalpy with it, in the bore and during blowdown (operator split, like the
+  wall losses). The flow is recorded (gap_flow) for the sound and the 3D view.
 
 Each cell stores totals: gas mass M, momentum P and total energy E. The flux
 treats M / V (gas mass per unit of cell volume, grains included) as the
@@ -74,7 +79,7 @@ from dataclasses import asdict
 
 import numpy as np
 
-from . import action, devices, kernels, rifling
+from . import action, devices, kernels, revolver, rifling
 from .chamber import chamber_profile
 from .config import Gun
 from .grainbed import GrainBed
@@ -504,6 +509,35 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         mass, mom, energy, kick = bed.exchange(t, dt, mass, mom, energy, v_cell)
         return kick
 
+    # Revolver: the gap between the cylinder and the barrel, open once the projectile's base is past it.
+    gap_area = revolver.gap_area(gun)
+    gap_x = l0 + revolver.gap_travel(gun)
+    gap = {"t": [], "mdot": [], "edot": [], "lost": 0.0}
+
+    def gap_leak(dt, nodes, diag):
+        """Let the gas in the cell at the gap out through it over dt."""
+        nonlocal mass, mom, energy
+        if gap_area <= 0 or nodes[-1] <= gap_x:
+            return
+        j = min(int(np.searchsorted(nodes, gap_x)) - 1, n - 1)
+        p, rho = float(diag["p"][j]), float(diag["rho"][j])
+        if rho <= 0 or p <= ambient_pressure:
+            return
+        temperature = p * (1 - b * rho) / (rho * prop.gas_constant)
+        mdot = revolver.leak(gap_area, p, temperature, ambient_pressure, gamma, prop.gas_constant)
+        dm = min(mdot * dt, 0.2 * mass[j])
+        if dm <= 0:
+            return
+        h = energy[j] / mass[j] + p / rho              # total enthalpy per kg: what the jet carries away
+        share = dm / mass[j]
+        mass[j] -= dm
+        mom[j] *= 1 - share
+        energy[j] -= dm * h
+        gap["lost"] += dm
+        gap["t"].append(t + dt)
+        gap["mdot"].append(dm / dt)
+        gap["edot"].append(dm * h / dt)
+
     bed_hist = {"t": [], "lit": [], "burnt": []}
     bed_profiles = []   # two-phase: (t, centres, solid fraction, grain velocity), with the pressure profiles
 
@@ -525,6 +559,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
             grains += burn(dt, d1["p"], xi * (l0 + x_p), x_p, v_p)
         grains += grain_momentum(v_p)
         friction = wall_losses(dt, xi * (l0 + x_p), d2["rho"]) if cfg.wall_losses else 0.0
+        gap_leak(dt, xi * (l0 + x_p), d2)
         impulse += accumulate(dt, d1, d2, friction, grains)
 
         t += dt
@@ -554,7 +589,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
     record_loads(t, d1, x_p)
     muzzle_time = t
     muzzle_velocity = v_p
-    burnt_mass = bed.burnt() if two_phase else mass.sum() - m_ign
+    burnt_mass = bed.burnt() if two_phase else mass.sum() - m_ign + gap["lost"]
 
     muzzle_flow = None
     device_result = None
@@ -594,6 +629,7 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
             else:
                 burn(dt, d1["p"], d1["nodes"], x_p, 0.0)
             friction = wall_losses(dt, d1["nodes"], d2["rho"])
+            gap_leak(dt, d1["nodes"], d2)
             if coupling is not None:
                 outside["state"] = coupling.step(t, dt, float(d1["rho"][-1]), float(d1["u"][-1]), float(d1["e"][-1]))
                 outside["force"] = coupling.rec["force"][-1]
@@ -671,4 +707,5 @@ def simulate(gun: Gun, profile_count: int = 8, blowdown_time: float = 0.0,
         bore_temperature_rise=surface_rise,
         bore_gas=bore_gas,
         grain_bed=grain_bed,
+        gap_flow=revolver.gap_flow(gap["t"], gap["mdot"], gap["edot"], gun),
     )

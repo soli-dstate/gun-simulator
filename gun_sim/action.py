@@ -81,6 +81,36 @@ Actions. Which body the bore forces push depends on the action:
   If the run-out is too weak to drive the block all the way, the breech stays
   part shut.
 
+* revolver: nothing moves under the shot (it pushes the whole gun). Between
+  shots the hammer is cocked, by the trigger (double action) or the
+  shooter's thumb (single action), over trigger.pull_time; the hand turns the
+  cylinder a chamber on over the middle of its swing (revolver.py) and the
+  cylinder stop locks it. The hammer then falls on the round now under it, or
+  on a fired case if the cylinder has run dry. The spent cases stay in their
+  chambers.
+
+Trigger (config.Trigger). In "auto" a self-loading action fires its burst as
+the closing carrier trips the auto sear (below). In "semi" each shot has a
+pull of its own: once the action is back in battery with a round chambered,
+and trigger.split after the last shot, the shooter pulls again. A hammer the
+action has cocked just falls (single action, and double action after its
+first shot); a double-action-only hammer, which the action does not leave
+cocked, is drawn back by the pull over pull_time first. A striker, part-cocked
+by the slide, is cocked the rest of the way and let go. A self-loader with
+neither fires LOCK_TIME after the pull.
+
+Striker (trigger.type = "striker"). The striker is a mass on a spring in the
+slide: let go from striker_travel back, it hits the primer with the spring's
+energy, F0 L + k L^2 / 2, after the time the spring takes to drive it there.
+As the slide closes, the trigger bar catches the striker's lug the last
+striker_precock of its travel from battery, so the slide compresses the
+striker spring against it over that distance.
+
+Hands (shooter.stance = "hands"): as a shoulder, a spring and damper to the
+body with the hands and forearms moving with the gun; bore_height is then the
+bore over the web of the hand, so a handgun's high bore turns more of its
+recoil into muzzle flip.
+
 Mount (shooter.stance = "mount", config.Mount). The gun recoils in a cradle
 against a spring, a hydropneumatic recuperator, a hydraulic buffer whose
 orifice closes down along the stroke (force = rho A^3 v^2 / (2 (Cd a)^2)),
@@ -115,8 +145,8 @@ In a burst the closing carrier trips the auto sear in its last
 `hammer_trip_travel`; the hammer falls on its own spring, first swinging any
 rate reducer's inertia with it (the AKM's: an inertial lever that delays the
 fall so the carrier has settled before the hammer arrives), and the next shot
-fires PRIMER_DELAY after it reaches the firing pin, if it still has
-LIGHT_STRIKE joules. If the carrier has bounced back out of battery, the
+fires PRIMER_DELAY after it reaches the firing pin, if it still has the
+primer's ignition.strike_energy. If the carrier has bounced back out of battery, the
 hammer lands on it instead, and rides it home with too little energy to fire.
 
 Bursts. A self-loading action can fire several shots: each is fired when the
@@ -163,6 +193,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from . import feed as feeding
+from . import revolver as cylinder
 
 if TYPE_CHECKING:
     from .config import Gun
@@ -178,8 +209,8 @@ OUT_FAST, OUT_SLOW = 2e-5, 5e-4   # output sampling, before and after FAST_UNTIL
 ORIFICE_CD = 0.8          # discharge coefficient of the gas port, unless solved in 2D (devices.py)
 LOCK_TIME = 0.003         # s from back in battery to the next ignition in a burst, without a hammer
 PRIMER_DELAY = 3e-4       # s from the hammer hitting the firing pin to ignition
-LIGHT_STRIKE = 0.15       # J the hammer needs to fire a rifle primer through the firing pin
 HAMMER_OVERTRAVEL = 0.15  # the carrier pushes the hammer this fraction of its angle past the sear
+QUIET_DT = 1e-4           # s, step while the action rests between a semi-automatic's or revolver's shots
 MAX_BURST = 30
 REST_SPEED = 0.05         # m/s: slower than this after closing, the bolt stays shut
 # Thresholds for the warnings.
@@ -310,6 +341,22 @@ def hammer_fall(gun: Gun) -> tuple[float, float]:
     return t, 0.5 * a.hammer_inertia * rate * rate
 
 
+def striker_fall(gun: Gun) -> tuple[float, float]:
+    """A striker let go from fully cocked: (time in s to the primer, energy it hits it with in J)."""
+    a = gun.action
+    x, rate, t, dt = a.striker_travel, 0.0, 0.0, 1e-7
+    while x > 0:
+        rate -= (a.striker_spring_preload + a.striker_spring_rate * x) / a.striker_mass * dt
+        x += rate * dt
+        t += dt
+    return t, 0.5 * a.striker_mass * rate * rate
+
+
+def striker_force(a, compressed: float) -> float:
+    """The striker spring's force (N) with the striker held `compressed` m back from forward."""
+    return a.striker_spring_preload + a.striker_spring_rate * compressed
+
+
 def buffer_orifice(m, x: float, v: float) -> float:
     """Open area (m^2) of the recoil buffer's orifice, the gun x m back moving at v (+ rearwards).
 
@@ -396,6 +443,8 @@ def strokes(gun: Gun) -> dict:
     if a.type == "sliding_wedge":
         # The block drops far enough to clear the rim, with a little to spare.
         stroke = a.bolt_travel if a.bolt_travel is not None else 1.05 * c.rim_diameter + 5e-3
+    elif a.type == "revolver":
+        stroke = 0.0                 # no bolt: the cylinder turns instead
     else:
         stroke = a.bolt_travel if a.bolt_travel is not None else feed + 8e-3
     defaults = {"gas": 6e-3, "direct_impingement": 7e-3, "short_recoil": 3e-3, "chain": CHAIN_UNLOCK,
@@ -405,10 +454,16 @@ def strokes(gun: Gun) -> dict:
     if a.type == "chain":
         track = chain_track(gun, stroke)
         out["chain"] = {k: track[k] for k in ("width", "radius", "perimeter", "rear_start", "rear_length")}
+    if a.type == "revolver":
+        out["cylinder"] = {"chambers": feeding.chambers(gun), "radius": cylinder.cylinder_radius(gun),
+                           "outer_radius": cylinder.cylinder_outer_radius(gun), "length": cylinder.cylinder_length(gun),
+                           "gap": gun.barrel.cylinder_gap, "index": [cylinder.INDEX_START, cylinder.INDEX_END]}
+    if gun.trigger.type == "striker":
+        out["striker"] = {"travel": a.striker_travel, "precock": a.striker_precock}
     if a.type in DELAYED:
         out["carrier_unlock"] = unlock
         out["unlock"] = min(unlock / delay(gun)[0], stroke)
-    if a.hammer and a.type not in (*LOCKED, "chain"):
+    if a.hammer and a.type not in (*LOCKED, "chain", "revolver"):
         # Carrier travel to cock the hammer (to the bolt's, for a delayed blowback).
         cock = a.hammer_trip_travel + a.hammer_cock_travel / (1 + HAMMER_OVERTRAVEL)
         out["hammer"] = cock / delay(gun)[0] if a.type in DELAYED and cock < unlock else (
@@ -497,6 +552,18 @@ class ActionResult:
     # Sliding wedge: when the breech was open (s from ignition) and how fast the case left it.
     open_time: float | None = None
     case_speed: float | None = None       # m/s
+    # Revolver: chambers the cylinder has turned (counting on past a turn), how fast it struck the stop
+    # and with what energy (the latest lock-up).
+    cylinder: np.ndarray | None = None
+    cylinder_lock_speed: float | None = None   # rad/s
+    cylinder_lock_energy: float | None = None  # J
+    # Trigger: its type, the work of the first pull and of the rest (J), and a striker's strike.
+    trigger: str = "single_action"
+    trigger_work: float | None = None
+    follow_up_work: float | None = None
+    striker_energy: float | None = None   # J it hits the primer with
+    strike_energy: float = 0.15           # J the primer needs
+    semi: bool = False                    # each shot has a pull of its own (trigger.mode "semi", or a revolver)
 
     @property
     def shots(self) -> int:
@@ -504,10 +571,10 @@ class ActionResult:
 
     @property
     def cyclic_rate(self) -> float | None:
-        """Rounds per minute: from the burst, or from one cycle plus the lock time."""
+        """Rounds per minute: from the burst, or from one cycle plus the lock time (an automatic's)."""
         if len(self.shot_times) > 1:
             return 60 * (len(self.shot_times) - 1) / (self.shot_times[-1] - self.shot_times[0])
-        return 60 / (self.cycle_time + self.lock_time) if self.cycle_time else None
+        return 60 / (self.cycle_time + self.lock_time) if self.cycle_time and not self.semi else None
 
     def summary(self) -> str:
         lines = [
@@ -516,6 +583,9 @@ class ActionResult:
             f"  with the shooter     {self.max_recoil * 1e3:9.1f} mm back at up to {self.peak_recoil_velocity:.2f} m/s, "
             f"muzzle rise {math.degrees(self.max_pitch):.2f} deg, peak shoulder force {self.peak_shoulder_force:.0f} N"
             if self.stance == "shoulder" else
+            f"  in the hands         {self.max_recoil * 1e3:9.1f} mm back at up to {self.peak_recoil_velocity:.2f} m/s, "
+            f"muzzle flip {math.degrees(self.max_pitch):.2f} deg, peak force on the hands {self.peak_shoulder_force:.0f} N"
+            if self.stance == "hands" else
             f"  on the mount         {self.max_recoil * 1e3:9.1f} mm of recoil at up to {self.peak_recoil_velocity:.2f} m/s, "
             f"peak force {self.peak_shoulder_force / 1e3:.1f} kN, jump {self.max_pitch * 1e3:.2f} mrad, "
             + (f"back in battery after {self.battery_time * 1e3:.0f} ms" if self.battery_time is not None
@@ -531,6 +601,16 @@ class ActionResult:
             if self.case_speed is not None:
                 line += f", the case thrown out at {self.case_speed:.1f} m/s"
             lines.append(line)
+        elif self.kind == "revolver":
+            line = f"  revolver             {self.status}, {self.shots} shot{'s' if self.shots > 1 else ''}"
+            if self.cyclic_rate and self.shots > 1:
+                line += f" ({self.cyclic_rate:.0f} rounds/min)"
+            if self.cylinder_lock_speed is not None:
+                line += (f"; the cylinder turns onto its stop at {self.cylinder_lock_speed:.0f} rad/s "
+                         f"({self.cylinder_lock_energy * 1e3:.1f} mJ)")
+            lines.append(line)
+            lines.append(f"  cylinder             {self.rounds[0] + 1:9d} of {self.capacity + 1} chambers loaded, "
+                         f"{self.rounds_left} live left to come")
         elif self.kind != "bolt":
             line = f"  {self.kind.replace('_', ' ') + ' action':20s} {self.status}"
             if self.shots > 1:
@@ -549,9 +629,17 @@ class ActionResult:
             if self.rounds:
                 lines.append(f"  feed                 {self.rounds[0]:9d} of {self.capacity} rounds in, {self.rounds_left} left; "
                              f"fed at {math.degrees(abs(self.feed_angle)):.1f}°")
-            if self.hammer_energy is not None:
-                lines.append(f"  hammer               {self.lock_time * 1e3:9.1f} ms from the sear to ignition, "
-                             f"hits the firing pin with {self.hammer_energy:.2f} J")
+        if self.hammer_energy is not None and self.kind != "bolt":
+            lines.append(f"  hammer               {self.lock_time * 1e3:9.1f} ms from the sear to ignition, "
+                         f"hits the firing pin with {self.hammer_energy:.2f} J")
+        if self.striker_energy is not None:
+            lines.append(f"  striker              {self.lock_time * 1e3:9.1f} ms from release to ignition, "
+                         f"hits the primer with {self.striker_energy:.3f} J (it needs {self.strike_energy:.3f} J)")
+        if self.trigger_work is not None:
+            line = f"  trigger              {self.trigger.replace('_', ' ')}, first pull {self.trigger_work * 1e3:.0f} mJ"
+            if self.follow_up_work is not None and self.follow_up_work != self.trigger_work:
+                line += f", then {self.follow_up_work * 1e3:.0f} mJ"
+            lines.append(line)
         lines += [f"  warning: {w}" for w in self.warnings]
         return "\n".join(lines)
 
@@ -590,8 +678,11 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     when the hammer the closing bolt trips reaches the firing pin (without a
     hammer, LOCK_TIME after the bolt is back in battery; a chain gun, as its
     master link reaches the firing point again), with the gun's motion
-    carried over, so recoil and muzzle climb build up. The burst stops early if
-    a cycle fails or the magazine runs dry. A bolt or a sliding wedge fires one.
+    carried over, so recoil and muzzle climb build up. With trigger.mode
+    "semi" (and always for a revolver) each shot is a pull of its own instead,
+    trigger.split after the last once the action is ready. The burst stops
+    early if a cycle fails or the magazine (or cylinder) runs dry. A bolt or a
+    sliding wedge fires one.
 
     rounds: in the magazine (or belt) besides the chambered one; None = full.
     """
@@ -610,7 +701,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     if m_bolt + m_bar >= gun_mass:
         raise ValueError(f"short recoil: the slide and barrel ({(m_bolt + m_bar):.2f} kg) "
                          f"must be lighter than the gun ({gun_mass:.2f} kg)")
-    shoulder = sh.stance == "shoulder"
+    shoulder = sh.stance in ("shoulder", "hands")
     mounted = sh.stance == "mount"
     mt = gun.mount
     m_body = sh.body_mass if shoulder else 0.0
@@ -671,11 +762,13 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     shot_times = [0.0]
     cyc = {}                  # this shot's cycle: ejected, can_feed, feeding, battery, s_max, cocked
     next_shot = None
-    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas", "hammer", "feed", "q")}
+    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas", "hammer", "feed", "q", "cyl")}
     next_out = 0.0
     # Hammer: angle back from the firing pin and its rate; "down" (on the pin, or riding the
     # carrier short of the sear), "cocked" (on the sear, or held past it by the carrier) or "falling".
-    hammer = a.hammer and kind not in (*LOCKED, "chain")
+    # A revolver's hammer is cocked by the trigger or the thumb, "cocking" over the pull.
+    revolving = kind == "revolver"
+    hammer = (a.hammer and kind not in (*LOCKED, "chain")) or revolving
     ph = om = 0.0
     hammer_state = "down"
     sear = math.radians(a.hammer_angle)
@@ -683,11 +776,26 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     rel = 0.0
     on_carrier = False
     light_strike = None
+    strike = gun.ignition.strike_energy
+
+    # Trigger: each shot of a semi-automatic (or revolver) has a pull of its own, `split` after the last.
+    tr = gun.trigger
+    semi = revolving or tr.mode == "semi"
+    double = tr.type in ("double_action", "double_action_only")
+    cock_from = None          # when the pull (or the thumb) started drawing the hammer back
+    striker = tr.type == "striker" and kind not in (*LOCKED, "chain", "revolver")
+    striker_time, striker_energy = striker_fall(gun) if striker else (0.0, None)
+    catch = a.striker_precock * a.striker_travel   # slide travel from battery over which it cocks the striker
+    # Revolver: chambers turned, whether the hand has finished this turn, whether a live round is under the hammer.
+    turned, index_from, indexed, live, dry = 0.0, 0, True, True, False
+    lock_speed = lock_energy = None
+    n_chambers = feeding.chambers(gun) if revolving else 0
 
     # Feeding: rounds left, the top round's rise once the bolt is past it (m, m/s), the belt's draw.
     fd = gun.feed
     belted = feeding.belt(gun)
     by_hand = feeding.hand(gun)
+    loose = by_hand or revolving     # no magazine spring presses a round on the bolt
     cap = feeding.capacity(gun)
     mag = cap if rounds is None else int(min(max(rounds, 0), cap))
     counts = [mag]
@@ -732,7 +840,18 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
 
     def new_cycle():
         cyc.update(ejected=False, can_feed=False, feeding=False, battery=None, s_max=0.0, cocked=False,
-                   empty=False, misfeed=None, back=False, peaked=False, home=False)
+                   empty=False, misfeed=None, back=False, peaked=False, home=False, past_catch=False)
+
+    def release_striker(t_rel):
+        """Let the cocked striker go: the round fires when it reaches the primer, if it hits hard enough."""
+        nonlocal next_shot, light_strike, shots
+        event(t_rel, "striker released", f"{striker_energy:.3f} J at the primer")
+        if striker_energy >= strike:
+            next_shot = t_rel + striker_time + PRIMER_DELAY
+        else:
+            event(t_rel + striker_time, "light strike", f"{striker_energy:.3f} J")
+            light_strike = light_strike or (len(shot_times) + 1, striker_energy)
+            shots = len(shot_times)
 
     def stop_bolt():
         # The bolt stops dead against whatever holds it (this step's share and m_r); the gun takes its momentum.
@@ -791,7 +910,11 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     while t < end:
         since = t - shot_times[-1]
         fast = since < fast_for
-        dt = FAST_DT if fast else SLOW_DT if since < DURATION or not mounted else MOUNT_DT
+        # Between a semi-automatic's (or revolver's) shots, with the action at rest, coarser steps do.
+        quiet = (semi and not mounted and not chain and since > 2 * FAST_UNTIL and s <= 0 and u == 0
+                 and hammer_state != "falling" and next_shot is None)
+        dt = (FAST_DT if fast else QUIET_DT if quiet else SLOW_DT if since < DURATION or not mounted
+              else MOUNT_DT)
         fb, fr, pp, tp = table.at(shot_times, t + 0.5 * dt)
         m_g, m_r = masses()
         f_sh = mount_force(mt, x, v) if mounted else -(k_sh * x + c_sh * v)
@@ -826,7 +949,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
             held = not running
         else:
             # Bore forces on the bolt group and on the gun body.
-            if kind in LOCKED:
+            if kind in LOCKED or revolving:
                 g_ext, r_ext = 0.0, fb + fr
             elif kind == "short_recoil":
                 g_ext, r_ext = (fb + fr, 0.0) if carry else (fb, fr)
@@ -878,14 +1001,17 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                     torque = hammer_torque(a, ph)
                     f_spring += max(0.0, slope * (torque + a.hammer_inertia * slope * gear * rel))
                     f_spring += a.hammer_friction * torque * rub_arm * slide
-            if kind not in LOCKED and not frozen:
+            if striker and cyc["past_catch"] and carrier < catch:
+                # The trigger bar holds the striker's lug while the slide closes on, compressing its spring.
+                f_spring -= striker_force(a, catch - carrier)
+            if kind not in LOCKED and not revolving and not frozen:
                 if belted:
                     # The feed cam: the carrier draws the belt across, lifting the hanging belt.
                     if u > 0 and cam0 <= carrier < cam1 and belt_adv < 1 and mag > 0:
                         tension, m_belt = feeding.belt_load(gun, mag)
                         r = cam_ratio * gear
                         f_spring += cam_ratio * tension + m_belt * cam_ratio * r * rel
-                elif mag > 0 and s < feed_at and not by_hand:
+                elif mag > 0 and s < feed_at and not loose:
                     # The top round pressed against the bolt's underside by the magazine spring.
                     f_spring += fd.friction * feeding.spring(gun, mag) * slide
             f_int = f_piston - f_spring
@@ -902,7 +1028,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                 acc_g = (g_ext + f_int) / m_g
                 acc_r = (r_ext - f_int + f_sh) / m_r
                 rel = acc_g - acc_r
-            held = kind in LOCKED or frozen or (s <= 0 and u <= 0 and rel <= 0)
+            held = kind in LOCKED or revolving or frozen or (s <= 0 and u <= 0 and rel <= 0)
             if held:  # the bolt is shut (or stuck open) and stays there: one body
                 m_all, f_all = m_g + m_r, g_ext + r_ext + f_sh
                 if wedge and block == "cam":
@@ -1077,8 +1203,12 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                     cyc["battery"] = t_end
                     first_battery = first_battery or t_end
                     event(t_end, "back in battery", f"{speed:.1f} m/s", speed)
-                    if len(shot_times) < shots and not hammer:
-                        next_shot = t_end + LOCK_TIME
+                    if len(shot_times) < shots and not hammer and not semi:
+                        # Automatic fire: the auto sear lets the striker go (or, with neither, the shot comes).
+                        if striker:
+                            release_striker(t_end)
+                        else:
+                            next_shot = t_end + LOCK_TIME
                 elif cyc["ejected"] and cyc["battery"] is None and (not cyc["can_feed"] or cyc["empty"] or cyc["misfeed"]):
                     cyc["battery"] = -1.0
                     event(t_end, "closes on an empty chamber", f"{speed:.1f} m/s", speed)
@@ -1121,6 +1251,8 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                 cyc["can_feed"] = True
             carrier = ratio * s if delayed else s + carrier_gap
             gear = ratio if delayed else 1.0
+            if striker and not cyc["past_catch"] and carrier >= catch:
+                cyc["past_catch"] = True   # the striker's lug is back past the trigger bar, which rises behind it
             if belted:
                 if mag > 0 and u > 0 and carrier > cam0 and belt_adv < 1:
                     if not on_cam:
@@ -1159,11 +1291,36 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         if hammer:
             carrier = ratio * s if delayed else s + carrier_gap
             gear = ratio if delayed else 1.0
-            cam, slope = hammer_cam(a, carrier)
+            cam, slope = hammer_cam(a, carrier) if not revolving else (0.0, 0.0)
             driven = slope * gear * u           # the hammer's rate while the carrier holds it
-            if hammer_state == "cocked":
+            if hammer_state == "cocking":
+                # The trigger (or the thumb) draws the hammer back to the sear, then lets it go; a
+                # revolver's hand turns the cylinder on over the middle of the swing.
+                f = min((t_end - cock_from) / tr.pull_time, 1.0)
+                ph, om = sear * f, sear / tr.pull_time
+                if revolving:
+                    span = cylinder.INDEX_END - cylinder.INDEX_START
+                    if not indexed:
+                        turned = index_from + min(max((f - cylinder.INDEX_START) / span, 0.0), 1.0)
+                    if not indexed and f >= cylinder.INDEX_END:
+                        indexed, turned = True, index_from + 1
+                        # The cylinder arrives at its stop at the hand's speed, and the stop takes its spin.
+                        lock_speed = 2 * math.pi / n_chambers / (span * tr.pull_time)
+                        held_in = cylinder.cylinder_inertia(gun, mag) \
+                            + len(shot_times) * feeding.case_mass(gun) * cylinder.cylinder_radius(gun) ** 2
+                        lock_energy = 0.5 * held_in * lock_speed**2
+                        event(t_end, "cylinder locks", f"{lock_speed:.0f} rad/s, {lock_energy * 1e3:.1f} mJ",
+                              lock_speed, energy=lock_energy)
+                        live = mag > 0
+                        if live:
+                            mag -= 1
+                if f >= 1.0:
+                    hammer_state, om = "falling", 0.0
+                    event(t_end, "hammer released", "at the end of the double-action pull" if double
+                          else "the trigger lets the cocked hammer go")
+            elif hammer_state == "cocked":
                 ph, om = (cam, driven) if cam > sear else (sear, 0.0)
-                if (len(shot_times) < shots and next_shot is None and cyc["feeding"]
+                if (not semi and len(shot_times) < shots and next_shot is None and cyc["feeding"]
                         and carrier <= a.hammer_trip_travel):
                     hammer_state = "falling"
                     event(t_end, "hammer released", "the closing carrier trips the auto sear")
@@ -1177,7 +1334,10 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                     ph = om = 0.0
                     if falling:
                         hammer_state = "down"
-                        if energy >= LIGHT_STRIKE:
+                        if revolving and not live:
+                            event(t_end, "the hammer falls on a fired case", "the cylinder is empty")
+                            dry, shots = True, len(shot_times)
+                        elif energy >= strike:
                             event(t_end, "hammer strikes the firing pin", f"{energy:.2f} J")
                             next_shot = t_end + PRIMER_DELAY
                         else:
@@ -1190,11 +1350,35 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                         u *= m_g / (m_g + a.hammer_inertia * (slope * gear) ** 2)  # it kicks the hammer along
                         driven = slope * gear * u
                     ph, om = cam, driven
-                if hammer_state == "down" and ph >= sear:
+                if hammer_state == "down" and ph >= sear and tr.type != "double_action_only":
+                    # (A double-action-only hammer has no single-action notch: it rides the slide back down.)
                     hammer_state = "cocked"
                     cyc["cocked"] = True
                     event(t_end, "hammer cocked", "past the sear")
             on_carrier = ph <= cam + 1e-9 and cam > 0
+
+        if semi and not chain and not wedge and len(shot_times) < shots and next_shot is None:
+            # The shooter pulls again `split` after the last shot, once the action is back in battery on a
+            # round (the disconnector holds the trigger off until then).
+            pull_at = shot_times[-1] + tr.split
+            end = max(end, pull_at + 0.02)
+            ready = revolving or (cyc["feeding"] and (cyc["battery"] or -1) >= 0 and jam is None and not frozen)
+            if ready and hammer:
+                cockable = revolving or double
+                if hammer_state == "down" and cockable and ph <= 0 and t_end >= pull_at - tr.pull_time:
+                    hammer_state, cock_from = "cocking", t_end
+                    index_from, indexed = round(turned), not revolving
+                    event(t_end, "trigger pulled" if double or not revolving else "hammer cocked by the thumb",
+                          "double action: the pull cocks the hammer" if double else "the thumb draws the hammer back")
+                elif hammer_state == "cocked" and t_end >= pull_at:
+                    hammer_state = "falling"
+                    event(t_end, "trigger pulled", "single action: the hammer falls")
+            elif ready and t_end >= pull_at:
+                event(t_end, "trigger pulled")
+                if striker:
+                    release_striker(t_end)
+                else:
+                    next_shot = t_end + LOCK_TIME
 
         if t >= next_out:
             next_out += OUT_FAST if fast else OUT_SLOW if since < DURATION else OUT_LONG
@@ -1210,6 +1394,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
             out["hammer"].append(ph)
             out["feed"].append(belt_adv if belted else (lift / present if present else 0.0))
             out["q"].append(q if chain else 0.0)
+            out["cyl"].append(turned)
         t = t_end
 
         # Back in battery: fire the next shot of the burst.
@@ -1238,6 +1423,16 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
             check = feeding.check(fgeo, 1.0, feed_at)
             if check["jam"]:
                 warnings.append(f"feeding: {check['detail']}")
+    elif revolving:
+        n = len(shot_times)
+        status = "empty" if dry else "fired"
+        if light_strike:
+            status = "light strike"
+            shot_no, energy = light_strike
+            warnings.append(f"light strike on shot {shot_no}: the hammer hit the firing pin with {energy:.2f} J "
+                            f"(the primer needs {strike:.2f} J); a stronger mainspring would fix it")
+        if dry and n < requested:
+            warnings.append(f"the cylinder ran dry after {n} of {requested} shots: the hammer fell on a fired case")
     else:
         status = "cycled"
         n = len(shot_times)
@@ -1265,10 +1460,15 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         elif cyc["battery"] is None or cyc["battery"] < 0:
             status = "did not return to battery"
             warnings.append(f"the return spring did not close the bolt on the new round{which}")
-        elif hammer and not cyc["cocked"]:
+        elif hammer and not cyc["cocked"] and tr.type != "double_action_only" and not (semi and double):
             status = "hammer not cocked"
             warnings.append(f"short stroke{which}: the carrier came back {cyc['s_max'] * 1e3:.0f} mm, and it needs "
                             f"{geo['hammer'] * 1e3:.0f} mm to cock the hammer")
+        elif light_strike and striker:
+            status = "light strike"
+            shot_no, energy = light_strike
+            warnings.append(f"light strike on shot {shot_no}: the striker hit the primer with {energy:.3f} J (it needs "
+                            f"{strike:.3f} J); a stronger striker spring, a heavier striker or more travel would fix it")
         elif light_strike:
             status = "light strike"
             shot_no, energy = light_strike
@@ -1276,7 +1476,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                    "a rate reducer or a softer return would let the carrier settle first"
                    if energy < 0.5 * hammer_fall(gun)[1] else "a stronger hammer spring would fix it")
             warnings.append(f"light strike on shot {shot_no}: the hammer hit the firing pin with {energy:.2f} J "
-                            f"(a primer needs {LIGHT_STRIKE:.2f} J); {why}")
+                            f"(a primer needs {strike:.2f} J); {why}")
         if status not in ("cycled", "empty", "empty, bolt held open") and n < requested:
             warnings.append(f"the burst stopped after {n} of {requested} shots")
     if wedge:
@@ -1327,6 +1527,13 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     fall = hammer_fall(gun) if hammer else None
     arr = {k: np.array(val) for k, val in out.items()}
     shoulder_force = arr["shoulder"] if shoulder or mounted else np.zeros_like(arr["t"])
+    # The trigger's work: a double-action pull cocks the hammer too.
+    sa_work, da_work = tr.pull * tr.travel, tr.da_pull * tr.da_travel
+    told = semi or tr.type != "single_action"
+    first_work = (da_work if double else sa_work) if told else None
+    again_work = (da_work if tr.type == "double_action_only" or (revolving and double) else sa_work) if told else None
+    lock_time = (0.0 if chain else striker_time + PRIMER_DELAY if striker else fall[0] + PRIMER_DELAY if hammer
+                 else LOCK_TIME)
     return ActionResult(
         kind=kind, stance=sh.stance, time=arr["t"],
         recoil=arr["x"], recoil_velocity=arr["v"], pitch=arr["th"],
@@ -1353,12 +1560,13 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         gas_peak_pressure=gas_peak if kind in GAS_SYSTEMS else None,
         port_cd=port_cd,
         port_cd_2d=port_2d,
-        lock_time=0.0 if chain else fall[0] + PRIMER_DELAY if hammer else LOCK_TIME,
+        lock_time=lock_time,
         hammer_energy=fall[1] if hammer else None,
         feed=arr["feed"],
         rounds=counts,
         rounds_left=mag,
-        chambered=kind not in LOCKED and cyc["feeding"] and jam is None and (cyc["battery"] or -1) >= 0,
+        chambered=(mag > 0 if revolving else
+                   kind not in LOCKED and cyc["feeding"] and jam is None and (cyc["battery"] or -1) >= 0),
         held_open=held_open,
         jam=jam,
         feed_angle=fgeo["angle"],
@@ -1370,4 +1578,13 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         motor_peak_power=motor_peak if chain else None,
         open_time=open_time,
         case_speed=case_speed,
+        cylinder=arr["cyl"] if revolving else None,
+        cylinder_lock_speed=lock_speed,
+        cylinder_lock_energy=lock_energy,
+        trigger=tr.type,
+        trigger_work=first_work,
+        follow_up_work=again_work,
+        striker_energy=striker_energy,
+        strike_energy=strike,
+        semi=semi,
     )

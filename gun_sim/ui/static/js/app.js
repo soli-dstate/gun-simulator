@@ -349,7 +349,16 @@ function updatePreview() {
     if (previewMode === "rifle") warnings.push(...rifle.warnings.filter((w) => !warnings.includes(w)));
   }
   $("preview-warnings").textContent = warnings.join(" · ");
-  $("burst").disabled = (gun.action?.type ?? "bolt") === "bolt";
+  const kind = gun.action?.type ?? "bolt";
+  $("burst").disabled = kind === "bolt";
+  // The hand-cycle button names what it works: a revolver's hammer, a pistol's slide, or a bolt.
+  const pistol = ["1911", "beretta", "polymer"].includes(gun.appearance?.style) && kind !== "revolver";
+  $("cycle").textContent = kind === "revolver" ? "Cock hammer" : pistol ? "Rack slide" : "Cycle bolt";
+  $("cycle").title = kind === "revolver" ? "Cock the hammer: the hand turns the next chamber up under it"
+    : "Work the bolt: eject and chamber a new round (clears a jam)";
+  $("reload").title = kind === "revolver" ? (gun.feed?.loading === "gate"
+    ? "Open the loading gate and reload a chamber at a time" : "Swing the cylinder out, eject, and speedload it")
+    : "Change the magazine (or belt) for a full one";
   showDerived(gun, rifle);
 }
 
@@ -574,7 +583,8 @@ function drawAll() {
   if (shown) {
     const a = shown.action, t = a.time.map((v) => v * 1e3);
     motion.push({ label: "gun recoil (mm)", color: colors[0], x: t, y: a.recoil.map((v) => v * 1e3) });
-    if (a.kind !== "bolt") motion.push({ label: "bolt travel (mm)", color: colors[1], x: t, y: a.bolt.map((v) => v * 1e3) });
+    if (a.kind === "revolver") motion.push({ label: "cylinder turned (chambers × 10)", color: colors[1], x: t, y: a.cylinder.map((v) => v * 10) });
+    else if (a.kind !== "bolt") motion.push({ label: "bolt travel (mm)", color: colors[1], x: t, y: a.bolt.map((v) => v * 1e3) });
     motion.push({ label: "muzzle rise (mrad)", color: colors[2], x: t, y: a.pitch.map((v) => v * 1e3) });
   }
   results.forEach((r, i) => {
@@ -584,7 +594,8 @@ function drawAll() {
     shoulder.push({ label: r.model, color: colors[i % colors.length], x: a.time.map((v) => v * 1e3), y });
   });
   const stance = shown?.action.stance ?? "shoulder", free = stance === "free";
-  $("c-shoulder-title").textContent = free ? "Free recoil velocity" : stance === "mount" ? "Force on the mount" : "Force on the shooter's shoulder";
+  $("c-shoulder-title").textContent = free ? "Free recoil velocity" : stance === "mount" ? "Force on the mount"
+    : stance === "hands" ? "Force on the shooter's hands" : "Force on the shooter's shoulder";
   drawChart($("c-motion"), { series: motion, xlabel: "time (ms)", ylabel: "mm · mrad" });
   drawDevice();
   drawChart($("c-shoulder"), { series: shoulder, xlabel: "time (ms)", ylabel: free ? "velocity (cm/s)" : "force (N)" });
@@ -654,10 +665,18 @@ function showCards(data, gun) {
       <span>The rod's, once the sabot has gone</span><span>${(0.5 * gun.projectile.penetrator_mass * r.muzzle_velocity ** 2).toFixed(0)} J</span>` : ""}
       <span>Time in barrel</span><span>${(r.muzzle_time * 1e3).toFixed(3)} ms</span>
       <span>Peak breech pressure</span><span>${(r.peak_breech_pressure / 1e6).toFixed(1)} MPa</span>
-      <span>Charge burnt at exit</span><span>${(r.burnt_at_muzzle * 100).toFixed(1)} %</span>${bedRows(r.grain_bed)}${spinRows(r.spin)}${actionRows(r.action)}${deviceRows(r.device)}${evacuatorRows(r.evacuator)}</div>
+      <span>Charge burnt at exit</span><span>${(r.burnt_at_muzzle * 100).toFixed(1)} %</span>${bedRows(r.grain_bed)}${gapRows(r.gap, gun)}${spinRows(r.spin)}${actionRows(r.action)}${deviceRows(r.device)}${evacuatorRows(r.evacuator)}</div>
       ${(r.action?.warnings ?? []).map((w) => `<div class="bad">${w}</div>`).join("")}`;
     cards.appendChild(card);
   }
+}
+
+/** Card row for a revolver's cylinder gap: the gas it let out. */
+function gapRows(g, gun) {
+  if (!g) return "";
+  const share = g.mass / gun.propellant.charge_mass * 100;
+  return `
+      <span>Out of the cylinder gap</span><span>${(g.mass * 1e3).toFixed(0)} mg of gas (${share.toFixed(1)} % of the charge), ${g.energy.toFixed(0)} J</span>`;
 }
 
 /** Card rows for a two-phase grain bed. */
@@ -690,10 +709,11 @@ function actionRows(a) {
   let rows = `
       <span>Recoil impulse (incl. gas jet)</span><span>${a.impulse.toFixed(2)} N·s</span>
       <span>Free recoil</span><span>${a.free_recoil_velocity.toFixed(2)} m/s, ${a.free_recoil_energy.toFixed(1)} J</span>`;
-  if (a.stance === "shoulder") {
+  if (a.stance === "shoulder" || a.stance === "hands") {
+    const into = a.stance === "hands" ? "hands" : "shoulder";
     rows += `
-      <span>Into the shoulder</span><span>${(a.max_recoil * 1e3).toFixed(1)} mm, up to ${a.peak_recoil_velocity.toFixed(2)} m/s</span>
-      <span>Peak shoulder force</span><span>${a.peak_shoulder_force.toFixed(0)} N</span>`;
+      <span>Into the ${into}</span><span>${(a.max_recoil * 1e3).toFixed(1)} mm, up to ${a.peak_recoil_velocity.toFixed(2)} m/s</span>
+      <span>Peak force on the ${into}</span><span>${a.peak_shoulder_force.toFixed(0)} N</span>`;
   } else if (a.stance === "mount") {
     const home = a.battery_time !== null
       ? `back in battery after ${(a.battery_time * 1e3).toFixed(0)} ms at ${a.battery_speed.toFixed(2)} m/s`
@@ -704,11 +724,22 @@ function actionRows(a) {
     if (a.stop_speed !== null) rows += `<span>Recoil stop</span><span class="bad">hit at ${a.stop_speed.toFixed(2)} m/s</span>`;
   }
   rows += a.stance === "mount" ? `<span>Jump</span><span>${(a.max_pitch * 1e3).toFixed(2)} mrad</span>`
-    : `<span>Muzzle rise</span><span>${deg(a.max_pitch)}°</span>`;
-  if (a.rounds?.length) {
+    : `<span>${a.stance === "hands" ? "Muzzle flip" : "Muzzle rise"}</span><span>${deg(a.max_pitch)}°</span>`;
+  if (a.kind === "revolver") {
+    rows += `<span>Cylinder</span><span>${a.rounds[0] + 1} of ${a.capacity + 1} chambers loaded, ${a.rounds_left} live to come</span>`;
+  } else if (a.rounds?.length) {
     rows += `<span>Feed</span><span>${a.rounds[0]} of ${a.capacity} rounds in, ${a.rounds_left} left · fed at ${deg(Math.abs(a.feed_angle))}°</span>`;
   }
+  rows += triggerRows(a);
   if (a.kind === "bolt") return rows;
+  if (a.kind === "revolver") {
+    const ok = a.status === "fired" || a.status === "empty";
+    rows += `<span>Revolver</span><span class="${ok ? "" : "bad"}">${a.status}, ${a.shot_times.length} shot${a.shot_times.length > 1 ? "s" : ""}` +
+      (a.shot_times.length > 1 ? ` (${a.cyclic_rate.toFixed(0)} rounds/min), muzzle climbs to ${deg(a.max_pitch)}°` : "") + "</span>";
+    if (a.cylinder_lock_speed !== null) rows += `<span>Cylinder onto its stop</span><span>${a.cylinder_lock_speed.toFixed(0)} rad/s, ${(a.cylinder_lock_energy * 1e3).toFixed(1)} mJ</span>`;
+    if (a.hammer_energy !== null) rows += `<span>Hammer</span><span>${(a.lock_time * 1e3).toFixed(1)} ms from the sear to ignition, hits the pin with ${a.hammer_energy.toFixed(2)} J</span>`;
+    return rows;
+  }
   if (a.kind === "sliding_wedge") {
     const ok = a.status === "breech opened";
     rows += `<span>Sliding wedge</span><span class="${ok ? "" : "bad"}">${a.status}` +
@@ -718,7 +749,7 @@ function actionRows(a) {
   }
   if (a.shot_times.length > 1) {
     const climb = (a.max_pitch * 180 / Math.PI).toFixed(2);
-    rows += `<span>Burst</span><span>${a.shot_times.length} shots in ${((a.shot_times.at(-1) - a.shot_times[0]) * 1e3).toFixed(0)} ms, muzzle climbs to ${climb}°</span>`;
+    rows += `<span>${a.semi ? "String" : "Burst"}</span><span>${a.shot_times.length} shots in ${((a.shot_times.at(-1) - a.shot_times[0]) * 1e3).toFixed(0)} ms, muzzle climbs to ${climb}°</span>`;
   }
   const ok = a.status === "cycled" || a.status.startsWith("empty");
   const kind = a.kind.replace("_", " ");
@@ -730,8 +761,21 @@ function actionRows(a) {
   if (a.gas_peak_pressure !== null) rows += `<span>Peak gas cylinder pressure</span><span>${(a.gas_peak_pressure / 1e6).toFixed(1)} MPa</span>`;
   if (a.port_cd !== null) rows += `<span>Gas port discharge coefficient</span><span>${a.port_cd.toFixed(2)}${a.port_cd_2d ? " (2D)" : " (assumed)"}</span>`;
   if (a.hammer_energy !== null) rows += `<span>Hammer</span><span>${(a.lock_time * 1e3).toFixed(1)} ms from the sear to ignition, hits the pin with ${a.hammer_energy.toFixed(2)} J</span>`;
+  if (a.striker_energy !== null) {
+    const weak = a.striker_energy < a.strike_energy;
+    rows += `<span>Striker</span><span class="${weak ? "bad" : ""}">${(a.lock_time * 1e3).toFixed(1)} ms from release to ignition, hits the primer with ${(a.striker_energy * 1e3).toFixed(0)} mJ (it needs ${(a.strike_energy * 1e3).toFixed(0)})</span>`;
+  }
   if (a.motor_peak_power !== null) rows += `<span>Chain drive</span><span>motor peaking at ${a.motor_peak_power.toFixed(0)} W</span>`;
   return rows;
+}
+
+/** Card row for the trigger: its type and the work of its pulls (only for a handgun's or a semi-automatic's). */
+function triggerRows(a) {
+  if (a.trigger_work === null) return "";
+  const kind = a.trigger.replaceAll("_", " ");
+  const then = a.follow_up_work !== null && Math.abs(a.follow_up_work - a.trigger_work) > 1e-6
+    ? `, then ${(a.follow_up_work * 1e3).toFixed(0)} mJ` : "";
+  return `<span>Trigger</span><span>${kind[0].toUpperCase() + kind.slice(1)}${a.semi ? ", a pull a shot" : ""}: ${(a.trigger_work * 1e3).toFixed(0)} mJ to fire${then}</span>`;
 }
 
 /** Card rows for a bore evacuator. */

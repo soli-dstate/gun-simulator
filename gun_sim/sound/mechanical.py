@@ -3,7 +3,8 @@
 Each impact the action model reports becomes a burst of ringing steel (or
 brass) at the place it happens:
 
-* the hammer or striker falling, just before ignition;
+* the hammer or striker falling, just before ignition, and before a
+  revolver's hammer falls, its cylinder turning onto the cylinder stop;
 * the bolt unlocking (the cam turning it), hitting the rear stop, and slamming
   back into battery, at the receiver;
 * the spent case landing on the ground beside the shooter, after its fall;
@@ -39,7 +40,7 @@ LOCK_TIME = 0.003  # s, hammer fall to ignition
 SMALL_PART = 1.0   # kg: parts up to this ring with the modes above as they are
 CASE_FALL = 1.45   # m from the port to the ground
 STUB_FALL = 0.6    # m from a cannon's breech into its deflector bag
-ELECTRIC = ("chain", "sliding_wedge")   # fired by an electric primer: no hammer
+ELECTRIC = ("chain", "sliding_wedge")   # fired by an electric primer: no hammer or striker
 
 
 def steel(mass: float):
@@ -70,16 +71,29 @@ def ring(fs: float, energy: float, modes, seed: int, click: float = 0.3) -> np.n
 
 def impacts(action_result, gun) -> list[dict]:
     """The sounds of one shot's cycle: {time (s from ignition), name, energy (J), where, modes}."""
-    from ..feed import case_mass
+    from .. import revolver
+    from ..feed import case_mass, chambers
     a = action_result
     bolt = gun.action.bolt_mass
     recoiling = getattr(a, "gun_mass", 0.0) or gun.action.gun_mass
     out = []
-    if gun.action.type not in ELECTRIC:
+    if getattr(a, "striker_energy", None) is not None:
+        out.append({"time": -a.lock_time, "name": "striker falls", "where": "receiver",
+                    "energy": a.striker_energy, "modes": STEEL})
+    elif gun.action.type not in ELECTRIC:
         # The hammer as the action simulation has it, or a typical one (30 g at 4 m/s, 3 ms before ignition).
         simulated = getattr(a, "hammer_energy", None) is not None
         out.append({"time": -a.lock_time if simulated else -LOCK_TIME, "name": "hammer falls", "where": "receiver",
                     "energy": a.hammer_energy if simulated else 0.5 * 0.03 * 4.0**2, "modes": STEEL})
+    if gun.action.type == "revolver":
+        # The cylinder turned onto its stop as the hammer came back, before it fell: as fast as the hand turned it.
+        t = gun.trigger
+        span = revolver.INDEX_END - revolver.INDEX_START
+        speed = 2 * math.pi / chambers(gun) / (span * t.pull_time)
+        energy = a.cylinder_lock_energy if getattr(a, "cylinder_lock_energy", None) is not None else \
+            0.5 * revolver.cylinder_inertia(gun, chambers(gun)) * speed**2
+        out.append({"time": -a.lock_time - (1 - revolver.INDEX_END) * t.pull_time, "name": "cylinder locks",
+                    "where": "receiver", "energy": energy, "modes": steel(gun.action.cylinder_mass)})
     spent = case_mass(gun)
     for e in a.events:
         if e.get("shot", 1) != 1:

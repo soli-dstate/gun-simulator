@@ -13,13 +13,17 @@ after-effect force. Its impulse is the momentum the remaining gas takes away
 when it empties like a vessel through a choked nozzle (mean jet speed
 1.5 times the exit sound speed for gamma = 1.24), less the forward momentum
 it already had in the bore.
+
+A revolver's cylinder gap (revolver.py) lets gas out once the projectile's base
+is past it, at the Lagrange pressure there: the gas loses that mass and the
+enthalpy it carries.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from . import action, rifling
+from . import action, revolver, rifling
 from .config import Gun
 from .results import GunLoads, ShotResult
 
@@ -56,35 +60,48 @@ def simulate(gun: Gun, blowdown_time: float = 0.0) -> ShotResult:
     base_factor = 1 + omega / (3 * m)
     breech_factor = 1 + omega / (2 * m)
 
-    def pressures(z, x, v, work):
-        """Mean, base and breech pressure, and the gas's R T."""
+    def pressures(z, x, v, work, lost=0.0, carried=0.0):
+        """Mean, base and breech pressure, and the gas's R T. `lost` kg of gas has gone out of a
+        revolver's gap, carrying `carried` J."""
         psi = prop.burnt_fraction(z)
-        gas = omega * psi + m_ign
-        energy = gas * f / (gamma - 1) - work - omega * v**2 / 6
+        gas = omega * psi + m_ign - lost
+        energy = (omega * psi + m_ign) * f / (gamma - 1) - work - carried - omega * v**2 / 6
         v_free = chamber + area * x - omega * (1 - psi) / prop.density - b * gas
         p_mean = (gamma - 1) * energy / v_free
         p_base = p_mean / base_factor
         return p_mean, p_base, p_base * breech_factor, p_mean * v_free / gas
 
+    gap_area, gap_travel = revolver.gap_area(gun), revolver.gap_travel(gun)
+
+    def gap_rates(x, p_base, p_breech, rt):
+        """Mass and enthalpy flow (kg/s, W) out of the gap, at the Lagrange pressure there."""
+        if gap_area <= 0 or x <= gap_travel:
+            return 0.0, 0.0
+        frac = (l0 + gap_travel) / (l0 + x)
+        p = p_breech - (p_breech - p_base) * frac**2
+        mdot = revolver.leak(gap_area, p, rt / prop.gas_constant, ATMOSPHERE, gamma, prop.gas_constant)
+        return mdot, mdot * (gamma / (gamma - 1) * rt + b * p)   # Noble-Abel: h = e + p v = gamma/(gamma-1) R T + b p
+
     def derivatives(state, moving):
-        z, x, v, work = state
-        p_mean, p_base, _, _ = pressures(z, x, v, work)
+        z, x, v, work, lost, carried = state
+        p_mean, p_base, p_breech, rt = pressures(z, x, v, work, lost, carried)
         dz = prop.web_regression_rate(max(p_mean, 0.0)) if z < z_end else 0.0
         if moving:
             dv = area * (p_base - rifling.resistance(gun, x)) / m_eff
         else:
             dv = 0.0
         # `work` is the energy the gas has delivered to the projectile.
-        return np.array([dz, v, dv, area * p_base * v])
+        return np.array([dz, v, dv, area * p_base * v, *gap_rates(x, p_base, p_breech, rt)])
 
     dt = gun.solver.lumped_dt
-    state = np.array([0.0, 0.0, 0.0, 0.0])
+    state = np.zeros(6)
+    l0 = chamber / area
+    gap = {"t": [], "mdot": [], "edot": []}
     t = 0.0
     moving = False
     hist = {k: [] for k in ("t", "x", "v", "pb", "pbase")}
     head_area = action.head_area(gun)
     port_travel = action.port_position(gun)
-    l0 = chamber / area
     loads = {k: [] for k in ("t", "breech", "barrel", "port_p", "port_t", "port_u")}
 
     while state[1] < bar.travel and t < gun.solver.max_time:
@@ -101,6 +118,11 @@ def simulate(gun: Gun, blowdown_time: float = 0.0) -> ShotResult:
         t += dt
 
         _, p_base, p_breech, rt = pressures(*state)
+        if gap_area > 0 and state[1] > gap_travel:
+            mdot, edot = gap_rates(state[1], p_base, p_breech, rt)
+            gap["t"].append(t)
+            gap["mdot"].append(mdot)
+            gap["edot"].append(edot)
         hist["t"].append(t)
         hist["x"].append(state[1])
         hist["v"].append(state[2])
@@ -126,7 +148,7 @@ def simulate(gun: Gun, blowdown_time: float = 0.0) -> ShotResult:
     if left and blowdown_time > 0 and loads["t"]:
         # After-effect: the force decays exponentially, carrying the jet's impulse.
         p_mean, _, _, rt = pressures(*state)
-        gas = omega * prop.burnt_fraction(state[0]) + m_ign
+        gas = omega * prop.burnt_fraction(state[0]) + m_ign - state[4]
         jet = _jet_speed_factor(gamma) * np.sqrt(gamma * rt)
         after = gas * max(jet - state[2] / 2, 0.0)
         f_breech, f_barrel = loads["breech"][-1], loads["barrel"][-1]
@@ -163,4 +185,5 @@ def simulate(gun: Gun, blowdown_time: float = 0.0) -> ShotResult:
             t=np.array(loads["t"]), breech_force=np.array(loads["breech"]), barrel_force=np.array(loads["barrel"]),
             port_pressure=np.array(loads["port_p"]), port_temperature=np.array(loads["port_t"]),
             head_area=head_area, port_position=port_travel, port_velocity=np.array(loads["port_u"])),
+        gap_flow=revolver.gap_flow(gap["t"], gap["mdot"], gap["edot"], gun),
     )

@@ -103,6 +103,10 @@ class ShotResult:
     # of the muzzle); "primer_mass" (kg); "profiles" [(t, x from the seated base, solid fraction,
     # grain velocity)] at the times of `profiles`.
     grain_bed: dict | None = None
+    # Revolver (gun_sim/revolver.py): the gas lost through the cylinder gap. Arrays "t" (s), "mdot"
+    # (kg/s) and "edot" (W, the enthalpy it carries); totals "mass" (kg) and "energy" (J); "position"
+    # (m of travel where the projectile opened it) and "area" (m^2).
+    gap_flow: dict | None = None
 
     def summary(self) -> str:
         status = "left muzzle" if self.left_muzzle else "DID NOT leave muzzle"
@@ -116,6 +120,8 @@ class ShotResult:
                f" (+{self.barrel_temperature_rise:.2f} K bulk, +{self.bore_temperature_rise:.0f} K at the throat surface)"
                if self.heat_to_barrel else "")
             + (self._bed_summary() if self.grain_bed else "")
+            + (f"\n  cylinder gap         {self.gap_flow['mass'] * 1e3:9.3f} g of gas out ({self.gap_flow['energy']:.0f} J)"
+               if self.gap_flow else "")
         )
 
     def _bed_summary(self) -> str:

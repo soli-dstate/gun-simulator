@@ -1,0 +1,125 @@
+# Beretta M9: 9x19 mm M882 ball (112 gr full metal jacket) from a 125 mm
+# barrel. Short recoil with a falling locking block (the Walther P38's): the
+# barrel and slide recoil together until the block under the barrel's breech
+# is cammed down out of the slide. Double action / single action: the first
+# pull cocks the hammer and lets it go; after that the slide leaves it cocked.
+# Open-top slide, fifteen-round double-stack magazine. Dimensions are the
+# published ones where there are any; the burn law is tuned to M882's 381 m/s
+# (1,250 ft/s) from the M9. All units are SI (m, kg, s, Pa, J).
+
+name = "Beretta M9 (9x19 mm M882 ball)"
+
+[barrel]
+bore_diameter   = 9.02e-3   # m, groove diameter
+travel          = 0.111     # m, seated base to muzzle (a 125 mm barrel)
+chamber_volume  = 0.55e-6   # m^3, the case's powder space under the bullet (the solver uses the case)
+chamber_shape   = "case"
+breech_diameter = 17.0e-3   # m, the barrel's chamber end
+muzzle_diameter = 12.5e-3   # m
+twist           = 0.250     # m per turn, right-hand, six grooves
+groove_depth    = 0.1e-3    # m
+freebore        = 0.3e-3    # m
+leade_angle     = 1.5       # degrees
+
+[projectile]
+# M882: 112 gr round nose, copper-alloy jacket over lead.
+mass                = 7.45e-3   # kg
+shot_start_pressure = 25e6      # Pa
+bore_resistance     = 5e6       # Pa
+length              = 15.0e-3   # m
+ogive_length        = 8.0e-3    # m
+meplat_diameter     = 2.6e-3    # m
+boat_tail_length    = 0.0
+jacket_thickness    = 0.45e-3   # m
+core_material       = "lead"
+drag_model          = "G1"
+ballistic_coefficient = 98.0    # kg/m^2 (0.139 lb/in^2)
+
+[case]
+# 9x19 mm Parabellum: a tapered, rimless case headspacing on its mouth.
+length            = 19.15e-3  # m
+overall_length    = 29.30e-3  # m
+rim_diameter      = 9.96e-3   # m
+rim_thickness     = 1.27e-3   # m
+groove_diameter   = 8.79e-3   # m
+groove_width      = 1.0e-3    # m
+base_diameter     = 9.93e-3   # m
+shoulder_diameter = 9.68e-3   # m: no shoulder, the body tapers to the mouth
+shoulder_position = 18.6e-3   # m
+shoulder_angle    = 85.0      # degrees
+neck_wall         = 0.315e-3  # m
+body_wall         = 0.35e-3   # m
+head_thickness    = 3.2e-3    # m
+primer_diameter   = 4.45e-3   # m, small pistol
+primer_depth      = 2.9e-3    # m
+
+[propellant]
+# A double-base ball powder, its deterrent coating making it burn about neutrally.
+composition     = "double_base"
+charge_mass     = 0.31e-3   # kg (4.8 gr)
+web             = 0.11e-3   # m, effective web of the coated grain
+form_chi        = 1.0
+form_lambda     = 0.0
+burn_rate_coeff = 2.8e-8    # (m/s)/Pa^n, tuned to M882
+
+[ignition]
+pressure      = 4e6     # Pa
+strike_energy = 0.06    # J, a small pistol primer
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# The slide and barrel recoil locked together for 6 mm, when the locking
+# block's plunger cams it down; the slide runs on, cocking the hammer.
+type             = "short_recoil"
+locking          = "block"
+gun_mass         = 0.952     # kg, unloaded
+bolt_mass        = 0.300     # kg, the slide with its firing pin, safety and extractor
+barrel_mass      = 0.135     # kg, barrel and locking block
+unlock_travel    = 6.0e-3    # m
+spring_rate      = 600.0     # N/m: about 32 N in battery, 58 N at the stop
+spring_preload   = 32.0      # N
+friction         = 3.0       # N
+rear_restitution = 0.35
+battery_restitution = 0.05
+feed_force       = 6.0       # N
+hammer             = true
+hammer_inertia     = 3.5e-6  # kg m^2
+hammer_spring_torque = 0.32  # N m
+hammer_spring_rate = 0.25    # N m/rad
+hammer_angle       = 60.0    # degrees
+hammer_cock_travel = 0.012   # m
+hammer_trip_travel = 2.0e-3  # m
+hammer_friction    = 0.15
+bore_height        = 0.036   # m, bore over the web of the hand
+cg_distance        = 0.040   # m
+radius_of_gyration = 0.075   # m
+
+[trigger]
+type      = "double_action"
+mode      = "semi"
+pull      = 25.0      # N (5.5 lb), single action
+travel    = 3.0e-3    # m
+da_pull   = 53.0      # N (12 lb), double action
+da_travel = 13.0e-3   # m
+pull_time = 0.12      # s
+split     = 0.25      # s
+
+[shooter]
+stance             = "hands"
+body_mass          = 1.6
+shoulder_stiffness = 7e3
+shoulder_damping   = 140.0
+hold_stiffness     = 28.0
+hold_damping       = 0.7
+
+[feed]
+type       = "double_stack"
+capacity   = 15
+ramp_angle = 30.0
+
+[appearance]
+style = "beretta"

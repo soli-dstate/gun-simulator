@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 
 from .. import action, devices, evacuator, exterior, fluid, lumped, parallel, plume, rifling, sound
-from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, DEVICE_TYPES, FEED_TYPES, PROJECTILE_TYPES,
-                      STANCES, STYLES, Gun)
+from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES,
+                      FIRE_MODES, LOCKINGS, PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Gun)
 from ..propellants import COMPOSITIONS, GRAINS, SUPPRESSANTS
 from ..results import ShotResult
 from ..sound import GROUNDS, PRESET_LABELS, PRESETS, SoundSettings
@@ -49,6 +49,8 @@ FIELDS = {
         ("evacuator_nozzles", "Evacuator nozzles", "", 1),
         ("evacuator_nozzle_diameter", "Evacuator nozzle diameter", "mm", 1e-3),
         ("evacuator_angle", "Evacuator nozzle lean towards the muzzle", "°", 1),
+        ("cylinder_gap", "Revolver: gap from the cylinder to the barrel (0 = none)", "mm", 1e-3),
+        ("cylinder_length", "Revolver: cylinder length (blank = overall length + 1 mm)", "mm", 1e-3),
     ],
     "case": [
         ("length", "Case length", "mm", 1e-3),
@@ -122,6 +124,7 @@ FIELDS = {
     ],
     "ignition": [
         ("pressure", "Igniter pressure", "MPa", 1e6),
+        ("strike_energy", "Firing pin strike the primer needs", "mJ", 1e-3),
         ("duration", "Primer flash duration (two-phase)", "ms", 1e-3),
         ("grain_ignition_temperature", "Grain ignition temperature (two-phase)", "K", 1),
     ],
@@ -136,6 +139,7 @@ FIELDS = {
         ("delay_ratio", "Delay ratio, carrier : head (roller/lever; blank = 4 / 6)", "", 1),
         ("bolt_head_mass", "Bolt head mass (roller/lever; blank = a fifth)", "g", 1e-3),
         ("barrel_mass", "Barrel mass (short recoil; blank = from its steel)", "g", 1e-3),
+        ("locking", "Short recoil: how the barrel unlocks (3D view)", "choice", list(LOCKINGS)),
         ("feed_force", "Feeding drag", "N", 1),
         ("friction", "Sliding friction on the bolt group", "N", 1),
         ("hammer", "Hammer (cocked by the carrier, tripped in a burst)", "flag", None),
@@ -148,6 +152,13 @@ FIELDS = {
         ("hammer_friction", "Hammer friction on the carrier", "", 1),
         ("rate_reducer_inertia", "Rate reducer inertia (0 = none)", "g·cm²", 1e-7),
         ("rate_reducer_angle", "Rate reducer: hammer fall it drags", "°", 1),
+        ("striker_mass", "Striker mass (trigger type striker)", "g", 1e-3),
+        ("striker_spring_preload", "Striker spring, striker forward", "N", 1),
+        ("striker_spring_rate", "Striker spring rate", "N/mm", 1e3),
+        ("striker_travel", "Striker travel, forward to fully cocked", "mm", 1e-3),
+        ("striker_precock", "Share of it the slide cocks", "", 1),
+        ("cylinder_mass", "Revolver: cylinder mass, empty", "g", 1e-3),
+        ("cylinder_radius", "Revolver: cylinder axis to the chambers (blank = room for the rims)", "mm", 1e-3),
         ("rear_restitution", "Bounce off the rear stop", "", 1),
         ("battery_restitution", "Bounce into battery", "", 1),
         ("gas_port_position", "Gas port (travel from seat; blank = 75 %, gas-delayed 10 %)", "mm", 1e-3),
@@ -196,6 +207,17 @@ FIELDS = {
         ("belt_cam_start", "Feed cam starts (carrier travel; blank = 20 % of stroke)", "mm", 1e-3),
         ("belt_cam", "Feed cam travel per link (blank = 35 % of stroke)", "mm", 1e-3),
         ("select", "Dual belt: the belt that feeds", "choice", ["left", "right"]),
+        ("loading", "Cylinder: how it is reloaded", "choice", list(CYLINDER_LOADING)),
+    ],
+    "trigger": [
+        ("type", "Trigger", "choice", list(TRIGGER_TYPES)),
+        ("mode", "Fire", "choice", list(FIRE_MODES)),
+        ("pull", "Single-action (or striker) pull", "N", 1),
+        ("travel", "Single-action travel", "mm", 1e-3),
+        ("da_pull", "Double-action pull", "N", 1),
+        ("da_travel", "Double-action travel", "mm", 1e-3),
+        ("pull_time", "Time over a double-action pull, or to thumb-cock", "ms", 1e-3),
+        ("split", "Time between shots (semi, revolver)", "ms", 1e-3),
     ],
     "mount": [
         ("stroke", "Recoil stroke to the stop", "mm", 1e-3),
@@ -395,8 +417,13 @@ def action_to_json(a: action.ActionResult) -> dict:
             "impulse", "free_recoil_velocity", "free_recoil_energy", "max_recoil", "peak_recoil_velocity",
             "peak_shoulder_force", "max_pitch", "bolt_max_travel", "rear_speed", "cycle_time", "cyclic_rate",
             "unlock_pressure", "gas_peak_pressure", "port_cd", "gun_mass", "lock_time", "hammer_energy",
-            "battery_time", "battery_speed", "stop_speed", "motor_peak_power", "open_time", "case_speed")},
+            "battery_time", "battery_speed", "stop_speed", "motor_peak_power", "open_time", "case_speed",
+            "cylinder_lock_speed", "cylinder_lock_energy", "trigger_work", "follow_up_work", "striker_energy",
+            "strike_energy")},
         "drive": None if a.drive is None else floats(a.drive),
+        "cylinder": None if a.cylinder is None else floats(a.cylinder),
+        "trigger": a.trigger,
+        "semi": bool(a.semi),
         "port_cd_2d": a.port_cd_2d,
         "shot_times": [float(t) for t in a.shot_times],
         "feed": None if a.feed is None else [round(float(v), 4) for v in a.feed],
@@ -438,7 +465,14 @@ def result_to_json(r: ShotResult, gun: Gun | None = None, burst: int = 1, rounds
         "device": devices.to_json(r.device) if r.device is not None else None,
         "grain_bed": _bed_to_json(r.grain_bed) if r.grain_bed else None,
         "evacuator": evac,
+        "gap": _gap_to_json(r.gap_flow) if r.gap_flow else None,
     }
+
+
+def _gap_to_json(gap: dict) -> dict:
+    t, mdot = _downsample(gap["t"], gap["mdot"])
+    return {"t": t, "mdot": mdot, "mass": float(gap["mass"]), "energy": float(gap["energy"]),
+            "position": float(gap["position"]), "area": float(gap["area"])}
 
 
 def _bed_to_json(bed: dict) -> dict:
