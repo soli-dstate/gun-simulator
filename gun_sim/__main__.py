@@ -7,7 +7,7 @@ import math
 import sys
 import time
 
-from . import action, fluid, lumped, rifling, sound
+from . import action, evacuator, fluid, lumped, rifling, sound
 from .config import Gun
 
 MODELS = {"fluid": fluid.simulate, "lumped": lumped.simulate}
@@ -21,6 +21,9 @@ def print_range_table(gun: Gun, result, args) -> None:
     traj = exterior.trajectory(gun, result.muzzle_velocity, zero_range=args.zero,
                                sight_height=args.sight_height, crosswind=args.wind, max_range=args.range)
     step = exterior.nice_step(args.range)
+    if gun.projectile.type == "apfsds":
+        print(f"[exterior] the sabot falls away at the muzzle: the {gun.flight_mass:.2f} kg, "
+              f"{gun.flight_diameter * 1e3:.0f} mm rod flies on")
     print(f"[exterior] {gun.projectile.drag_model} BC {traj.ballistic_coefficient / exterior.LB_IN2:.3f} lb/in^2 "
           f"({traj.ballistic_coefficient:.1f} kg/m^2), v0 {result.muzzle_velocity:.1f} m/s ({result.model} model), "
           f"zero {args.zero:.0f} m, sight {args.sight_height * 1e3:.0f} mm, crosswind {args.wind:g} m/s")
@@ -83,7 +86,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  spin at the muzzle   {s['spin_rpm']:9.0f} rpm ({s['spin_energy']:.1f} J), "
                   f"stability Sg {s['stability']:.2f}, peak rifling torque {s['peak_torque']:.2f} N m")
         if not args.no_recoil and result.left_muzzle:
-            print(action.simulate(gun, result).summary())
+            cycle = action.simulate(gun, result)
+            print(cycle.summary())
+            ev = evacuator.simulate(gun, result, cycle.open_time)
+            if ev is not None:
+                print(evacuator.summary(ev))
         elapsed = time.perf_counter() - start
         print(f"  (computed in {elapsed:.2f} s)\n")
         results.append(result)

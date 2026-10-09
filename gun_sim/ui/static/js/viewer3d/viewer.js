@@ -1,10 +1,9 @@
 // Interactive 3D view of the cartridge: drag to orbit, wheel to zoom,
 // double-click to reset. Redraws only when something changes.
 
-import { buildCartridge } from "./cartridge.js";
-import { lathe } from "./lathe.js";
+import { buildCartridge, roundMeshes } from "./cartridge.js";
 import { lookAt, perspective, translation } from "./mat4.js";
-import { CORE_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
+import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
 
 const MATERIALS = {
   case: { color: srgbToLinear([0.86, 0.66, 0.34]), metallic: 1, roughness: 0.32, section: srgbToLinear([0.62, 0.45, 0.2]) },
@@ -36,7 +35,7 @@ export class CartridgeViewer {
     const cart = buildCartridge(gun);
     for (const mesh of Object.values(this.meshes)) this.renderer.deleteMesh(mesh);
     this.meshes = {};
-    for (const [name, parts] of Object.entries(cart.parts)) this.meshes[name] = this.renderer.createMesh(lathe(parts));
+    for (const [name, data] of Object.entries(roundMeshes(cart))) this.meshes[name] = this.renderer.createMesh(data);
     this.cartridge = cart;
     this.requestDraw();
     return cart;
@@ -110,13 +109,17 @@ export class CartridgeViewer {
       proj: perspective(fov, aspect, dist * 0.05, dist * 4),
     };
 
-    const x0 = -totalLen / 2;
+    const x0 = -totalLen / 2, m = this.meshes;
+    const head = translation(x0, 0, 0), proj = translation(x0 + cart.seat + pullDist, 0, 0);
     const items = [
-      { mesh: this.meshes.case, model: translation(x0, 0, 0), material: MATERIALS.case },
-      { mesh: this.meshes.primer, model: translation(x0, 0, 0), material: MATERIALS.primer },
-      { mesh: this.meshes.projectile, model: translation(x0 + cart.seat + pullDist, 0, 0), material: MATERIALS.projectile },
+      { mesh: m.case, model: head, material: cart.caseMetal === "steel" ? ROUND_MATERIALS.steelCase : MATERIALS.case },
+      { mesh: m.primer, model: head, material: MATERIALS.primer },
+      { mesh: m.projectile, model: proj, material: cart.solidMetal !== null ? CORE_MATERIALS[cart.solidMetal] : MATERIALS.projectile },
     ];
-    if (this.meshes.core) items.push({ mesh: this.meshes.core, model: items[2].model, material: CORE_MATERIALS[cart.coreMaterial] });
+    if (m.caseBody) items.push({ mesh: m.caseBody, model: head, material: ROUND_MATERIALS.felt });
+    if (m.core) items.push({ mesh: m.core, model: proj, material: CORE_MATERIALS[cart.coreMaterial] });
+    if (m.fins) items.push({ mesh: m.fins, model: proj, material: ROUND_MATERIALS.fins });
+    for (let k = 0; m[`sabot${k}`]; k++) items.push({ mesh: m[`sabot${k}`], model: proj, material: ROUND_MATERIALS.sabot });
     // Cut away the half facing the camera with a plane through the axis (x), so
     // its normal is the camera direction with the x part removed.
     const ny = eye[1], nz = eye[2], n = Math.hypot(ny, nz) || 1;

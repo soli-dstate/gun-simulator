@@ -58,6 +58,37 @@ Actions. Which body the bore forces push depends on the action:
   nearly shut until the bore pressure falls and the gas runs back out of the
   port.
 
+* chain: a chain gun. A motor drives a chain round a rectangular track, and
+  the bolt carrier rides its master link: across the front of the track the
+  bolt dwells locked in battery (the shot is fired there), along one side it
+  is drawn back, across the back it dwells open while the feeder (driven off
+  the same chain) indexes the next round, and along the other side it rams
+  that round home. The bolt's travel is s = S(q) for the chain's position q,
+  so the gun, the bolt and the drive are solved together from their kinetic
+  energy (Lagrange), T = m_r x'^2/2 + m_bolt (x' + S'(q) q')^2/2 + m_drive q'^2/2,
+  with the motor's force falling linearly with the chain's speed. The shot
+  does not work the action; while the bolt is locked (S' = 0 in the dwell)
+  it pushes only the gun, so a hangfire cannot open the breech under
+  pressure until the dwell is over.
+* sliding_wedge: a cannon's vertical sliding-block breech, locked while the
+  gun recoils on its mount. As the gun runs out again, the opening cam on the
+  cradle catches the breech crank over the last `cam_travel` before battery
+  and drives the block down (s = drop = bolt_travel (cam_travel - x) /
+  cam_travel), against its closing spring and helped by its weight; the gun
+  carries the block's inertia through the cam. Arriving in battery, the block
+  strikes the extractors, which throw the case (or a combustible case's stub)
+  out at `extractor_ratio` times its speed and hold it open for the loader.
+  If the run-out is too weak to drive the block all the way, the breech stays
+  part shut.
+
+Mount (shooter.stance = "mount", config.Mount). The gun recoils in a cradle
+against a spring, a hydropneumatic recuperator, a hydraulic buffer whose
+orifice closes down along the stroke (force = rho A^3 v^2 / (2 (Cd a)^2)),
+linear damping and friction, up to a hard stop; the recuperator runs it out
+again, the last part cushioned by the counter-recoil buffer, until it rests
+against its front stop in battery. The elevation gear holds the cradle's
+pitch about the trunnions as the shoulder hold does a rifle's.
+
 Impacts at the rear stop and in battery are instantaneous, with a coefficient
 of restitution; the impulse is shared between the bolt and the gun by their
 masses (the shoulder is far too soft to take part). The bolt ejects the case
@@ -169,6 +200,18 @@ TUBE_WALL = AIR_TEMPERATURE
 GAS_VISCOSITY = 6e-5            # Pa s
 GAS_CONDUCTIVITY = 0.15         # W/(m K)
 GAS_PRANDTL = 0.7
+# Mounts: a gun on a recoil system is followed until it has run out again (at most MOUNT_DURATION),
+# with coarser steps once the first DURATION is over.
+MOUNT_DURATION = 3.0      # s
+MOUNT_DT = 1e-4           # s
+OUT_LONG = 2e-3           # s, output sampling after DURATION
+SETTLE_TIME = 0.05        # s the gun rests in battery, its action done, before the simulation stops
+RECUPERATOR_N = 1.3       # polytropic exponent of the recuperator's gas
+BUFFER_CD = 0.7           # discharge coefficient of the buffer's orifice
+G = 9.81
+CHAIN_UNLOCK = 5e-3       # m of bolt travel over which a chain gun's bolt turns out of its locks
+STALL_SHARE = 0.05        # the chain is taken to have stalled below this share of its free speed
+LOCKED = ("bolt", "sliding_wedge")   # the breech is never unlocked by the shot
 
 
 def tube_heat(flow: float, diameter: float) -> float:
@@ -211,7 +254,10 @@ def head_area(gun: Gun) -> float:
 
 
 def port_position(gun: Gun) -> float:
-    """Projectile travel from its seat to the gas port (m)."""
+    """Projectile travel from its seat to the gas port (m): where the solvers record the bore gas.
+    Without a gas system that is a bore evacuator's nozzles, if there is one."""
+    if gun.barrel.evacuator_position and gun.action.type not in GAS_SYSTEMS:
+        return gun.barrel.evacuator_position
     position = gun.action.gas_port_position
     if position is not None:
         return position
@@ -264,6 +310,79 @@ def hammer_fall(gun: Gun) -> tuple[float, float]:
     return t, 0.5 * a.hammer_inertia * rate * rate
 
 
+def buffer_orifice(m, x: float, v: float) -> float:
+    """Open area (m^2) of the recoil buffer's orifice, the gun x m back moving at v (+ rearwards).
+
+    Recoiling, a throttling rod closes it from buffer_orifice to buffer_orifice_end along the
+    stroke; running out, the oil returns through counter_orifice, which the counter-recoil
+    buffer's spear closes to a tenth over the last counter_buffer before battery.
+    """
+    if v > 0:
+        end = m.buffer_orifice_end if m.buffer_orifice_end is not None else m.buffer_orifice
+        return m.buffer_orifice + (end - m.buffer_orifice) * min(max(x / m.stroke, 0.0), 1.0)
+    area = m.counter_orifice if m.counter_orifice is not None else m.buffer_orifice
+    if m.counter_buffer > 0 and x < m.counter_buffer:
+        area *= max(0.1, x / m.counter_buffer)
+    return area
+
+
+def mount_force(m, x: float, v: float) -> float:
+    """The recoil system's push on the gun (N, + rearwards, so negative as it holds the gun back), friction aside."""
+    f = -(m.spring_preload + m.spring_rate * x) - m.damping * v
+    if m.recuperator_pressure > 0:
+        gas = m.recuperator_volume - m.recuperator_area * min(max(x, 0.0), m.stroke)
+        f -= m.recuperator_pressure * m.recuperator_area * (m.recuperator_volume / gas) ** RECUPERATOR_N
+    if m.buffer_area > 0 and v:
+        # Oil driven through the orifice at Q = A v: the pressure drop rho (Q / (Cd a))^2 / 2 on the piston.
+        k = m.oil_density * m.buffer_area**3 / (2 * (BUFFER_CD * buffer_orifice(m, x, v)) ** 2)
+        f -= math.copysign(k * v * v, v)
+    return f
+
+
+def chain_track(gun: Gun, stroke: float) -> dict:
+    """A chain gun's track: width and corner radius (m), and its legs from the firing point, in the
+    middle of the front dwell. Each leg is (name, length); the bolt's travel along it is track_at's."""
+    a = gun.action
+    width = a.chain_width if a.chain_width is not None else 0.35 * gun.case.overall_length
+    radius = a.sprocket_radius if a.sprocket_radius is not None else width / 4
+    radius = min(radius, 0.4 * width, 0.4 * stroke)
+    dwell, side, arc = width - 2 * radius, stroke - 2 * radius, math.pi * radius / 2
+    legs = [("front", dwell / 2), ("out", arc), ("back", side), ("in_rear", arc), ("rear", dwell),
+            ("out_rear", arc), ("forward", side), ("in", arc), ("front", dwell / 2)]
+    starts, q = {}, 0.0
+    for name, length in legs:
+        starts.setdefault(name, q)
+        q += length
+    return {"width": width, "radius": radius, "stroke": stroke, "perimeter": q, "legs": legs,
+            "rear_start": starts["rear"], "rear_length": dwell}
+
+
+def track_at(track: dict, q: float) -> tuple[float, float, float, str]:
+    """The bolt on the chain at q m round the track from the firing point: (travel s, dS/dq, d2S/dq2, leg)."""
+    r, L = track["radius"], track["stroke"]
+    q %= track["perimeter"]
+    for name, length in track["legs"]:
+        if q <= length:
+            break
+        q -= length
+    th = q / r if r > 0 else 0.0
+    if name == "front":
+        return 0.0, 0.0, 0.0, name
+    if name == "out":
+        return r * (1 - math.cos(th)), math.sin(th), math.cos(th) / r, name
+    if name == "back":
+        return r + q, 1.0, 0.0, name
+    if name == "in_rear":
+        return L - r + r * math.sin(th), math.cos(th), -math.sin(th) / r, name
+    if name == "rear":
+        return L, 0.0, 0.0, name
+    if name == "out_rear":
+        return L - r * (1 - math.cos(th)), -math.sin(th), -math.cos(th) / r, name
+    if name == "forward":
+        return L - r - q, -1.0, 0.0, name
+    return r - r * math.sin(th), -math.cos(th), math.sin(th) / r, name
+
+
 def strokes(gun: Gun) -> dict:
     """Bolt travel (m) at which things happen.
 
@@ -274,19 +393,27 @@ def strokes(gun: Gun) -> dict:
     a, c = gun.action, gun.case
     eject = c.length + 3e-3          # the case is clear of the chamber and hits the ejector
     feed = c.overall_length + 3e-3   # the bolt face is behind the next round
-    stroke = a.bolt_travel if a.bolt_travel is not None else feed + 8e-3
-    defaults = {"gas": 6e-3, "direct_impingement": 7e-3, "short_recoil": 3e-3, **{k: v[1] for k, v in DELAYED.items()}}
+    if a.type == "sliding_wedge":
+        # The block drops far enough to clear the rim, with a little to spare.
+        stroke = a.bolt_travel if a.bolt_travel is not None else 1.05 * c.rim_diameter + 5e-3
+    else:
+        stroke = a.bolt_travel if a.bolt_travel is not None else feed + 8e-3
+    defaults = {"gas": 6e-3, "direct_impingement": 7e-3, "short_recoil": 3e-3, "chain": CHAIN_UNLOCK,
+                **{k: v[1] for k, v in DELAYED.items()}}
     unlock = a.unlock_travel if a.unlock_travel is not None else defaults.get(a.type, 0.0)
     out = {"eject": eject, "feed": feed, "stroke": stroke, "unlock": min(unlock, stroke)}
+    if a.type == "chain":
+        track = chain_track(gun, stroke)
+        out["chain"] = {k: track[k] for k in ("width", "radius", "perimeter", "rear_start", "rear_length")}
     if a.type in DELAYED:
         out["carrier_unlock"] = unlock
         out["unlock"] = min(unlock / delay(gun)[0], stroke)
-    if a.hammer and a.type != "bolt":
+    if a.hammer and a.type not in (*LOCKED, "chain"):
         # Carrier travel to cock the hammer (to the bolt's, for a delayed blowback).
         cock = a.hammer_trip_travel + a.hammer_cock_travel / (1 + HAMMER_OVERTRAVEL)
         out["hammer"] = cock / delay(gun)[0] if a.type in DELAYED and cock < unlock else (
             cock - (delay(gun)[0] - 1) * out["unlock"] if a.type in DELAYED else cock)
-    if gun.feed.type == "belt":
+    if feeding.belt(gun) and a.type != "chain":
         out["belt_cam"] = list(feeding.belt_cam(gun, stroke))
     return out
 
@@ -358,6 +485,18 @@ class ActionResult:
     jam: dict | None = None               # feed.check() of the round that jammed, with "shot"
     feed_angle: float = 0.0               # rad, nose towards the bore
     capacity: int = 0
+    # A mount's recoil system (stance "mount"): when the gun was back in battery after the first
+    # shot, how fast it arrived there, and if it struck the hard stop, how fast.
+    battery_time: float | None = None     # s from ignition
+    battery_speed: float | None = None    # m/s
+    stop_speed: float | None = None       # m/s
+    # Chain gun: the chain's position round its track (m from the firing point, counting on past a
+    # lap), and the motor's peak output.
+    drive: np.ndarray | None = None
+    motor_peak_power: float | None = None  # W
+    # Sliding wedge: when the breech was open (s from ignition) and how fast the case left it.
+    open_time: float | None = None
+    case_speed: float | None = None       # m/s
 
     @property
     def shots(self) -> int:
@@ -377,10 +516,22 @@ class ActionResult:
             f"  with the shooter     {self.max_recoil * 1e3:9.1f} mm back at up to {self.peak_recoil_velocity:.2f} m/s, "
             f"muzzle rise {math.degrees(self.max_pitch):.2f} deg, peak shoulder force {self.peak_shoulder_force:.0f} N"
             if self.stance == "shoulder" else
+            f"  on the mount         {self.max_recoil * 1e3:9.1f} mm of recoil at up to {self.peak_recoil_velocity:.2f} m/s, "
+            f"peak force {self.peak_shoulder_force / 1e3:.1f} kN, jump {self.max_pitch * 1e3:.2f} mrad, "
+            + (f"back in battery after {self.battery_time * 1e3:.0f} ms" if self.battery_time is not None
+               else "not back in battery")
+            if self.stance == "mount" else
             f"  free recoil          {self.max_recoil * 1e3:9.1f} mm in {self.time[-1] * 1e3:.0f} ms, "
             f"muzzle rise {math.degrees(self.max_pitch):.2f} deg",
         ]
-        if self.kind != "bolt":
+        if self.kind == "sliding_wedge":
+            line = f"  sliding wedge        {self.status}"
+            if self.open_time is not None:
+                line += f" {self.open_time * 1e3:.0f} ms after the shot"
+            if self.case_speed is not None:
+                line += f", the case thrown out at {self.case_speed:.1f} m/s"
+            lines.append(line)
+        elif self.kind != "bolt":
             line = f"  {self.kind.replace('_', ' ') + ' action':20s} {self.status}"
             if self.shots > 1:
                 line += f", {self.shots} shots"
@@ -390,6 +541,8 @@ class ActionResult:
                 line += f" ({self.cyclic_rate:.0f} rounds/min)"
             if self.rear_speed is not None:
                 line += f", bolt at {self.rear_speed:.1f} m/s into the rear stop"
+            if self.motor_peak_power is not None:
+                line += f", motor peaking at {self.motor_peak_power:.0f} W"
             lines.append(line)
             if self.port_cd is not None:
                 lines.append(f"  gas port Cd          {self.port_cd:9.2f}" + (" (2D)" if self.port_cd_2d else ""))
@@ -435,9 +588,10 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
 
     shots > 1 fires a burst (self-loading actions only): each shot is fired
     when the hammer the closing bolt trips reaches the firing pin (without a
-    hammer, LOCK_TIME after the bolt is back in battery), with the gun's motion
+    hammer, LOCK_TIME after the bolt is back in battery; a chain gun, as its
+    master link reaches the firing point again), with the gun's motion
     carried over, so recoil and muzzle climb build up. The burst stops early if
-    a cycle fails or the magazine runs dry.
+    a cycle fails or the magazine runs dry. A bolt or a sliding wedge fires one.
 
     rounds: in the magazine (or belt) besides the chambered one; None = full.
     """
@@ -447,7 +601,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         raise ValueError("this shot has no recorded loads on the gun")
     a, sh = gun.action, gun.shooter
     kind = a.type
-    shots = requested = 1 if kind == "bolt" else int(min(max(shots, 1), MAX_BURST))
+    shots = requested = 1 if kind in LOCKED else int(min(max(shots, 1), MAX_BURST))
     geo = strokes(gun)
     stroke, unlock, eject_at, feed_at = geo["stroke"], geo["unlock"], geo["eject"], geo["feed"]
     m_bolt = a.bolt_mass
@@ -457,10 +611,17 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         raise ValueError(f"short recoil: the slide and barrel ({(m_bolt + m_bar):.2f} kg) "
                          f"must be lighter than the gun ({gun_mass:.2f} kg)")
     shoulder = sh.stance == "shoulder"
+    mounted = sh.stance == "mount"
+    mt = gun.mount
     m_body = sh.body_mass if shoulder else 0.0
     k_sh, c_sh = (sh.shoulder_stiffness, sh.shoulder_damping) if shoulder else (0.0, 0.0)
-    k_th, c_th = (sh.hold_stiffness, sh.hold_damping) if shoulder else (0.0, 0.0)
-    arm = a.cg_distance if shoulder else 0.0
+    if shoulder:
+        k_th, c_th = sh.hold_stiffness, sh.hold_damping
+    elif mounted:
+        k_th, c_th = mt.elevation_stiffness, mt.elevation_damping
+    else:
+        k_th = c_th = 0.0
+    arm = a.cg_distance if shoulder or mounted else 0.0
     inertia = gun_mass * (a.radius_of_gyration**2 + arm**2)
     h = a.bore_height
     gamma, r_gas = gun.propellant.gamma, gun.propellant.gas_constant
@@ -485,6 +646,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
 
     table = _Loads(loads)
     fast_for = max(FAST_UNTIL, table.end + 1e-3)   # fine steps while a shot's gas acts
+    follow = MOUNT_DURATION if mounted else DURATION
 
     x = v = th = w = 0.0      # gun: recoil, velocity, pitch, pitch rate
     s = u = 0.0               # bolt: travel and velocity in the gun
@@ -509,11 +671,11 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     shot_times = [0.0]
     cyc = {}                  # this shot's cycle: ejected, can_feed, feeding, battery, s_max, cocked
     next_shot = None
-    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas", "hammer", "feed")}
+    out = {k: [] for k in ("t", "x", "v", "th", "s", "u", "force", "shoulder", "gas", "hammer", "feed", "q")}
     next_out = 0.0
     # Hammer: angle back from the firing pin and its rate; "down" (on the pin, or riding the
     # carrier short of the sear), "cocked" (on the sear, or held past it by the carrier) or "falling".
-    hammer = a.hammer and kind != "bolt"
+    hammer = a.hammer and kind not in (*LOCKED, "chain")
     ph = om = 0.0
     hammer_state = "down"
     sear = math.radians(a.hammer_angle)
@@ -524,7 +686,8 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
 
     # Feeding: rounds left, the top round's rise once the bolt is past it (m, m/s), the belt's draw.
     fd = gun.feed
-    belted = fd.type == "belt"
+    belted = feeding.belt(gun)
+    by_hand = feeding.hand(gun)
     cap = feeding.capacity(gun)
     mag = cap if rounds is None else int(min(max(rounds, 0), cap))
     counts = [mag]
@@ -536,19 +699,40 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     belt_adv = 0.0            # share of a link the belt has been drawn this cycle
     on_cam = False
     cam0, cam1 = geo.get("belt_cam", (0.0, 0.0))
-    cam_ratio = feeding.link_pitch(gun) / (cam1 - cam0) if belted else 0.0
+    cam_ratio = feeding.link_pitch(gun) / (cam1 - cam0) if belted and "belt_cam" in geo else 0.0
     frozen = False            # the bolt is stopped: held open, or a round has jammed
     held_open = False
     jam = None
     jam_at = None             # bolt travel at which the round being fed wedges
     alpha = 0.0               # the gun's pitch acceleration (rad/s^2)
 
+    # Chain gun: the chain's position q (m round the track from the firing point) and speed.
+    chain = kind == "chain"
+    if chain:
+        track = chain_track(gun, stroke)
+        perimeter = track["perimeter"]
+        v_free = perimeter * a.chain_rate / 60
+        f_stall = 4 * a.motor_power / v_free
+        feed_ratio = feeding.link_pitch(gun) / max(track["rear_length"], 1e-6)   # belt per chain, in the rear dwell
+        q, qd, laps, running, stalled = 0.0, v_free, 1, True, False
+        motor_peak, chain_cycle, leg = 0.0, None, "front"
+    # Sliding wedge: the block's drop and speed, and where it is in opening.
+    wedge = kind == "sliding_wedge"
+    bs = bu = 0.0
+    block = "shut"            # shut, cam (the cam drives it), free (on its way down), open, reshut
+    recoiled = False
+    cam_gear = stroke / a.cam_travel if wedge else 0.0
+    open_time = case_speed = None
+    # Mount: when the gun is back in battery, and whether it hit the stop.
+    battery_time = battery_speed = stop_speed = None
+    settled_at = None
+
     def event(t, name, detail="", speed=None, **extra):
         events.append({"time": t, "name": name, "detail": detail, "shot": len(shot_times), "speed": speed, **extra})
 
     def new_cycle():
         cyc.update(ejected=False, can_feed=False, feeding=False, battery=None, s_max=0.0, cocked=False,
-                   empty=False, misfeed=None)
+                   empty=False, misfeed=None, back=False, peaked=False, home=False)
 
     def stop_bolt():
         # The bolt stops dead against whatever holds it (this step's share and m_r); the gun takes its momentum.
@@ -562,111 +746,301 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         m_g = m_bolt + (m_bar if carry else 0.0)
         return m_g, gun_mass - m_g + m_body
 
+    def feed_round(t_end):
+        """The bolt, coming forward past the next round, strips it, misses it, or finds none."""
+        nonlocal mag, lift, lift_v, belt_adv, released, on_cam, jam, jam_at, u, frozen, held_open
+        if mag == 0:
+            cyc["empty"] = True
+            if not belted and fd.hold_open:
+                # The follower has lifted the bolt catch into the bolt's way.
+                speed = -u
+                stop_bolt()
+                frozen = held_open = True
+                event(t_end, "bolt held open", "on the empty magazine", speed)
+            else:
+                event(t_end, "belt runs out" if belted else "magazine empty", "nothing to feed")
+        elif belted and belt_adv < 0.999:
+            where = ("the feeder drew it only {:.0f} % of a link in the rear dwell" if chain else
+                     "the feed cam drew the belt only {:.0f} % of a link; the carrier has to come back "
+                     f"{cam1 * 1e3:.0f} mm to draw it all").format(belt_adv * 100)
+            cyc["misfeed"] = where
+            event(t_end, "misses the next round", cyc["misfeed"])
+        elif not belted and lift < feeding.CATCH * present:
+            cyc["misfeed"] = (f"the bolt rode over the next round: the magazine spring had lifted it "
+                              f"{lift * 1e3:.1f} of the {present * 1e3:.1f} mm it needed. A stronger spring "
+                              f"(or a slower cycle) would let it rise in time")
+            event(t_end, "bolt rides over the next round", cyc["misfeed"])
+        else:
+            verdict = feeding.check(fgeo, lift / present if present else 1.0, feed_at)
+            mag -= 1
+            cyc["feeding"] = True
+            lift = lift_v = belt_adv = 0.0
+            released = on_cam = False
+            event(t_end, "strips the next round", f"{mag} left", rounds=mag, angle=verdict["angle"])
+            if verdict["jam"]:
+                jam = {**verdict, "shot": len(shot_times)}
+                jam_at = max(s - verdict["travel"], 1e-3)
+            elif verdict["incidence"] is not None:
+                # The ramp turns the round's nose up, at the bolt's expense.
+                u *= m_g / (m_g + m_round * math.tan(min(verdict["incidence"], 1.2)) ** 2)
+
     new_cycle()
     event(0.0, "fires")
     t = 0.0
-    end = DURATION
+    end = follow
     while t < end:
-        fast = t - shot_times[-1] < fast_for
-        dt = FAST_DT if fast else SLOW_DT
+        since = t - shot_times[-1]
+        fast = since < fast_for
+        dt = FAST_DT if fast else SLOW_DT if since < DURATION or not mounted else MOUNT_DT
         fb, fr, pp, tp = table.at(shot_times, t + 0.5 * dt)
         m_g, m_r = masses()
-        # Bore forces on the bolt group and on the gun body.
-        if kind == "bolt":
-            g_ext, r_ext = 0.0, fb + fr
-        elif kind == "short_recoil":
-            g_ext, r_ext = (fb + fr, 0.0) if carry else (fb, fr)
-        elif unlocked:
-            g_ext, r_ext = fb, fr
-        else:
-            g_ext, r_ext = 0.0, fb + fr
-
+        f_sh = mount_force(mt, x, v) if mounted else -(k_sh * x + c_sh * v)
         f_piston = 0.0
-        if kind in GAS_SYSTEMS:
-            # A direct impingement chamber only grows while the bolt is locked; then it rides along.
-            grows = min(s, unlock) if impinge else s
-            if sealed:
-                vol = a.gas_volume + swept * piston_area * grows
-                p_c = (gamma - 1) * e_c / vol
-                t_c = p_c * vol / (m_c * r_gas)
-            else:
-                p_c, t_c = AMBIENT, AIR_TEMPERATURE
-            if impinge:
-                # Port -> tube -> expansion chamber (or out of the carrier's vents).
-                p_t = (gamma - 1) * e_t / v_tube
-                t_t = p_t * v_tube / (m_t * r_gas)
-                f_in, h_in = _exchange(port_area, port_cd, pp, tp, p_t, t_t, gamma, r_gas)
-                flow, enthalpy = _exchange(tube_area, tube_k, p_t, t_t, p_c, t_c, gamma, r_gas)
-                cooling = tube_heat(max(abs(f_in), abs(flow)), tube_d) * tube_wall * (t_t - TUBE_WALL)
-                m_t = max(m_t + (f_in - flow) * dt, 1e-12)
-                e_t = max(e_t + (f_in * h_in - flow * enthalpy - cooling) * dt, 1e-9)
-            else:
-                flow, enthalpy = _exchange(port_area, port_cd, pp, tp, p_c, t_c, gamma, r_gas)
-            if sealed:
-                du = 0.0 if impinge and s >= unlock else u
-                m_c = max(m_c + flow * dt, 1e-12)
-                e_c = max(e_c + (flow * enthalpy - p_c * swept * piston_area * du) * dt, 1e-9)
-                # Once a direct impingement bolt unlocks, the chamber is inside the moving bolt group.
-                if not (impinge and unlocked):
-                    f_piston = swept * (p_c - AMBIENT) * piston_area
-                gas_peak = max(gas_peak, p_c)
-
-        # Forces between the bolt group and the gun (+ pushes the bolt back). The spring
-        # bears on the carrier, which a delayed blowback's head drives `ratio` times as far.
-        carrier = ratio * s if delayed else s + carrier_gap
-        gear = ratio if delayed else 1.0      # carrier speed over bolt speed
-        slide = math.copysign(1.0, u) if u else 0.0
-        f_spring = a.spring_preload + a.spring_rate * carrier + a.friction * slide
-        if hammer:
-            cam, slope = hammer_cam(a, carrier)
-            if ph <= cam + 1e-9:
-                # The carrier holds the hammer down: its spring through the cam and its inertia
-                # (from the last step's acceleration), unless the carrier is pulling away from it.
-                torque = hammer_torque(a, ph)
-                f_spring += max(0.0, slope * (torque + a.hammer_inertia * slope * gear * rel))
-                f_spring += a.hammer_friction * torque * rub_arm * slide
-        if kind != "bolt" and not frozen:
-            if belted:
-                # The feed cam: the carrier draws the belt across, lifting the hanging belt.
-                if u > 0 and cam0 <= carrier < cam1 and belt_adv < 1 and mag > 0:
+        if chain:
+            # Gun (x) and chain (q) from T = m_r x'^2/2 + m_bolt (x' + S' q')^2/2 + m_drive q'^2/2. The motor
+            # drives the chain against the bolt's friction, the ramming and, in the rear dwell, the belt.
+            s_q, ds, dds, leg = track_at(track, q)
+            if running:
+                f_motor = f_stall * (1 - qd / v_free)
+                motor_peak = max(motor_peak, f_motor * qd)
+                m_drive, f_q = a.drive_mass, f_motor
+                if qd:
+                    f_q -= a.friction * abs(ds) * math.copysign(1.0, qd)
+                if leg == "rear" and on_cam:
                     tension, m_belt = feeding.belt_load(gun, mag)
-                    r = cam_ratio * gear
-                    f_spring += cam_ratio * tension + m_belt * cam_ratio * r * rel
-            elif mag > 0 and s < feed_at:
-                # The top round pressed against the bolt's underside by the magazine spring.
-                f_spring += fd.friction * feeding.spring(gun, mag) * slide
-        f_int = f_piston - f_spring
-        if cyc["feeding"] and u < 0 and s < feed_at:
-            f_int += a.feed_force
-        f_sh = -(k_sh * x + c_sh * v)
-        if delayed:
-            # Gun (x) and head (s) from T = m_r x'^2/2 + m_head (x' + s')^2/2 + m_carrier (x' + K s')^2/2:
-            # the bore pushes the head, the spring the carrier through the rollers.
-            m11, m12, m22 = m_g + m_r, m_head + ratio * m_carrier, m_head + ratio**2 * m_carrier
-            q1, q2 = g_ext + r_ext + f_sh, g_ext - ratio * f_spring
-            det = m11 * m22 - m12 * m12
-            acc_r, rel = (q1 * m22 - q2 * m12) / det, (m11 * q2 - m12 * q1) / det
+                    f_q -= tension * feed_ratio
+                    m_drive += m_belt * feed_ratio**2
+                if cyc["feeding"] and ds < 0 and s_q < feed_at:
+                    f_q -= a.feed_force * abs(ds)
+                if unlocked:
+                    f_q += fb * ds        # pressure left in the chamber pushes the opening bolt
+                m11, m12, m22 = m_r + m_bolt, m_bolt * ds, m_bolt * ds * ds + m_drive
+                b1 = fb + fr + f_sh - m_bolt * dds * qd * qd
+                b2 = f_q - m_bolt * ds * dds * qd * qd
+                det = m11 * m22 - m12 * m12
+                acc_r, acc_q = (b1 * m22 - m12 * b2) / det, (m11 * b2 - m12 * b1) / det
+                axial = m_r * acc_r - f_sh
+            else:
+                acc_r, acc_q = (fb + fr + f_sh) / (m_r + m_bolt), 0.0
+                axial = fb + fr
+            held = not running
         else:
-            acc_g = (g_ext + f_int) / m_g
-            acc_r = (r_ext - f_int + f_sh) / m_r
-            rel = acc_g - acc_r
-        held = kind == "bolt" or frozen or (s <= 0 and u <= 0 and rel <= 0)
-        if held:  # the bolt is shut (or stuck open) and stays there: one body
-            acc_r = (g_ext + r_ext + f_sh) / (m_g + m_r)
-            axial = g_ext + r_ext
-            if not frozen:
-                s = 0.0
-            u = rel = 0.0
-        else:
-            axial = m_r * acc_r - f_sh   # what acts on the gun body (the shooter's share aside)
+            # Bore forces on the bolt group and on the gun body.
+            if kind in LOCKED:
+                g_ext, r_ext = 0.0, fb + fr
+            elif kind == "short_recoil":
+                g_ext, r_ext = (fb + fr, 0.0) if carry else (fb, fr)
+            elif unlocked:
+                g_ext, r_ext = fb, fr
+            else:
+                g_ext, r_ext = 0.0, fb + fr
+
+            if kind in GAS_SYSTEMS:
+                # A direct impingement chamber only grows while the bolt is locked; then it rides along.
+                grows = min(s, unlock) if impinge else s
+                if sealed:
+                    vol = a.gas_volume + swept * piston_area * grows
+                    p_c = (gamma - 1) * e_c / vol
+                    t_c = p_c * vol / (m_c * r_gas)
+                else:
+                    p_c, t_c = AMBIENT, AIR_TEMPERATURE
+                if impinge:
+                    # Port -> tube -> expansion chamber (or out of the carrier's vents).
+                    p_t = (gamma - 1) * e_t / v_tube
+                    t_t = p_t * v_tube / (m_t * r_gas)
+                    f_in, h_in = _exchange(port_area, port_cd, pp, tp, p_t, t_t, gamma, r_gas)
+                    flow, enthalpy = _exchange(tube_area, tube_k, p_t, t_t, p_c, t_c, gamma, r_gas)
+                    cooling = tube_heat(max(abs(f_in), abs(flow)), tube_d) * tube_wall * (t_t - TUBE_WALL)
+                    m_t = max(m_t + (f_in - flow) * dt, 1e-12)
+                    e_t = max(e_t + (f_in * h_in - flow * enthalpy - cooling) * dt, 1e-9)
+                else:
+                    flow, enthalpy = _exchange(port_area, port_cd, pp, tp, p_c, t_c, gamma, r_gas)
+                if sealed:
+                    du = 0.0 if impinge and s >= unlock else u
+                    m_c = max(m_c + flow * dt, 1e-12)
+                    e_c = max(e_c + (flow * enthalpy - p_c * swept * piston_area * du) * dt, 1e-9)
+                    # Once a direct impingement bolt unlocks, the chamber is inside the moving bolt group.
+                    if not (impinge and unlocked):
+                        f_piston = swept * (p_c - AMBIENT) * piston_area
+                    gas_peak = max(gas_peak, p_c)
+
+            # Forces between the bolt group and the gun (+ pushes the bolt back). The spring
+            # bears on the carrier, which a delayed blowback's head drives `ratio` times as far.
+            carrier = ratio * s if delayed else s + carrier_gap
+            gear = ratio if delayed else 1.0      # carrier speed over bolt speed
+            slide = math.copysign(1.0, u) if u else 0.0
+            f_spring = a.spring_preload + a.spring_rate * carrier + a.friction * slide
+            if hammer:
+                cam, slope = hammer_cam(a, carrier)
+                if ph <= cam + 1e-9:
+                    # The carrier holds the hammer down: its spring through the cam and its inertia
+                    # (from the last step's acceleration), unless the carrier is pulling away from it.
+                    torque = hammer_torque(a, ph)
+                    f_spring += max(0.0, slope * (torque + a.hammer_inertia * slope * gear * rel))
+                    f_spring += a.hammer_friction * torque * rub_arm * slide
+            if kind not in LOCKED and not frozen:
+                if belted:
+                    # The feed cam: the carrier draws the belt across, lifting the hanging belt.
+                    if u > 0 and cam0 <= carrier < cam1 and belt_adv < 1 and mag > 0:
+                        tension, m_belt = feeding.belt_load(gun, mag)
+                        r = cam_ratio * gear
+                        f_spring += cam_ratio * tension + m_belt * cam_ratio * r * rel
+                elif mag > 0 and s < feed_at and not by_hand:
+                    # The top round pressed against the bolt's underside by the magazine spring.
+                    f_spring += fd.friction * feeding.spring(gun, mag) * slide
+            f_int = f_piston - f_spring
+            if cyc["feeding"] and u < 0 and s < feed_at:
+                f_int += a.feed_force
+            if delayed:
+                # Gun (x) and head (s) from T = m_r x'^2/2 + m_head (x' + s')^2/2 + m_carrier (x' + K s')^2/2:
+                # the bore pushes the head, the spring the carrier through the rollers.
+                m11, m12, m22 = m_g + m_r, m_head + ratio * m_carrier, m_head + ratio**2 * m_carrier
+                q1, q2 = g_ext + r_ext + f_sh, g_ext - ratio * f_spring
+                det = m11 * m22 - m12 * m12
+                acc_r, rel = (q1 * m22 - q2 * m12) / det, (m11 * q2 - m12 * q1) / det
+            else:
+                acc_g = (g_ext + f_int) / m_g
+                acc_r = (r_ext - f_int + f_sh) / m_r
+                rel = acc_g - acc_r
+            held = kind in LOCKED or frozen or (s <= 0 and u <= 0 and rel <= 0)
+            if held:  # the bolt is shut (or stuck open) and stays there: one body
+                m_all, f_all = m_g + m_r, g_ext + r_ext + f_sh
+                if wedge and block == "cam":
+                    # The opening cam drives the block down through the crank: the gun carries its
+                    # inertia and its closing spring and friction, less its weight.
+                    f_all += cam_gear * (a.spring_preload + a.spring_rate * bs + a.friction - m_bolt * G)
+                    m_all += m_bolt * cam_gear**2
+                acc_r = f_all / m_all
+                axial = g_ext + r_ext
+                if not frozen:
+                    s = 0.0
+                u = rel = 0.0
+            else:
+                axial = m_r * acc_r - f_sh   # what acts on the gun body (the shooter's share aside)
         v += acc_r * dt
+        if mounted and mt.friction:
+            # The cradle's slides and seals: Coulomb friction, which holds the gun once it has stopped.
+            m_eff = m_g + m_r if held else m_r
+            v -= math.copysign(min(abs(v), mt.friction * dt / m_eff), v)
         x += v * dt
         alpha = (h * axial - k_th * th - c_th * w) / inertia
         w += alpha * dt
         th += w * dt
         t_end = t + dt
 
-        if not held:
+        if wedge:
+            if x > a.cam_travel:
+                recoiled = True
+            if block == "shut" and recoiled and v < 0 and x < a.cam_travel:
+                # The cam picks up the crank: the gun shares its momentum with the block.
+                m_all = m_g + m_r
+                speed = -v
+                v *= m_all / (m_all + m_bolt * cam_gear**2)
+                block = "cam"
+                event(t_end, "the opening cam turns the crank", f"the gun running out at {speed:.2f} m/s", speed)
+            if block == "cam":
+                if x >= a.cam_travel:
+                    block, bs, bu = "shut", 0.0, 0.0   # pushed back off the cam: the spring shuts the block
+                else:
+                    bs = min(max(stroke * (a.cam_travel - x) / a.cam_travel, 0.0), stroke)
+                    bu = -cam_gear * v
+                    if x <= 0:
+                        block = "free"
+            elif block == "free":
+                load = a.spring_preload + a.spring_rate * bs + math.copysign(a.friction, bu)
+                bu += (G - load / m_bolt) * dt
+                bs += bu * dt
+                if bs >= stroke and bu > 0:
+                    case_speed = a.extractor_ratio * bu
+                    open_time = t_end
+                    event(t_end, "block strikes the extractors", f"{bu:.2f} m/s", bu)
+                    event(t_end, "case ejected", f"the extractors throw it out at {case_speed:.1f} m/s", case_speed)
+                    event(t_end, "breech held open", "on the extractors, for the loader")
+                    block, bs, bu = "open", stroke, 0.0
+                elif bs <= 0 and bu <= 0:
+                    block, bs, bu = "reshut", 0.0, 0.0
+                    event(t_end, "the block springs shut again", "it never reached the extractors")
+
+        if mounted:
+            if x >= mt.stroke and v > 0:
+                stop_speed = stop_speed or v
+                event(t_end, "gun hits the recoil stop", f"{v:.2f} m/s", v)
+                x, v = mt.stroke, -mt.stop_restitution * v
+            if x > 1e-3:
+                cyc["back"] = True
+            if cyc["back"] and not cyc["peaked"] and v <= 0:
+                cyc["peaked"] = True
+                event(t_end, "gun at full recoil", f"{x * 1e3:.0f} mm back")
+            if x < 0:
+                x = 0.0
+                if v < 0:
+                    if cyc["back"] and not cyc["home"]:
+                        cyc["home"] = True
+                        if battery_time is None:
+                            battery_time, battery_speed = t_end, -v
+                        event(t_end, "gun runs out into battery", f"{-v:.2f} m/s", -v)
+                    v = 0.0
+
+        if chain:
+            if running:
+                qd += acc_q * dt
+                q += qd * dt
+                if qd < STALL_SHARE * v_free:
+                    running, stalled, qd = False, True, 0.0
+                    event(t_end, "the drive stalls", f"{s_q * 1e3:.0f} mm back")
+            last_leg = leg
+            s_new, ds, _, leg = track_at(track, q)
+            u = ds * qd if running else 0.0
+            s = s_new
+            s_max = max(s_max, s)
+            cyc["s_max"] = max(cyc["s_max"], s)
+            if not unlocked and s >= unlock and u > 0:
+                unlocked = True
+                p_unlock = fb / loads.head_area + AMBIENT
+                unlock_pressure = unlock_pressure or p_unlock
+                event(t_end, "bolt unlocks", f"{p_unlock / 1e6:.1f} MPa in the chamber")
+            elif unlocked and s < unlock and u < 0:
+                unlocked = False
+            if not cyc["ejected"] and s >= eject_at:
+                cyc["ejected"] = True
+                event(t_end, "case ejected", f"bolt at {u:.1f} m/s", u)
+            if not cyc["can_feed"] and s >= feed_at:
+                cyc["can_feed"] = True
+            if belted and leg == "rear" and mag > 0 and belt_adv < 1:
+                if not on_cam:
+                    # The feeder picks the belt up: it shares the drive's momentum (the bolt is still).
+                    on_cam = True
+                    m_belt = feeding.belt_load(gun, mag)[1]
+                    qd *= a.drive_mass / (a.drive_mass + m_belt * feed_ratio**2)
+                into = q % perimeter - track["rear_start"]
+                belt_adv = min(1.0, max(belt_adv, into / max(track["rear_length"], 1e-9)))
+            elif on_cam and last_leg == "rear":
+                belt_adv = 1.0        # the feeder has finished its index as the chain leaves the rear dwell
+            if (cyc["can_feed"] and not (cyc["feeding"] or cyc["empty"] or cyc["misfeed"])
+                    and u < 0 and s < feed_at):
+                feed_round(t_end)
+            if jam_at is not None and not frozen and s <= jam_at:
+                frozen, running, qd = True, False, 0.0
+                jam["travel_at"] = s
+                event(t_end, "jams", jam["detail"], 0.0, kind=jam["jam"], angle=jam["angle"])
+            if last_leg == "in" and leg == "front" and cyc["battery"] is None:
+                if cyc["feeding"]:
+                    cyc["battery"] = t_end
+                    first_battery = first_battery or t_end
+                    event(t_end, "back in battery", "the bolt turns into its locks")
+                elif cyc["ejected"]:
+                    cyc["battery"] = -1.0
+                    event(t_end, "closes on an empty chamber")
+            if running and q >= laps * perimeter:
+                # The master link is at the firing point again: fire the next round, or stop the drive.
+                laps += 1
+                chain_cycle = chain_cycle or t_end
+                if len(shot_times) < shots and cyc["feeding"] and (cyc["battery"] or -1) >= 0 and jam is None:
+                    next_shot = t_end
+                else:
+                    running, qd = False, 0.0
+                    event(t_end, "the drive stops", "at the firing point")
+        elif not held:
             u += rel * dt
             s += u * dt
             if delayed and s >= unlock and u > 0:
@@ -745,7 +1119,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                 event(t_end, "case ejected", f"bolt at {u:.1f} m/s", u)
             if not cyc["can_feed"] and s >= feed_at:
                 cyc["can_feed"] = True
-            carrier =ratio * s if delayed else s + carrier_gap
+            carrier = ratio * s if delayed else s + carrier_gap
             gear = ratio if delayed else 1.0
             if belted:
                 if mag > 0 and u > 0 and carrier > cam0 and belt_adv < 1:
@@ -769,38 +1143,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
 
             if (cyc["can_feed"] and not (cyc["feeding"] or cyc["empty"] or cyc["misfeed"])
                     and u < 0 and s < feed_at):
-                if mag == 0:
-                    cyc["empty"] = True
-                    if not belted and fd.hold_open:
-                        # The follower has lifted the bolt catch into the bolt's way.
-                        speed = -u
-                        stop_bolt()
-                        frozen = held_open = True
-                        event(t_end, "bolt held open", "on the empty magazine", speed)
-                    else:
-                        event(t_end, "belt runs out" if belted else "magazine empty", "nothing to feed")
-                elif belted and belt_adv < 0.999:
-                    cyc["misfeed"] = (f"the feed cam drew the belt only {belt_adv * 100:.0f} % of a link; the carrier "
-                                      f"has to come back {cam1 * 1e3:.0f} mm to draw it all")
-                    event(t_end, "misses the next round", cyc["misfeed"])
-                elif not belted and lift < feeding.CATCH * present:
-                    cyc["misfeed"] = (f"the bolt rode over the next round: the magazine spring had lifted it "
-                                      f"{lift * 1e3:.1f} of the {present * 1e3:.1f} mm it needed. A stronger spring "
-                                      f"(or a slower cycle) would let it rise in time")
-                    event(t_end, "bolt rides over the next round", cyc["misfeed"])
-                else:
-                    verdict = feeding.check(fgeo, lift / present if present else 1.0, feed_at)
-                    mag -= 1
-                    cyc["feeding"] = True
-                    lift = lift_v = belt_adv = 0.0
-                    released = on_cam = False
-                    event(t_end, "strips the next round", f"{mag} left", rounds=mag, angle=verdict["angle"])
-                    if verdict["jam"]:
-                        jam = {**verdict, "shot": len(shot_times)}
-                        jam_at = max(s - verdict["travel"], 1e-3)
-                    elif verdict["incidence"] is not None:
-                        # The ramp turns the round's nose up, at the bolt's expense.
-                        u *= m_g / (m_g + m_round * math.tan(min(verdict["incidence"], 1.2)) ** 2)
+                feed_round(t_end)
             if jam_at is not None and not frozen and s <= jam_at:
                 speed = -u
                 stop_bolt()
@@ -854,18 +1197,19 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
             on_carrier = ph <= cam + 1e-9 and cam > 0
 
         if t >= next_out:
-            next_out += OUT_FAST if fast else OUT_SLOW
+            next_out += OUT_FAST if fast else OUT_SLOW if since < DURATION else OUT_LONG
             out["t"].append(t_end)
             out["x"].append(x)
             out["v"].append(v)
             out["th"].append(th)
-            out["s"].append(s)
-            out["u"].append(u)
+            out["s"].append(bs if wedge else s)
+            out["u"].append(bu if wedge else u)
             out["force"].append(fb + fr)
             out["shoulder"].append(-f_sh)
             out["gas"].append(p_c)
             out["hammer"].append(ph)
             out["feed"].append(belt_adv if belted else (lift / present if present else 0.0))
+            out["q"].append(q if chain else 0.0)
         t = t_end
 
         # Back in battery: fire the next shot of the burst.
@@ -875,17 +1219,34 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
             counts.append(mag)
             new_cycle()
             event(t, "fires")
-            end = t + DURATION
+            end = t + follow
+            settled_at = None
+        elif mounted and since > fast_for and next_shot is None:
+            # A mounted gun is followed until it rests in battery with its action done.
+            done = (not running if chain else block != "cam" and block != "free" if wedge
+                    else kind in LOCKED or since > DURATION)
+            if x == 0 and v == 0 and cyc["home"] and done:
+                settled_at = settled_at if settled_at is not None else t
+                if t - settled_at > SETTLE_TIME:
+                    break
+            else:
+                settled_at = None
 
-    status = "manual" if kind == "bolt" else "cycled"
-    if kind == "bolt":
-        by_hand = feeding.check(fgeo, 1.0, feed_at)
-        if by_hand["jam"]:
-            warnings.append(f"feeding: {by_hand['detail']}")
+    if kind in LOCKED:
+        status = "manual"
+        if not by_hand:
+            check = feeding.check(fgeo, 1.0, feed_at)
+            if check["jam"]:
+                warnings.append(f"feeding: {check['detail']}")
     else:
+        status = "cycled"
         n = len(shot_times)
         which = f" on shot {n}" if requested > 1 else ""
-        if not cyc["ejected"]:
+        if chain and stalled:
+            status = "the drive stalled"
+            warnings.append(f"the chain drive stalled{which}: its motor ({a.motor_power:.0f} W) could not keep the "
+                            f"bolt and the belt moving; a stronger motor or a lighter bolt would keep it running")
+        elif not cyc["ejected"]:
             status = "failed to eject"
             warnings.append(f"short stroke{which}: the bolt only came back {cyc['s_max'] * 1e3:.0f} mm, "
                             f"and it needs {eject_at * 1e3:.0f} mm to eject the case")
@@ -918,6 +1279,23 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                             f"(a primer needs {LIGHT_STRIKE:.2f} J); {why}")
         if status not in ("cycled", "empty", "empty, bolt held open") and n < requested:
             warnings.append(f"the burst stopped after {n} of {requested} shots")
+    if wedge:
+        if block == "open":
+            status = "breech opened"
+        elif block in ("cam", "free"):
+            status = "breech part open"
+            warnings.append(f"the gun ran out too weakly to drive the breech block open: it stopped "
+                            f"{x * 1e3:.0f} mm short of battery with the block {bs * 1e3:.0f} of {stroke * 1e3:.0f} mm "
+                            f"down. A stronger recuperator, or a lighter block or closing spring, would open it; "
+                            f"the loader opens it by hand")
+        elif block == "reshut":
+            status = "breech did not open"
+            warnings.append("the block left the cam too slowly to reach the extractors and sprang shut again; "
+                            "the loader opens it by hand")
+        else:
+            status = "breech did not open"
+            warnings.append(f"the gun never ran out onto the opening cam (it is still {x * 1e3:.0f} mm back); "
+                            "the loader opens the breech by hand")
     if rear_speed is not None and rear_speed > REAR_SPEED_WARNING:
         cure = {"gas": "over-gassed; a smaller gas port, a heavier carrier or a stiffer spring would ease it",
                 "direct_impingement": "over-gassed; a smaller gas port, a heavier carrier or buffer, or a stiffer spring would ease it",
@@ -928,16 +1306,27 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         warnings.append(f"the bolt hits the rear stop at {rear_speed:.1f} m/s, battering the gun: {cure}")
     flutes = " (delayed blowbacks use a fluted chamber so the case can slide)" if kind in DELAYED else ""
     if unlock_pressure is not None and unlock_pressure > UNLOCK_PRESSURE_WARNING:
-        warnings.append(f"it unlocks with {unlock_pressure / 1e6:.0f} MPa still in the chamber, "
-                        "so the case is pulled while pressed into the chamber walls" + flutes)
+        if chain:
+            warnings.append(f"the bolt unlocks with {unlock_pressure / 1e6:.0f} MPa still in the chamber: the dwell in "
+                            "battery is too short for the bore to blow down (a wider track or a slower chain)")
+        else:
+            warnings.append(f"it unlocks with {unlock_pressure / 1e6:.0f} MPa still in the chamber, "
+                            "so the case is pulled while pressed into the chamber walls" + flutes)
     if setback > CASE_SETBACK_WARNING:
         warnings.append(f"the case backs {setback * 1e3:.1f} mm out of the chamber while the chamber is still "
                         f"above {CASE_PRESSURE / 1e6:.0f} MPa: its unsupported head may rupture" + flutes)
+    if mounted:
+        if stop_speed is not None:
+            warnings.append(f"the gun hits its recoil stop at {stop_speed:.2f} m/s: the buffer is too weak for this "
+                            f"shot (a smaller orifice, a stiffer spring or a longer stroke than {mt.stroke * 1e3:.0f} mm)")
+        if battery_time is None:
+            warnings.append(f"the gun did not run out into battery (it is still {x * 1e3:.0f} mm back): the "
+                            "recuperator or spring is too weak for the friction and the counter-recoil buffer")
 
     impulse = loads.impulse
     fall = hammer_fall(gun) if hammer else None
     arr = {k: np.array(val) for k, val in out.items()}
-    shoulder_force = arr["shoulder"] if shoulder else np.zeros_like(arr["t"])
+    shoulder_force = arr["shoulder"] if shoulder or mounted else np.zeros_like(arr["t"])
     return ActionResult(
         kind=kind, stance=sh.stance, time=arr["t"],
         recoil=arr["x"], recoil_velocity=arr["v"], pitch=arr["th"],
@@ -951,7 +1340,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         peak_recoil_velocity=float(arr["v"].max()),
         peak_shoulder_force=float(shoulder_force.max()),
         max_pitch=float(arr["th"].max()),
-        bolt_max_travel=s_max,
+        bolt_max_travel=float(arr["s"].max()) if wedge else s_max,
         strokes=geo,
         status=status,
         gun_mass=gun_mass,
@@ -959,19 +1348,26 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         warnings=warnings,
         shot_times=shot_times,
         rear_speed=rear_speed,
-        cycle_time=first_battery,
+        cycle_time=chain_cycle if chain else None if wedge else first_battery,
         unlock_pressure=unlock_pressure,
         gas_peak_pressure=gas_peak if kind in GAS_SYSTEMS else None,
         port_cd=port_cd,
         port_cd_2d=port_2d,
-        lock_time=fall[0] + PRIMER_DELAY if hammer else LOCK_TIME,
+        lock_time=0.0 if chain else fall[0] + PRIMER_DELAY if hammer else LOCK_TIME,
         hammer_energy=fall[1] if hammer else None,
         feed=arr["feed"],
         rounds=counts,
         rounds_left=mag,
-        chambered=kind != "bolt" and cyc["feeding"] and jam is None and (cyc["battery"] or -1) >= 0,
+        chambered=kind not in LOCKED and cyc["feeding"] and jam is None and (cyc["battery"] or -1) >= 0,
         held_open=held_open,
         jam=jam,
         feed_angle=fgeo["angle"],
         capacity=cap,
+        battery_time=battery_time,
+        battery_speed=battery_speed,
+        stop_speed=stop_speed,
+        drive=arr["q"] if chain else None,
+        motor_peak_power=motor_peak if chain else None,
+        open_time=open_time,
+        case_speed=case_speed,
     )

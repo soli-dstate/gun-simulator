@@ -580,11 +580,11 @@ function drawAll() {
   results.forEach((r, i) => {
     if (!r.action) return;
     const a = r.action;
-    const y = a.stance === "shoulder" ? a.shoulder_force : a.recoil_velocity.map((v) => v * 100);
+    const y = a.stance === "free" ? a.recoil_velocity.map((v) => v * 100) : a.shoulder_force;
     shoulder.push({ label: r.model, color: colors[i % colors.length], x: a.time.map((v) => v * 1e3), y });
   });
-  const free = shown && shown.action.stance !== "shoulder";
-  $("c-shoulder-title").textContent = free ? "Free recoil velocity" : "Force on the shooter's shoulder";
+  const stance = shown?.action.stance ?? "shoulder", free = stance === "free";
+  $("c-shoulder-title").textContent = free ? "Free recoil velocity" : stance === "mount" ? "Force on the mount" : "Force on the shooter's shoulder";
   drawChart($("c-motion"), { series: motion, xlabel: "time (ms)", ylabel: "mm · mrad" });
   drawDevice();
   drawChart($("c-shoulder"), { series: shoulder, xlabel: "time (ms)", ylabel: free ? "velocity (cm/s)" : "force (N)" });
@@ -649,10 +649,12 @@ function showCards(data, gun) {
     const status = r.left_muzzle ? "" : '<div class="bad">Projectile did not leave the muzzle</div>';
     card.innerHTML = `<h2>${r.model} model</h2>${status}<div class="stats">
       <span>Muzzle velocity</span><span>${r.muzzle_velocity.toFixed(1)} m/s</span>
-      <span>Muzzle energy</span><span>${(0.5 * gun.projectile.mass * r.muzzle_velocity ** 2).toFixed(0)} J</span>
+      <span>Muzzle energy</span><span>${(0.5 * gun.projectile.mass * r.muzzle_velocity ** 2).toFixed(0)} J</span>${
+        gun.projectile.type === "apfsds" ? `
+      <span>The rod's, once the sabot has gone</span><span>${(0.5 * gun.projectile.penetrator_mass * r.muzzle_velocity ** 2).toFixed(0)} J</span>` : ""}
       <span>Time in barrel</span><span>${(r.muzzle_time * 1e3).toFixed(3)} ms</span>
       <span>Peak breech pressure</span><span>${(r.peak_breech_pressure / 1e6).toFixed(1)} MPa</span>
-      <span>Charge burnt at exit</span><span>${(r.burnt_at_muzzle * 100).toFixed(1)} %</span>${bedRows(r.grain_bed)}${spinRows(r.spin)}${actionRows(r.action)}${deviceRows(r.device)}</div>
+      <span>Charge burnt at exit</span><span>${(r.burnt_at_muzzle * 100).toFixed(1)} %</span>${bedRows(r.grain_bed)}${spinRows(r.spin)}${actionRows(r.action)}${deviceRows(r.device)}${evacuatorRows(r.evacuator)}</div>
       ${(r.action?.warnings ?? []).map((w) => `<div class="bad">${w}</div>`).join("")}`;
     cards.appendChild(card);
   }
@@ -692,12 +694,28 @@ function actionRows(a) {
     rows += `
       <span>Into the shoulder</span><span>${(a.max_recoil * 1e3).toFixed(1)} mm, up to ${a.peak_recoil_velocity.toFixed(2)} m/s</span>
       <span>Peak shoulder force</span><span>${a.peak_shoulder_force.toFixed(0)} N</span>`;
+  } else if (a.stance === "mount") {
+    const home = a.battery_time !== null
+      ? `back in battery after ${(a.battery_time * 1e3).toFixed(0)} ms at ${a.battery_speed.toFixed(2)} m/s`
+      : '<span class="bad">not back in battery</span>';
+    rows += `
+      <span>Recoil on the mount</span><span>${(a.max_recoil * 1e3).toFixed(1)} mm, up to ${a.peak_recoil_velocity.toFixed(2)} m/s; ${home}</span>
+      <span>Peak force on the mount</span><span>${(a.peak_shoulder_force / 1e3).toFixed(1)} kN</span>`;
+    if (a.stop_speed !== null) rows += `<span>Recoil stop</span><span class="bad">hit at ${a.stop_speed.toFixed(2)} m/s</span>`;
   }
-  rows += `<span>Muzzle rise</span><span>${deg(a.max_pitch)}°</span>`;
+  rows += a.stance === "mount" ? `<span>Jump</span><span>${(a.max_pitch * 1e3).toFixed(2)} mrad</span>`
+    : `<span>Muzzle rise</span><span>${deg(a.max_pitch)}°</span>`;
   if (a.rounds?.length) {
     rows += `<span>Feed</span><span>${a.rounds[0]} of ${a.capacity} rounds in, ${a.rounds_left} left · fed at ${deg(Math.abs(a.feed_angle))}°</span>`;
   }
   if (a.kind === "bolt") return rows;
+  if (a.kind === "sliding_wedge") {
+    const ok = a.status === "breech opened";
+    rows += `<span>Sliding wedge</span><span class="${ok ? "" : "bad"}">${a.status}` +
+      (a.open_time !== null ? ` ${(a.open_time * 1e3).toFixed(0)} ms after the shot` : "") + "</span>";
+    if (a.case_speed !== null) rows += `<span>Case thrown out</span><span>${a.case_speed.toFixed(1)} m/s</span>`;
+    return rows;
+  }
   if (a.shot_times.length > 1) {
     const climb = (a.max_pitch * 180 / Math.PI).toFixed(2);
     rows += `<span>Burst</span><span>${a.shot_times.length} shots in ${((a.shot_times.at(-1) - a.shot_times[0]) * 1e3).toFixed(0)} ms, muzzle climbs to ${climb}°</span>`;
@@ -712,6 +730,20 @@ function actionRows(a) {
   if (a.gas_peak_pressure !== null) rows += `<span>Peak gas cylinder pressure</span><span>${(a.gas_peak_pressure / 1e6).toFixed(1)} MPa</span>`;
   if (a.port_cd !== null) rows += `<span>Gas port discharge coefficient</span><span>${a.port_cd.toFixed(2)}${a.port_cd_2d ? " (2D)" : " (assumed)"}</span>`;
   if (a.hammer_energy !== null) rows += `<span>Hammer</span><span>${(a.lock_time * 1e3).toFixed(1)} ms from the sear to ignition, hits the pin with ${a.hammer_energy.toFixed(2)} J</span>`;
+  if (a.motor_peak_power !== null) rows += `<span>Chain drive</span><span>motor peaking at ${a.motor_peak_power.toFixed(0)} W</span>`;
+  return rows;
+}
+
+/** Card rows for a bore evacuator. */
+function evacuatorRows(e) {
+  if (!e) return "";
+  let rows = `
+      <span>Bore evacuator</span><span>charged to ${(e.peak_pressure / 1e6).toFixed(2)} MPa with ${(e.charge * 1e3).toFixed(0)} g of gas, blowing until ${e.blow_end.toFixed(2)} s</span>`;
+  if (e.open_time !== null) {
+    rows += e.clear
+      ? `<span>Fumes</span><span>the breech opens at ${e.open_time.toFixed(2)} s; the jets draw air up the bore at ${e.open_flow.toFixed(1)} m/s, sweeping it clear in ${e.sweep_time.toFixed(2)} s</span>`
+      : `<span>Fumes</span><span class="bad">the breech opens at ${e.open_time.toFixed(2)} s with too little flow left: they come back in</span>`;
+  }
   return rows;
 }
 

@@ -87,10 +87,21 @@ _G7 = [
     (3.70, 0.2060), (3.80, 0.2017), (3.90, 0.1975), (4.00, 0.1935), (4.20, 0.1861),
     (4.40, 0.1793), (4.60, 0.1730), (4.80, 0.1672), (5.00, 0.1618),
 ]
+# A fin-stabilised long rod (an APFSDS penetrator), Cd referenced to the rod's cross-section, fins
+# and windshield included. Not a published standard: an illustrative curve of the shape such rods
+# have (a transonic peak from the fins, falling slowly through the hypersonic range), set so a 22 mm,
+# 5 kg tungsten rod loses about 60 m/s per km at 1,700 m/s. Used with form factor 1 (BC = m / d^2).
+_LR = [
+    (0.00, 0.95), (0.60, 0.95), (0.80, 1.00), (0.90, 1.10), (1.00, 1.45), (1.10, 1.60), (1.20, 1.60),
+    (1.50, 1.45), (2.00, 1.20), (2.50, 1.05), (3.00, 0.95), (3.50, 0.87), (4.00, 0.81), (4.50, 0.76),
+    (5.00, 0.72), (5.50, 0.69), (6.00, 0.66),
+]
 DRAG_TABLES = {
     "G1": ([m for m, _ in _G1], [c for _, c in _G1]),
     "G7": ([m for m, _ in _G7], [c for _, c in _G7]),
+    "LR": ([m for m, _ in _LR], [c for _, c in _LR]),
 }
+DRAG_MODELS = tuple(DRAG_TABLES)
 
 
 def drag_coefficient(mach: float, model: str = "G7") -> float:
@@ -194,10 +205,22 @@ def estimate_bc(projectile: Projectile, bore_diameter: float, drag_model: str | 
 
 
 def ballistic_coefficient(gun: Gun) -> float:
-    """The projectile's stated BC (kg/m^2), or the estimate from its shape."""
+    """The projectile's stated BC (kg/m^2), or the estimate from its shape.
+
+    An APFSDS flies as its rod: against the long-rod curve its form factor is 1, so the BC is the
+    rod's sectional density; against G1 or G7 the estimate is the rod's sectional density over the
+    nose's form factor."""
     p = gun.projectile
     if p.ballistic_coefficient:
         return p.ballistic_coefficient
+    if p.type == "apfsds":
+        density = gun.flight_mass / gun.flight_diameter**2
+        if p.drag_model.upper() == "LR":
+            return density
+        i7 = g7_form_factor(p.length, p.ogive_length, p.meplat_diameter, 0.0, gun.flight_diameter)
+        return density / i7 * (G1_PER_G7 if p.drag_model.upper() == "G1" else 1.0)
+    if p.drag_model.upper() == "LR":
+        return p.mass / gun.barrel.bore_diameter**2
     return estimate_bc(p, gun.barrel.bore_diameter)
 
 
@@ -374,10 +397,11 @@ def trajectory(gun: Gun, v0: float, *, atmosphere: Atmosphere | None = None, spi
                **kwargs) -> Trajectory:
     """Trajectory of the gun's projectile: BC and drag model from `gun.projectile`
     (estimated from its shape if no BC is set), plus spin drift from the barrel's
-    twist unless `spin` is False. Other keywords are those of `fly`."""
+    twist unless `spin` is False. An APFSDS's sabot falls away at the muzzle, so
+    its rod flies on alone (gun.flight_mass). Other keywords are those of `fly`."""
     p = gun.projectile
     model = p.drag_model.upper()
-    traj = fly(v0, ballistic_coefficient(gun), p.mass, drag_model=model, atmosphere=atmosphere, **kwargs)
+    traj = fly(v0, ballistic_coefficient(gun), gun.flight_mass, drag_model=model, atmosphere=atmosphere, **kwargs)
     if spin and gun.barrel.twist:
         atm = atmosphere or Atmosphere()
         traj.stability = rifling.stability(gun, v0, atm.temperature, atm.pressure)

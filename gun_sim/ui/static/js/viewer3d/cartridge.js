@@ -1,12 +1,23 @@
 // Procedural cartridge: profiles for the case, primer and projectile, built
 // from the gun config. Everything here is in millimetres, with x measured
 // along the axis from the case head.
+//
+// A combustible case is split at its stub: the metal stub base, and the felt
+// body that burns with the charge. An APFSDS round is a long rod with fins at
+// its tail and a three-petal sabot round it; the projectile's origin is the
+// sabot's rear face (where the gas pushes), so the fins reach back behind it
+// into the propellant.
 
-import { profileVolume, radiusAt, radiusVolume } from "./lathe.js";
+import { lathe, profileVolume, radiusAt, radiusVolume } from "./lathe.js";
+import { rotationX } from "./mat4.js";
+import { prism } from "./shapes.js";
 
 const MM = 1e3;
 const DEG = Math.PI / 180;
-const CORE_NAMES = ["lead", "steel", "copper"];   // config.CORE_MATERIALS, in index order
+const CORE_NAMES = ["lead", "steel", "copper", "tungsten"];   // config.CORE_MATERIALS, in index order
+export const FINS = 6;
+export const PETALS = 3;
+const PETAL_GAP = 0.04;   // rad between the sabot's petals
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** Bottleneck case. Returns {parts, cavity, dims, warnings}; cavity is the inner wall as [r, x] sorted by x. */
@@ -171,6 +182,36 @@ function tailParts(parts, xMin) {
   return out;
 }
 
+/**
+ * A closed profile cut across at x = xc into the solid below it and the solid above it, each
+ * closed by a flat face across the wall there (r from the outside of the cut to its inside).
+ */
+function splitParts(parts, xc) {
+  const below = [], above = [], cuts = [];
+  for (const part of parts) {
+    let run = [part[0]], side = part[0][1] <= xc;
+    for (let i = 1; i < part.length; i++) {
+      const [r0, x0] = part[i - 1], [r1, x1] = part[i];
+      const now = x1 <= xc;
+      if (now !== side) {
+        const p = [r0 + ((r1 - r0) * (xc - x0)) / (x1 - x0), xc];
+        run.push(p);
+        cuts.push(p[0]);
+        (side ? below : above).push(run);
+        run = [p];
+        side = now;
+      }
+      run.push(part[i]);
+    }
+    if (run.length >= 2) (side ? below : above).push(run);
+  }
+  // The first crossing is the outside going up, the last the inside coming down.
+  const rOut = Math.max(...cuts), rIn = Math.min(...cuts);
+  below.push([[rOut, xc], [rIn, xc]]);
+  above.push([[rIn, xc], [rOut, xc]]);
+  return { below, above };
+}
+
 /** Polyline [r, x] pushed inward (towards the axis) by d, mitred at the corners. */
 function insetPolyline(pts, d) {
   const normals = [];
@@ -301,32 +342,81 @@ export function projectileProfile(p, bore) {
   return { parts: shell, core, outline, body, warnings };
 }
 
+/** Parts shifted by dx along the axis. */
+const shiftParts = (parts, dx) => parts.map((part) => part.map(([r, x]) => [r, x + dx]));
+
+/**
+ * An APFSDS sabot round a rod of radius rr, filling a bore of radius R, rear face at x = 0: a double
+ * ramp, thick at the bore-riding band in the middle and tapering to both ends.
+ */
+function sabotProfile(R, rr, len) {
+  const a = 0.35 * len, b = 0.55 * len, front = rr + 0.3 * (R - rr);
+  return [
+    [[rr, 0], [0.55 * R, 0]],                    // rear face
+    [[0.55 * R, 0], [R, a]],                     // rear ramp
+    [[R, a], [R, b]],                            // the bore-riding band and obturator
+    [[R, b], [0.85 * R, b + 0.04 * len]],        // step down to the front scoop
+    [[0.85 * R, b + 0.04 * len], [front, len]],  // front ramp
+    [[front, len], [rr, len]],                   // front face
+    [[rr, len], [rr, 0]],                        // the bore round the rod
+  ];
+}
+
 /** Everything the viewer needs for one gun (SI config in, mm out). */
 export function buildCartridge(gun) {
   const bore = gun.barrel.bore_diameter * MM;
-  const toMM = (obj, angles) => Object.fromEntries(
-    Object.entries(obj).map(([k, v]) => [k, angles.includes(k) ? v : v * MM]));
+  const toMM = (obj, keep) => Object.fromEntries(
+    Object.entries(obj).map(([k, v]) => [k, keep.includes(k) || typeof v !== "number" ? v : v * MM]));
   const c = toMM(gun.case, ["shoulder_angle"]);
-  const p = toMM(gun.projectile, ["boat_tail_angle", "mass", "shot_start_pressure", "bore_resistance", "ogive_radius_ratio", "core_material"]);
+  const p = toMM(gun.projectile, ["boat_tail_angle", "mass", "shot_start_pressure", "bore_resistance", "ogive_radius_ratio", "core_material", "penetrator_mass", "engraving_pressure", "ballistic_coefficient"]);
+  const apfsds = p.type === "apfsds";
 
   const kase = caseProfile(c, bore);
-  const proj = projectileProfile(p, bore);
-  const seat = c.overall_length - p.length;        // x of the projectile base
-  const warnings = [...kase.warnings, ...proj.warnings];
+  const warnings = [...kase.warnings];
+  // An APFSDS's rod is drawn with its own nose, with its tail sabot_offset behind the sabot's rear face.
+  const rodD = apfsds ? Math.min(p.penetrator_diameter ?? 0.2 * bore, 0.9 * bore) : bore;
+  const offset = apfsds ? (p.sabot_offset ?? 0) : 0;
+  const proj = projectileProfile(apfsds ? { ...p, boat_tail_length: 0, jacket_thickness: 0, hollow_point_diameter: 0, cannelure_depth: 0 } : p, rodD);
+  warnings.push(...proj.warnings);
+  const seat = c.overall_length - p.length + offset;   // x of the projectile base (an APFSDS's sabot)
   if (seat < c.head_thickness) warnings.push("projectile base is below the top of the web (overall length too short)");
   if (seat > c.length) warnings.push("projectile is not in the case (overall length too long)");
 
-  // Volumes in mm³.
+  // Volumes in mm³. Behind an APFSDS's sabot is the case up to it, less the rod's tail.
   const capacity = radiusVolume(kase.cavity, kase.cavity[0][1], c.length);
-  const intrusion = radiusVolume(proj.outline, 0, Math.max(0, c.length - seat));
+  const intrusion = apfsds
+    ? capacity - radiusVolume(kase.cavity, kase.cavity[0][1], Math.min(seat, c.length)) + Math.PI * (rodD / 2) ** 2 * offset
+    : radiusVolume(proj.outline, 0, Math.max(0, c.length - seat));
   const projVolume = profileVolume(proj.body);
+  const coreMaterial = Math.max(0, typeof p.core_material === "string"
+    ? CORE_NAMES.indexOf(p.core_material.toLowerCase()) : Math.round(p.core_material || 0));
+  // A combustible case: the metal stub base and the felt body above it.
+  const stub = c.combustible ? clamp(c.stub_length ?? c.head_thickness + 0.2 * c.base_diameter, kase.dims.head + 0.1, c.length - 1) : null;
+  const split = stub !== null ? splitParts(kase.parts, stub) : null;
+  const parts = {
+    case: split ? split.below : kase.parts, primer: primerProfile(kase.pocket),
+    projectile: shiftParts(proj.parts, -offset), ...(proj.core ? { core: proj.core } : {}),
+    ...(split ? { caseBody: split.above } : {}),
+  };
+  let sabot = null, fins = null;
+  if (apfsds) {
+    const R = bore / 2 - 0.05, rr = rodD / 2 + 0.05;
+    const length = Math.min(p.sabot_length ?? 1.2 * bore, p.length - offset);
+    sabot = { profile: sabotProfile(R, rr, length), petals: PETALS, length };
+    const span = Math.min(p.fin_span ?? 3.5 * rodD, 0.95 * bore) / 2, fl = p.fin_length ?? 6 * rodD;
+    fins = { x0: -offset, length: fl, root: rodD / 2 * 0.9, tip: span, thickness: Math.max(0.6, 0.06 * rodD), count: FINS };
+  }
   return {
-    parts: { case: kase.parts, primer: primerProfile(kase.pocket), projectile: proj.parts, ...(proj.core ? { core: proj.core } : {}) },
-    // The form gives the core by name, a loaded config by index.
-    coreMaterial: Math.max(0, typeof p.core_material === "string"
-      ? CORE_NAMES.indexOf(p.core_material.toLowerCase()) : Math.round(p.core_material || 0)),
+    parts,
+    coreMaterial,
+    // A solid projectile of steel or tungsten is drawn in that metal (a solid lead or copper one in copper).
+    solidMetal: !proj.core && (coreMaterial === 1 || coreMaterial === 3) ? coreMaterial : null,
+    caseMetal: gun.case.material === "steel" ? "steel" : "brass",
+    combustible: stub !== null,
+    sabot, fins, apfsds,
     dims: kase.dims,
     projectileLength: p.length,
+    rodRadius: rodD / 2,
     seat,
     length: Math.max(c.overall_length, c.length),
     radius: Math.max(c.rim_diameter, c.base_diameter) / 2,
@@ -334,8 +424,66 @@ export function buildCartridge(gun) {
       capacity: capacity / 1e3,                          // cm³
       powderSpace: Math.max(capacity - intrusion, 0) / 1e3, // cm³
       projVolume: projVolume / 1e3,                      // cm³
-      density: gun.projectile.mass * 1e3 / (projVolume / 1e3), // g/cm³
+      // An APFSDS's rod: its own mass over its volume.
+      density: (apfsds ? (gun.projectile.penetrator_mass ?? 0.6 * gun.projectile.mass) : gun.projectile.mass) * 1e3 / (projVolume / 1e3), // g/cm³
     },
     warnings,
   };
+}
+
+/** Merge bare meshes. */
+function mergeMeshes(meshes) {
+  const nv = meshes.reduce((s, m) => s + m.positions.length, 0), ni = meshes.reduce((s, m) => s + m.indices.length, 0);
+  const positions = new Float32Array(nv), normals = new Float32Array(nv), indices = new Uint32Array(ni);
+  let vo = 0, io = 0;
+  for (const m of meshes) {
+    positions.set(m.positions, vo);
+    normals.set(m.normals, vo);
+    for (let i = 0; i < m.indices.length; i++) indices[io + i] = m.indices[i] + vo / 3;
+    vo += m.positions.length;
+    io += m.indices.length;
+  }
+  return { positions, normals, indices };
+}
+
+/** Mesh data rotated about the x axis by a. */
+function turned(mesh, a) {
+  const m = rotationX(a), p = mesh.positions, n = mesh.normals;
+  const positions = new Float32Array(p.length), normals = new Float32Array(n.length);
+  for (let i = 0; i < p.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      positions[i + k] = m[k] * p[i] + m[4 + k] * p[i + 1] + m[8 + k] * p[i + 2];
+      normals[i + k] = m[k] * n[i] + m[4 + k] * n[i + 1] + m[8 + k] * n[i + 2];
+    }
+  }
+  return { positions, normals, indices: mesh.indices };
+}
+
+/**
+ * The round's meshes: case (the metal case, or a combustible case's stub), caseBody (the felt body),
+ * primer, projectile, core, fins and sabot0.. (the sabot's petals, one each so they can fly apart).
+ * The projectile's parts are at the projectile's origin (its base, or an APFSDS's sabot rear face).
+ */
+export function roundMeshes(cart) {
+  const out = {};
+  for (const [name, parts] of Object.entries(cart.parts)) out[name] = lathe(parts);
+  if (cart.fins) {
+    const f = cart.fins;
+    const fin = prism([[f.x0, f.root], [f.x0 + f.length, f.root], [f.x0 + 0.45 * f.length, f.tip], [f.x0, f.tip]], f.thickness);
+    out.fins = mergeMeshes(Array.from({ length: f.count }, (_, k) => turned(fin, (k * 2 * Math.PI) / f.count)));
+  }
+  if (cart.sabot) {
+    const n = cart.sabot.petals;
+    for (let k = 0; k < n; k++) {
+      const a0 = (k * 2 * Math.PI) / n + PETAL_GAP / 2;
+      out[`sabot${k}`] = lathe(cart.sabot.profile, 32, a0, a0 + (2 * Math.PI) / n - PETAL_GAP);
+    }
+  }
+  return out;
+}
+
+/** The direction (unit [y, z]) a sabot petal flies off in: out from the middle of its sector. */
+export function petalDirection(k, n = PETALS) {
+  const a = ((k + 0.5) * 2 * Math.PI) / n;
+  return [Math.cos(a), Math.sin(a)];
 }

@@ -35,7 +35,7 @@
 // closed); y is up and z is to the right, where the bolt handle and the
 // ejection port are.
 
-import { buildCartridge } from "./cartridge.js";
+import { buildCartridge, roundMeshes } from "./cartridge.js";
 import { buildFeed, feedGeometry } from "./feed.js";
 import { lathe } from "./lathe.js";
 import { chain, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
@@ -44,7 +44,44 @@ import { box, prism, rodProfile, sphereProfile, torusProfile, tubeProfile } from
 const MM = 1e3;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 // As gun_sim/action.py fills them in: unlock travel (mm; carrier travel for a delayed blowback) and delay ratio.
-const UNLOCK = { gas: 6, direct_impingement: 7, short_recoil: 3, roller_delayed: 5, lever_delayed: 6 };
+const UNLOCK = { gas: 6, direct_impingement: 7, short_recoil: 3, roller_delayed: 5, lever_delayed: 6, chain: 5 };
+const CHAIN_PITCH = 12.7;   // mm, a chain gun's drive chain (half-inch roller chain)
+
+/**
+ * A chain gun's track as gun_sim/action.py chain_track() has it (mm): its legs from the firing point,
+ * in the middle of the front dwell. Returns {width, radius, stroke, perimeter, legs, at(q) -> {s, x, y, angle}}
+ * where (x, y) is the master link in the track's plane, x back from the front leg and y up from its middle.
+ */
+export function chainTrack(gun, stroke) {
+  const a = gun.action ?? {}, oal = gun.case.overall_length * MM;
+  const width = a.chain_width != null ? a.chain_width * MM : 0.35 * oal;
+  const r = Math.min(a.sprocket_radius != null ? a.sprocket_radius * MM : width / 4, 0.4 * width, 0.4 * stroke);
+  const dwell = width - 2 * r, side = stroke - 2 * r, arc = Math.PI * r / 2;
+  const legs = [["front", dwell / 2], ["out", arc], ["back", side], ["in_rear", arc], ["rear", dwell],
+                ["out_rear", arc], ["forward", side], ["in", arc], ["front2", dwell / 2]];
+  const perimeter = legs.reduce((s, [, l]) => s + l, 0);
+  const at = (q) => {
+    q = ((q % perimeter) + perimeter) % perimeter;
+    let name = "front2";
+    for (const [n, l] of legs) { if (q <= l) { name = n; break; } q -= l; }
+    const th = q / r, h = width / 2, c = dwell / 2;
+    switch (name) {
+      // angle: the direction the link moves in, in the track's (x, y).
+      case "front": return { s: 0, x: 0, y: q, angle: Math.PI / 2 };
+      case "out": return { s: r * (1 - Math.cos(th)), x: r * (1 - Math.cos(th)), y: c + r * Math.sin(th), angle: Math.PI / 2 - th };
+      case "back": return { s: r + q, x: r + q, y: h, angle: 0 };
+      case "in_rear": return { s: stroke - r + r * Math.sin(th), x: stroke - r + r * Math.sin(th), y: c + r * Math.cos(th), angle: -th };
+      case "rear": return { s: stroke, x: stroke, y: c - q, angle: -Math.PI / 2 };
+      case "out_rear": return { s: stroke - r * (1 - Math.cos(th)), x: stroke - r * (1 - Math.cos(th)), y: -c - r * Math.sin(th), angle: -Math.PI / 2 - th };
+      case "forward": return { s: stroke - r - q, x: stroke - r - q, y: -h, angle: Math.PI };
+      case "in": return { s: r - r * Math.sin(th), x: r - r * Math.sin(th), y: -c - r * Math.cos(th), angle: Math.PI - th };
+      default: return { s: 0, x: 0, y: -c + q, angle: Math.PI / 2 };
+    }
+  };
+  const starts = {};
+  legs.reduce((q, [n, l]) => { starts[n] ??= q; return q + l; }, 0);
+  return { width, radius: r, stroke, perimeter, legs, at, rearStart: starts.rear, rearLength: dwell };
+}
 const DELAY_RATIO = { roller_delayed: 4, lever_delayed: 6 };
 
 /** Apply a rigid transform to mesh data. */
@@ -200,7 +237,10 @@ export function buildRifle(gun) {
   const act = gun.action ?? {};
   const kind = act.type ?? "bolt";
   const style = gun.appearance?.style ?? "rifle";
-  const ar = style === "ar15", ak = style === "ak";
+  const ar = style === "ar15", ak = style === "ak", autocannon = style === "autocannon", tank = style === "tank";
+  const wedge = kind === "sliding_wedge", chainGun = kind === "chain";
+  const mounted = gun.shooter?.stance === "mount";
+  const mountStroke = (gun.mount?.stroke ?? 0.03) * MM;
 
   // ---- barrel ----
   const rearX = d.rimT + 0.6;               // the bolt nose fits in front of the case head
@@ -274,7 +314,9 @@ export function buildRifle(gun) {
   const unlockSet = act.unlock_travel != null ? act.unlock_travel * MM : (UNLOCK[kind] ?? 0);
   const mech = { kind, ratio, unlock: delayed ? unlockSet / ratio : unlockSet };
   // How far the bolt goes back: as the action simulation has it, or a bolt-action's throw.
-  const stroke = kind === "bolt" ? oal + 5 : act.bolt_travel ? act.bolt_travel * MM : oal + 11;
+  // A sliding wedge's stroke is its drop: enough to clear the rim.
+  const stroke = kind === "bolt" ? oal + 5 : act.bolt_travel ? act.bolt_travel * MM
+    : wedge ? 2.1 * d.rimR + 5 : oal + 11;
   const pistonR = ((act.piston_diameter ?? 10e-3) / 2) * MM;
   const portX = cart.seat + (act.gas_port_position ?? (kind === "gas_delayed" ? 0.1 : 0.75) * gun.barrel.travel) * MM;
   const cylLen = Math.max((act.gas_stroke ?? 8e-3) * MM + 12, 22);
@@ -287,7 +329,11 @@ export function buildRifle(gun) {
   const portRear = -(d.length + 14);        // ejection port, the AR and AK; the rifle's is longer
 
   const steelParts = [], furnParts = [], woodParts = [];
+  // Painted parts that recoil (a tank gun's thermal sleeve and evacuator), and the mount's: the cradle
+  // and what is on it (pitched with the gun, not recoiling), and the pedestal (fixed).
+  const paintParts = [], mountParts = [], pedestalParts = [];
   const shortRecoil = kind === "short_recoil";
+  let chainLayout = null, wedgeLayout = null, rackGround = null, crankMesh = null;
   if (!shortRecoil) {
     steelParts.push(barrel);
     if (deviceMesh) steelParts.push(deviceMesh);
@@ -296,7 +342,167 @@ export function buildRifle(gun) {
   // ---- receiver and furniture, by style. Each sets where the bolt group ends at the back
   // (boltRear), the receiver's size for the camera (recR), and where the gas runs. ----
   let recR, boltRear, magTop, cgX, buttX, portFront, portRearL, bridgeRear, yGas, yTube, frontOfReceiver;
-  if (ar) {
+  let pivotX = null;                        // a mount's trunnions (else the butt)
+  /** Rods along x at (y, z), and cylinders round them. */
+  const rodAt = (r, x0, x1, y, z, seg = 24) => [lathe(rodProfile(r, x0, x1), seg), translation(0, y, z)];
+  const tubeAt = (ri, ro, x0, x1, y, z, seg = 48) => [lathe(tubeProfile(ri, ro, x0, x1), seg), translation(0, y, z)];
+  /** A pin along z through (x, y). */
+  const pinZ = (r, half, x, y) => [lathe(rodProfile(r, -half, half), 32), chain(translation(x, y, 0), rotationY(Math.PI / 2))];
+  /** Four slabs round the barrel's breech end from x0 to x1, out to the half-width w and from y0 to y1. */
+  const slabsRound = (x0, x1, hb, w, y0, y1) => [
+    boxAt(x1 - x0, y1 - hb, 2 * w, (x0 + x1) / 2, (y1 + hb) / 2, 0),
+    boxAt(x1 - x0, -hb - y0, 2 * w, (x0 + x1) / 2, (-hb + y0) / 2, 0),
+    boxAt(x1 - x0, 2 * hb, w - hb, (x0 + x1) / 2, 0, -(w + hb) / 2),
+    boxAt(x1 - x0, 2 * hb, w - hb, (x0 + x1) / 2, 0, (w + hb) / 2),
+  ];
+  if (tank) {
+    // A tank gun. The breech ring: behind the case head, cheeks either side of the slot the wedge
+    // drops in, a bridge over it and a floor under it; ahead, slabs round the barrel's breech end.
+    // The cradle round the barrel ahead of the ring carries the recoil cylinders (their rods are
+    // fixed to the ring) and the trunnions; the deflector guard and the stub bag lie behind it.
+    // Down the barrel: the thermal sleeve, the bore evacuator, and the muzzle reference mirror.
+    const rimR = d.rimR;
+    const blockT = Math.max(1.8 * rimR, 20), blockW = 2.9 * rimR, blockTop = 1.15 * rimR, blockH = 2.7 * rimR;
+    const ringFront = rearX + 2.6 * rimR, ringRear = -blockT - 0.3 * rimR;
+    const cradleIn = breechR + 4, cradleR = cradleIn + 0.35 * rimR, cylR = 0.45 * rimR, rc = cradleR + cylR + 6;
+    const ringHalf = Math.max(blockW / 2 + 0.7 * rimR, rc + cylR + 8);
+    const ringTop = Math.max(blockTop + 0.55 * rimR, breechR + 0.4 * rimR);
+    const slotBottom = blockTop - stroke - blockH;
+    const ringBottom = Math.min(slotBottom - 0.3 * rimR, -rc - cylR - 8);
+    const cheek = ringHalf - blockW / 2, rl = -ringRear, ym = (ringTop + ringBottom) / 2;
+    steelParts.push(
+      boxAt(rl, ringTop - ringBottom, cheek, ringRear / 2, ym, -(blockW / 2 + cheek / 2)),
+      boxAt(rl, ringTop - ringBottom, cheek, ringRear / 2, ym, blockW / 2 + cheek / 2),
+      boxAt(rl, ringTop - blockTop, blockW, ringRear / 2, (ringTop + blockTop) / 2, 0),
+      boxAt(rl, slotBottom - ringBottom, blockW, ringRear / 2, (slotBottom + ringBottom) / 2, 0),
+      ...slabsRound(0, ringFront, breechR, ringHalf, ringBottom, ringTop),
+      // The extractors, either side of the chamber's mouth.
+      boxAt(0.35 * rimR, 1.6 * rimR, 0.2 * rimR, -0.2 * rimR, -0.35 * rimR, rimR + 0.2 * rimR),
+      boxAt(0.35 * rimR, 1.6 * rimR, 0.2 * rimR, -0.2 * rimR, -0.35 * rimR, -(rimR + 0.2 * rimR)),
+    );
+    // The cradle and its recoil cylinders: two buffers either side, the recuperator under the barrel.
+    const xc0 = ringFront + 25, cradleLen = mountStroke + 6 * rimR, cylLen = mountStroke + 3.2 * rimR;
+    const cyl = [[0, rc], [0, -rc], [-rc, 0]];
+    mountParts.push(lathe(tubeProfile(cradleIn, cradleR, xc0, xc0 + cradleLen), 64));
+    for (const [y, z] of cyl) {
+      mountParts.push(tubeAt(cylR * 0.45, cylR, xc0 - 5, xc0 + cylLen, y, z));
+      steelParts.push(rodAt(cylR * 0.4, ringFront - 2, xc0 + mountStroke + 0.5 * rimR, y, z));
+    }
+    const xt = xc0 + 0.35 * cradleLen;
+    pivotX = xt;
+    mountParts.push(pinZ(0.5 * rimR, cradleR + 1.1 * rimR, xt, pivotY));
+    // The turret's trunnion bearings (fixed).
+    for (const s of [1, -1]) pedestalParts.push(boxAt(1.6 * rimR, 2.2 * rimR, 0.6 * rimR, xt, pivotY, s * (cradleR + 1.1 * rimR)));
+    // The deflector guard either side of the breech's recoil path, and the bag the stub falls into.
+    const guardRear = ringRear - mountStroke - 3 * rimR, zg = ringHalf + 0.4 * rimR;
+    for (const s of [1, -1]) {
+      mountParts.push(boxAt(xc0 - guardRear, ringTop - ringBottom + 40, 10, (xc0 + guardRear) / 2, ym, s * zg));
+    }
+    const bag0 = guardRear - 0.9 * oal, bagTop = ringBottom - 0.2 * rimR;
+    mountParts.push(boxAt(guardRear - bag0 + 2 * rimR, 2.2 * rimR, 2 * zg - 20, (bag0 + guardRear) / 2 + rimR, bagTop - 1.1 * rimR, 0));
+    // Thermal sleeve: segments clamped round the barrel from ahead of the cradle (at full recoil) to
+    // near the muzzle, broken by the evacuator.
+    const bar = gun.barrel, t = Math.max(4, 0.05 * 2 * rb);
+    const evX = bar.evacuator_position ? cart.seat + bar.evacuator_position * MM : null;
+    let ev0 = Infinity, ev1 = -Infinity;
+    if (evX !== null && evX < muzzleX) {
+      const evR = barrelR(evX) + 1.1 * rb;
+      const vol = (bar.evacuator_volume ?? 0) * 1e9;
+      const evLen = clamp(vol / (Math.PI * (evR ** 2 - barrelR(evX) ** 2)), 4 * rb, 40 * rb);
+      const cone = 0.18 * evLen;
+      ev0 = evX - evLen / 2; ev1 = evX + evLen / 2;
+      const r0 = barrelR(ev0) + 1, r1 = barrelR(ev1) + 1;
+      paintParts.push(lathe([
+        [[r0, ev0], [evR, ev0 + cone]], [[evR, ev0 + cone], [evR, ev1 - cone]],
+        [[evR, ev1 - cone], [r1, ev1]], [[r1, ev1], [r0, ev0]],
+      ], 64));
+      steelParts.push(lathe(tubeProfile(evR - 1, evR + 3, ev0 + cone - 6, ev0 + cone + 6), 64),
+                      lathe(tubeProfile(evR - 1, evR + 3, ev1 - cone - 6, ev1 - cone + 6), 64));
+    }
+    const s0 = xc0 + cradleLen + mountStroke + 15, s1 = muzzleX - 3 * rb;
+    const segLen = 14 * 2 * rb, n = Math.max(1, Math.round((s1 - s0) / segLen));
+    for (let k = 0; k < n; k++) {
+      let a = s0 + ((s1 - s0) * k) / n + 6, b = s0 + ((s1 - s0) * (k + 1)) / n - 6;
+      if (b > ev0 - 8 && a < ev1 + 8) {
+        if (a < ev0 - 8 && ev0 - 8 - a > 30) b = ev0 - 8;
+        else if (b > ev1 + 8 && b - ev1 - 8 > 30) a = ev1 + 8;
+        else continue;
+      }
+      const pts = [];
+      for (let j = 0; j <= 6; j++) { const x = a + ((b - a) * j) / 6; pts.push([barrelR(x) + t, x]); }
+      paintParts.push(lathe([[[barrelR(a) + 0.5, a], [barrelR(a) + t, a]], pts,
+                             [[barrelR(b) + t, b], [barrelR(b) + 0.5, b]], [[barrelR(b) + 0.5, b], [barrelR(a) + 0.5, a]]], 64));
+      steelParts.push(lathe(tubeProfile(barrelR(b + 6) + 0.5, barrelR(b + 6) + t + 2.5, b, b + 12), 64));
+    }
+    // The muzzle reference system's mirror, on top of the muzzle.
+    paintParts.push(boxAt(2.2 * rb, 0.35 * rb + 4, 1.4 * rb, muzzleX - 2.2 * rb, muzzleR + (0.35 * rb + 4) / 2, 0));
+    recR = ringTop;
+    boltRear = ringRear - 10;
+    portFront = 0; portRearL = -(oal + 400); bridgeRear = ringRear;
+    magTop = ringBottom; frontOfReceiver = ringFront;
+    yGas = yTube = ringTop;
+    cgX = xt; buttX = Math.min(guardRear, bag0);
+    wedgeLayout = { blockT, blockW, blockTop, blockH, ringHalf, ringBottom, guardRear, bagTop, bag0 };
+  } else if (autocannon) {
+    // A chain gun: a box receiver round the bolt's path, with the belts' opening in its top. On its
+    // right side the drive: a back plate, the chain round four sprockets (the motor on the rear
+    // lower one), the carrier's arm out through a slot in the wall to the T-slot the master link
+    // rides in. Ahead: a cradle round the barrel with the recoil adapters, on trunnions in a yoke on
+    // a pedestal. The cases leave forwards, out of the bottom of the receiver.
+    const rimR = d.rimR;
+    const wR = Math.max(2.2 * rimR, boltR + 14), yT = boltR + 10, yBt = -(boltR + 14);
+    const carrierLen = 0.35 * oal;
+    const xF = rearX + Math.max(2 * boltR, 40), xR = -(stroke + carrierLen + 30);
+    const track = chainTrack(gun, stroke);
+    const trayBottom = belt ? fgeo.drop - fgeo.d / 2 - 1.2 : yT + 10;
+    const zChain = wR + 12, yC = Math.min(0, trayBottom - 10 - track.width / 2), xPeg0 = -carrierLen + 10;
+    const H = yT - yBt, ym = (yT + yBt) / 2;
+    // Walls: the left; the right with a slot for the carrier's arm; the top cut for the belts; the bottom
+    // cut for the cases to fall out of.
+    const slot0 = xPeg0 - stroke - 14, slot1 = xPeg0 + 14, sh = 8;
+    furnParts.push(
+      boxAt(xF - xR, H, 3, (xF + xR) / 2, ym, -(wR - 1.5)),
+      ...cutX(xR, xF, slot0, slot1, (a, b) => boxAt(b - a, H, 3, (a + b) / 2, ym, wR - 1.5)),
+      boxAt(slot1 - slot0, yT - (yC + sh), 3, (slot0 + slot1) / 2, (yT + yC + sh) / 2, wR - 1.5),
+      boxAt(slot1 - slot0, yC - sh - yBt, 3, (slot0 + slot1) / 2, (yC - sh + yBt) / 2, wR - 1.5),
+      ...cutX(xR, xF, openA, openB, (a, b) => boxAt(b - a, 3, 2 * wR, (a + b) / 2, yT + 1.5, 0)),
+      ...cutX(xR, xF, -(d.length + 12), -4, (a, b) => boxAt(b - a, 3, 2 * wR, (a + b) / 2, yBt - 1.5, 0)),
+      boxAt(4, H, 2 * wR, xR - 2, ym, 0),                                                     // back plate
+    );
+    steelParts.push(...slabsRound(-2, xF, breechR, wR, yBt, yT));                             // barrel extension
+    // The drive.
+    const hw = track.width / 2, r = track.radius;
+    furnParts.push(boxAt(slot1 - slot0 + 2 * r, track.width + 28, 3, xPeg0 - stroke / 2, yC, wR + 3.5));
+    const corners = [[xPeg0 - r, yC + hw - r], [xPeg0 - stroke + r, yC + hw - r], [xPeg0 - stroke + r, yC - hw + r], [xPeg0 - r, yC - hw + r]];
+    for (const [x, y] of corners) steelParts.push([lathe(rodProfile(Math.max(2, 0.18 * r), wR + 3, zChain + 4), 16), chain(translation(x, y, 0), rotationY(-Math.PI / 2))]);
+    const [mx, my] = corners[2], motorR = Math.max(1.3 * r, 0.9 * rimR);
+    furnParts.push([lathe(rodProfile(motorR, zChain + 8, zChain + 8 + 2.6 * motorR, 2), 48), chain(translation(mx, my, 0), rotationY(-Math.PI / 2))]);
+    chainLayout = { track, xFront: xPeg0, yC, z: zChain, carrierLen, wR, corners, links: Math.max(12, Math.round(track.perimeter / CHAIN_PITCH)) };
+    // The cradle, the recoil adapters (their rods on lugs on the receiver's front), the trunnions.
+    const cIn = barrelR(xF + 8) + 3, cR = cIn + 0.6 * rimR, cylR = 0.5 * rimR, rc = cR + cylR + 4;
+    const cradleLen = Math.max(10 * rb, 120) + mountStroke, xc0 = xF + 8;
+    mountParts.push(lathe(tubeProfile(cIn, cR, xc0, xc0 + cradleLen), 64));
+    for (const s of [1, -1]) {
+      mountParts.push(tubeAt(cylR * 0.45, cylR, xc0, xc0 + 0.7 * cradleLen, 0, s * rc));
+      mountParts.push(boxAt(0.5 * cradleLen, 2 * cylR, rc - cR, xc0 + 0.35 * cradleLen, 0, s * (cR + rc) / 2));
+      steelParts.push(rodAt(cylR * 0.4, xF - 2, xc0 + mountStroke + 0.4 * rimR, 0, s * rc));
+      steelParts.push(boxAt(12, 2 * cylR, rc + cylR - wR, xF - 6, 0, s * (wR + rc + cylR) / 2));
+    }
+    const xt = xc0 + 0.4 * cradleLen, zy = rc + cylR + 0.8 * rimR;
+    pivotX = xt;
+    mountParts.push(pinZ(0.45 * rimR, zy + 0.4 * rimR, xt, pivotY));
+    // The yoke and pedestal are fixed: its arms from the trunnions down to a cross beam.
+    const yokeY = Math.min(pivotY, yBt) - 2.2 * rimR - 30;
+    for (const s of [1, -1]) pedestalParts.push(boxAt(1.4 * rimR, pivotY - yokeY + 0.7 * rimR, 0.5 * rimR, xt, (pivotY + yokeY) / 2, s * zy));
+    pedestalParts.push(boxAt(1.4 * rimR, 0.8 * rimR, 2 * zy + 0.5 * rimR, xt, yokeY, 0));
+    recR = Math.max(wR, yT);
+    boltRear = xR;
+    portFront = -2; portRearL = xR; bridgeRear = xR;
+    magTop = yBt; frontOfReceiver = xF;
+    yGas = yTube = yT;
+    cgX = xt; buttX = xR - 10;
+    rackGround = yokeY;
+  } else if (ar) {
     // Upper: walls round the carrier, tall enough over it for the gas tube and the key.
     yTube = Math.max(boltR + 4, breechR + 3.5);
     yGas = yTube;
@@ -485,9 +691,18 @@ export function buildRifle(gun) {
   // ---- the feed: magazine or belt, and the feed cam the bolt group carries for a belt ----
   const groupFront = kind === "gas" || kind === "direct_impingement" ? -(lugLen + 10)
     : delayed ? -Math.max(14, boltR * 1.6) : -2;
-  const feed = buildFeed(gun, { dims: d, boltR, recR, stroke, camTop: boltR, groupFront });
+  // A loader's ready rack: behind the breech and the deflector guard, to the left.
+  const rack = wedgeLayout
+    ? { x: wedgeLayout.guardRear - 250 - oal, y: 0, z: -(wedgeLayout.ringHalf + 0.6 * d.rimR + 2 * d.rimR) }
+    : { x: -2 * oal - 60, y: -(recR + 2 * d.rimR + 20), z: -(recR + 2 * d.rimR + 30) };
+  const feed = buildFeed(gun, { dims: d, boltR, recR, stroke, camTop: boltR, groupFront, rack, chainDriven: chainGun });
   furnParts.push(...feed.furniture);
   steelParts.push(...feed.steel);
+  if (autocannon) {
+    // The pedestal, from the yoke down to the ground the belts lie on.
+    const floor = feed.layout.floor ?? rackGround - 600;
+    pedestalParts.push(rodY(1.6 * d.rimR, floor + 8, rackGround, pivotX), boxAt(8 * d.rimR, 8, 8 * d.rimR, pivotX, floor + 4, 0));
+  }
 
   // ---- the moving parts (local: bolt face at x = 0, closed) ----
   /** Body of a bolt or bolt head of radius r from `rear` to the face: nose ring, recess, firing-pin channel. */
@@ -599,6 +814,41 @@ export function buildRifle(gun) {
       // The piston: a ring on the barrel just behind the port.
       steelParts.push(lathe(tubeProfile(barrelR(portX - 8) - 0.2, riS - 0.2, portX - 10, portX - 2), 64));
     }
+  } else if (chainGun) {
+    // A four-lug bolt head turning in a carrier; on the carrier's right, the arm out to the T-slot the
+    // master link's roller rides up and down in (so only its travel along the bore moves the carrier).
+    const headLen = lugLen + 10, cl = chainLayout?.carrierLen ?? 0.35 * oal;
+    boltMesh = rotatingHead(headLen, 4);
+    const parts = [
+      lathe(tubeProfile(headR + 0.3, boltR, -cl, -headLen, 0.8), 64),
+      lathe(rodProfile(boltR, -cl - 4, -cl + 0.5, 1), 48),
+    ];
+    if (chainLayout) {
+      const { xFront, yC, z, track } = chainLayout, inner = Math.sqrt(Math.max(boltR ** 2 - yC ** 2, 1));
+      parts.push(boxAt(16, 12, z - 5 - inner + 2, xFront, yC, (z - 5 + inner - 2) / 2),
+                 boxAt(18, track.width + 16, 3, xFront, yC, z - 5));
+    }
+    carrier = merge(...parts);
+    boltRear = -cl;
+  } else if (wedge) {
+    // The breech block, its front face on the case head, with its firing mechanism behind it. It drops
+    // to open; the crank on the ring's right side turns as it does.
+    const W = wedgeLayout ?? { blockT: Math.max(1.8 * d.rimR, 20), blockW: 2.9 * d.rimR, blockTop: 1.15 * d.rimR,
+                               blockH: 2.7 * d.rimR, ringHalf: 2.2 * d.rimR };
+    const rimR = d.rimR;
+    boltMesh = merge(
+      boxAt(W.blockT, W.blockH, W.blockW, -W.blockT / 2, W.blockTop - W.blockH / 2, 0),
+      rodAt(0.35 * rimR, -W.blockT - 0.45 * rimR, -W.blockT + 1, 0, 0, 32),                          // firing mechanism
+      boxAt(0.25 * W.blockT, 0.5 * rimR, W.blockW + 0.3 * rimR, -0.5 * W.blockT, W.blockTop - W.blockH + 0.3 * rimR, 0),  // guide ribs
+    );
+    const arm = 1.5 * rimR;
+    extra.crank = { px: -W.blockT / 2, py: W.blockTop - W.blockH / 2, z: W.ringHalf + 0.2 * rimR, turn: 1.1 };
+    crankMesh = merge(
+      boxAt(0.4 * rimR, arm, 0.25 * rimR, 0, -arm / 2, 0),
+      [lathe(rodProfile(0.22 * rimR, -0.2 * rimR, 0.2 * rimR), 24), chain(translation(0, -arm, 0), rotationY(Math.PI / 2))],
+      [lathe(rodProfile(0.3 * rimR, -0.25 * rimR, 0.25 * rimR), 24), rotationY(Math.PI / 2)],
+    );
+    boltRear = -W.blockT;
   } else {
     // Delayed blowback: a short head, and the carrier behind it.
     const headLen = Math.max(14, boltR * 1.6);
@@ -625,8 +875,9 @@ export function buildRifle(gun) {
     boltMesh = merge(...head);
     carrier = merge(...carrierParts);
   }
-  // A belt's feed cam rides on the carrier (on a one-piece bolt, or a gas-delayed slide's bolt).
-  if (feed.cam.length) {
+  // A belt's feed cam rides on the carrier (on a one-piece bolt, or a gas-delayed slide's bolt); a chain
+  // gun's feeder is driven off its chain instead.
+  if (feed.cam.length && !chainGun) {
     if (carrier && kind !== "gas_delayed") carrier = merge(carrier, ...feed.cam);
     else boltMesh = merge(boltMesh, ...feed.cam);
   }
@@ -641,7 +892,7 @@ export function buildRifle(gun) {
   // it; sized so the head sweeps about the carrier travel that cocks it, and lies below the
   // carrier when it is fully back.
   let hammer = null;
-  if (act.hammer && kind !== "bolt") {
+  if (act.hammer && !["bolt", "chain", "sliding_wedge"].includes(kind)) {
     const sear = ((act.hammer_angle ?? 60) * Math.PI) / 180;
     const top = Math.min(sear * 1.15, Math.PI / 2);
     const w = Math.max(3, boltR * 0.45), t = Math.max(4, boltR * 0.8), headH = Math.max(5, boltR * 0.7);
@@ -656,11 +907,31 @@ export function buildRifle(gun) {
     );
     extra.hammer = { px: boltRear - 24 - w, py: -len + headH / 2, sear };
   }
+  // A chain gun's drive: a link (drawn round the track), the master link with its roller pointing in
+  // at the carrier's T-slot, and a sprocket (a disc with a spoke, so its turning shows).
+  const chainMeshes = {};
+  if (chainLayout) {
+    const r = chainLayout.track.radius;
+    Object.assign(chainMeshes, {
+      chainLink: box(CHAIN_PITCH * 0.9, 5, 4),
+      masterLink: merge(box(CHAIN_PITCH * 1.6, 8, 6), [lathe(rodProfile(3.2, -9, 1), 16), rotationY(-Math.PI / 2)]),
+      sprocket: merge([lathe(rodProfile(Math.max(r - 1.5, 2), -2.5, 2.5), 32), rotationY(-Math.PI / 2)],
+                      boxAt(2 * Math.max(r - 1.5, 2), 3, 6, 0, 0, 0)),
+    });
+  }
+  // A wedge's striker is its firing mechanism's pin, in the block.
+  const strikerMesh = wedge ? lathe(rodProfile(pinR, boltRear - 0.3 * d.rimR, -0.9, 0.3), 24) : striker;
 
   return {
     cartridge: cart,
     meshes: {
-      steel: merge(...steelParts), furniture: merge(...furnParts), bolt: boltMesh, striker,
+      steel: merge(...steelParts), furniture: merge(...furnParts), bolt: boltMesh, striker: strikerMesh,
+      ...(paintParts.length ? { paint: merge(...paintParts) } : {}),
+      ...(mountParts.length ? { mount: merge(...mountParts) } : {}),
+      ...(pedestalParts.length ? { pedestal: merge(...pedestalParts) } : {}),
+      ...(crankMesh ? { crank: crankMesh } : {}),
+      ...(feed.meshes.rack ? { rack: feed.meshes.rack } : {}),
+      ...chainMeshes,
       ...(woodParts.length ? { wood: merge(...woodParts) } : {}),
       ...(shroud ? { shroud } : {}), ...(carrier ? { carrier } : {}),
       ...(barrelMesh ? { barrel: barrelMesh } : {}), ...(lock ? { lock } : {}),
@@ -669,14 +940,14 @@ export function buildRifle(gun) {
       ...(feed.magazine.length ? { magazine: merge(...feed.magazine) } : {}),
       ...(feed.meshes.follower ? { magFollower: feed.meshes.follower } : {}),
       ...(feed.meshes.link ? { link: feed.meshes.link, feedSlide: feed.meshes.feedSlide, feedLever: feed.meshes.feedLever, cover: feed.meshes.cover, ground: feed.meshes.ground } : {}),
-      case: lathe(cart.parts.case),
-      primer: lathe(cart.parts.primer),
-      projectile: lathe(cart.parts.projectile),
-      ...(cart.parts.core ? { core: lathe(cart.parts.core) } : {}),
+      ...roundMeshes(cart),
     },
     layout: {
       bore: 2 * rb, boreR, muzzleX, rearX, breechR, muzzleR, recR, boltR,
-      buttX, pivot: [buttX, pivotY], cgX, style, mech, ...extra,
+      buttX, pivot: [pivotX ?? buttX, pivotY], cgX, style, mech, ...extra,
+      mounted, mountStroke, chain: chainLayout, wedge: wedgeLayout,
+      round: { apfsds: cart.apfsds, petals: cart.sabot?.petals ?? 0, solidMetal: cart.solidMetal, caseMetal: cart.caseMetal,
+               combustible: cart.combustible, rodRadius: cart.rodRadius, sabotLength: cart.sabot?.length ?? 0 },
       device, deviceLength: device ? device.L : 0, flashX: muzzleX + (device ? device.L : 0),
       boltRear: boltRear - 24, portFront, portRear: portRearL, bridgeRear, oal,
       stroke, pinTravel,

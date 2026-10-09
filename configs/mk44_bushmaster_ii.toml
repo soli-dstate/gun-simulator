@@ -1,0 +1,123 @@
+# Mk44 Bushmaster II: a 30x173 mm chain gun firing HEI-T, dual-fed from two
+# linked belts, on a soft (recoil adapter) mount.
+# Published figures where there are any (calibre, barrel, rate of fire, weight,
+# the round's mass and velocity); the burn law is tuned to them, and the drive,
+# feeder and mount are illustrative. All units are SI (m, kg, s, Pa, J).
+
+name = "Mk44 Bushmaster II (30x173 mm HEI-T)"
+
+[barrel]
+bore_diameter   = 30.0e-3   # m, across the lands
+travel          = 2.20      # m, seated base to muzzle (a 2.41 m barrel)
+chamber_volume  = 0.165e-3  # m^3 (used only with chamber_shape = "cylinder")
+chamber_shape   = "case"    # the fluid solver works inside the real case
+breech_diameter = 95.0e-3   # m
+muzzle_diameter = 58.0e-3   # m
+twist           = 0.72      # m per turn (24 calibres), right-hand
+groove_depth    = 0.5e-3    # m
+freebore        = 2.0e-3    # m, travel before the driving band meets the lands
+leade_angle     = 3.0       # degrees
+
+[projectile]
+# A high-explosive incendiary shell with a tracer: a steel body, a copper
+# driving band that is engraved by the rifling, and a point fuze.
+mass                = 0.363   # kg
+shot_start_pressure = 40e6    # Pa
+bore_resistance     = 8e6     # Pa
+engraving_pressure  = 60e6    # Pa, the copper band cut by the rifling
+length           = 147.0e-3   # m
+ogive_length     = 70.0e-3    # m
+meplat_diameter  = 5.0e-3     # m, the fuze's tip
+boat_tail_length = 8.0e-3     # m
+boat_tail_angle  = 7.0        # degrees
+cannelure_position = 22.0e-3  # m: the crimp groove above the driving band
+cannelure_width    = 4.0e-3   # m
+cannelure_depth    = 0.6e-3   # m
+core_material    = "steel"
+drag_model            = "G1"
+ballistic_coefficient = 211.0  # kg/m^2 (0.30 lb/in^2)
+
+[case]
+# 30x173 mm, steel, rimless, with an electric primer.
+length            = 173.0e-3  # m
+overall_length    = 290.0e-3  # m
+rim_diameter      = 44.0e-3   # m
+rim_thickness     = 3.0e-3    # m
+groove_diameter   = 38.0e-3   # m
+groove_width      = 5.0e-3    # m
+base_diameter     = 44.0e-3   # m
+shoulder_diameter = 41.5e-3   # m
+shoulder_position = 128.0e-3  # m
+shoulder_angle    = 25.0      # degrees
+neck_wall         = 1.4e-3    # m
+body_wall         = 1.5e-3    # m
+head_thickness    = 12.0e-3   # m
+primer_diameter   = 10.0e-3   # m
+primer_depth      = 8.0e-3    # m
+material          = "steel"
+
+[propellant]
+composition     = "double_base"
+charge_mass     = 0.140    # kg
+grain           = "7-perf"
+web             = 0.80e-3  # m
+grain_length    = 6.0e-3   # m
+perforation_diameter = 0.3e-3  # m
+burn_rate_coeff = 1.35e-8  # (m/s)/Pa^n, tuned to 1,080 m/s at about 400 MPa
+
+[ignition]
+pressure = 8e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# The motor drives the chain round a track under the receiver's top cover. The
+# bolt dwells locked in battery while the master link crosses the front of the
+# track (the shot is fired electrically in the middle of it), is drawn back
+# along one side, dwells open across the back while the feeder indexes the next
+# round, and rams it along the other side. The cases leave forwards, under the
+# barrel.
+type            = "chain"
+gun_mass        = 160.0     # kg, the gun with its feeder
+bolt_mass       = 5.5       # kg, bolt and carrier
+chain_rate      = 216.0     # rounds/min with no load on the motor (about 200 firing)
+motor_power     = 1500.0    # W
+drive_mass      = 4.0       # kg, the motor's rotor, gears and chain at the master link
+chain_width     = 105.0e-3  # m
+sprocket_radius = 26.0e-3   # m
+unlock_travel   = 6.0e-3    # m: the bolt's cam turns it out of the barrel extension's locks
+friction        = 60.0      # N, the carrier on its rails
+feed_force      = 80.0      # N, ramming the round home
+bore_height        = 0.05   # m, the bore above the trunnions
+cg_distance        = 0.20   # m, trunnions to the centre of mass
+radius_of_gyration = 0.70   # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+# A recoil adapter: a spring pack with a hydraulic damper between the gun and
+# its cradle, a few centimetres of travel.
+stroke              = 0.035     # m
+spring_rate         = 1.2e6     # N/m
+spring_preload      = 8.0e3     # N
+damping             = 6.0e3     # N s/m
+friction            = 400.0     # N
+stop_restitution    = 0.3
+elevation_stiffness = 2.0e6     # N m/rad
+elevation_damping   = 2.0e4     # N m s/rad
+
+[feed]
+# Dual feed: a belt comes in from each side, and the feeder takes from the
+# selected one (the other might hold armour-piercing rounds).
+type      = "dual_belt"
+capacity  = 100        # rounds in each belt
+link_mass = 0.060      # kg per link
+belt_hang = 0.60       # m
+select    = "left"
+
+[appearance]
+style = "autocannon"

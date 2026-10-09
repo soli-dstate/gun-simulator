@@ -191,11 +191,11 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
     lateral = math.hypot(listener[1], listener[2])
     x_max = max(listener[0], 0.0) + 3 * lateral + 20
     if shot.muzzle_velocity > c0 and listener[0] > 0:
-        traj = ballistic.fly(shot.muzzle_velocity, proj.mass, gun.barrel.bore_diameter, rho0, c0, x_max)
+        traj = ballistic.fly(shot.muzzle_velocity, gun.flight_mass, gun.flight_diameter, rho0, c0, x_max)
         for name, _, _ in paths:
             # Ground path: the projectile flies at z = 0, so mirror the listener below the ground.
             target = listener if name == "direct" else np.array([listener[0], listener[1], -2 * h_s - listener[2]])
-            cr = ballistic.crack(traj, target, c0, p0, gun.barrel.bore_diameter, proj.length)
+            cr = ballistic.crack(traj, target, c0, p0, gun.flight_diameter, proj.length)
             if cr is None:
                 continue
             # The mirrored ray really arrives travelling upwards.
@@ -364,8 +364,9 @@ def _crack_source(gun: Gun, shot: ShotResult, s: SoundSettings) -> dict | None:
     c0 = s.sound_speed
     if shot.muzzle_velocity <= c0:
         return None
-    d, length = gun.barrel.bore_diameter, gun.projectile.length
-    traj = ballistic.fly(shot.muzzle_velocity, gun.projectile.mass, d, s.air_density, c0, CRACK_RANGE)
+    # An APFSDS's rod flies on alone once its sabot has gone.
+    d, length = gun.flight_diameter, gun.projectile.length
+    traj = ballistic.fly(shot.muzzle_velocity, gun.flight_mass, d, s.air_density, c0, CRACK_RANGE)
     mach = traj.v / c0
     n = int(np.argmax(mach <= 1.0)) if np.any(mach <= 1.0) else len(mach)
     if n < 2:

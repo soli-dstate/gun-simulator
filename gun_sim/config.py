@@ -36,6 +36,14 @@ class Barrel:
     groove_depth: float | None = None  # m, land height cut into the projectile
     freebore: float = 0.0              # m, travel before the bearing surface meets the lands
     leade_angle: float = 1.5           # degrees, half-angle of the forcing cone
+    # Bore evacuator (gun_sim/evacuator.py): a reservoir round the barrel that the shot's gas
+    # charges through inclined nozzles and that then blows it back out towards the muzzle,
+    # drawing the fumes out of the bore. 0 = none.
+    evacuator_position: float = 0.0          # m of projectile travel from the seat to the nozzles
+    evacuator_volume: float = 0.0            # m^3, the reservoir
+    evacuator_nozzles: int = 0               # count, round the barrel
+    evacuator_nozzle_diameter: float = 0.0   # m
+    evacuator_angle: float = 30.0            # degrees the nozzles lean from the bore axis, towards the muzzle
 
     @property
     def bore_area(self) -> float:
@@ -78,7 +86,8 @@ _REF_GEOMETRY = {
 }
 
 
-CORE_MATERIALS = ("lead", "steel", "copper")
+CORE_MATERIALS = ("lead", "steel", "copper", "tungsten")
+PROJECTILE_TYPES = ("bullet", "apfsds")
 
 
 @dataclass
@@ -106,6 +115,18 @@ class Projectile:
     jacket_thickness: float = 0.0          # m, jacket over a core
     core_material: int | str = 0           # 0/"lead", 1/"steel", 2/"copper"
     exposed_core_length: float = 0.0       # m, soft point: core left bare at the tip
+    # Discarding sabot ("apfsds"): a fin-stabilised long rod held in the bore by a sabot whose
+    # petals fall away at the muzzle. `mass` is the whole launch package (the gas drives it),
+    # `length` the rod from its tail to its tip, and the gas pushes on the sabot's rear face,
+    # `sabot_offset` ahead of the rod's tail (the fins reach back into the propellant). The
+    # trajectory flies the rod alone. The shape fields above describe the rod's nose.
+    type: str = "bullet"                   # "bullet" (full calibre) or "apfsds"
+    penetrator_mass: float | None = None   # kg, the rod and fins that fly on; None = 60 % of mass
+    penetrator_diameter: float | None = None  # m; None = a fifth of the bore
+    fin_span: float | None = None          # m, across the fins; None = 3.5 rod diameters
+    fin_length: float | None = None        # m, along the rod; None = 6 rod diameters
+    sabot_length: float | None = None      # m, along the rod; None = 1.2 bores
+    sabot_offset: float | None = None      # m, rod tail to the sabot's rear face; None = 1.5 fin lengths
 
     def __post_init__(self):
         if isinstance(self.core_material, str):
@@ -117,6 +138,18 @@ class Projectile:
                 ) from None
 
     def validate_shape(self) -> None:
+        if self.type not in PROJECTILE_TYPES:
+            raise ValueError(f"projectile.type must be one of {', '.join(PROJECTILE_TYPES)}, not {self.type!r}")
+        if self.type == "apfsds":
+            if not 0 < self.penetrator_mass < self.mass:
+                raise ValueError("projectile.penetrator_mass must be positive and less than the launch mass (rod and sabot)")
+            for name in ("penetrator_diameter", "fin_span", "fin_length", "sabot_length"):
+                if getattr(self, name) <= 0:
+                    raise ValueError(f"projectile.{name} must be positive")
+            if self.sabot_offset < 0 or self.sabot_offset + self.sabot_length > self.length:
+                raise ValueError("projectile: the sabot (sabot_offset + sabot_length) must sit on the rod")
+            if self.fin_span < self.penetrator_diameter:
+                raise ValueError("projectile.fin_span must be at least the rod's diameter")
         if not 1.0 <= self.ogive_radius_ratio <= 10.0:
             raise ValueError("ogive_radius_ratio must be between 1 (tangent) and 10")
         if float(self.core_material) not in range(len(CORE_MATERIALS)):
@@ -297,6 +330,15 @@ class Case:
     head_thickness: float | None = None     # m, solid web at the base
     primer_diameter: float | None = None    # m
     primer_depth: float | None = None       # m, primer pocket depth
+    # Combustible case: the body is felted nitrocellulose that burns with the charge (count its
+    # mass in the charge); only a metal stub base, `stub_length` long from the head, is left to
+    # extract. False = a whole metal case.
+    combustible: bool = False
+    stub_length: float | None = None        # m; None = the head thickness plus a fifth of the base diameter
+    material: str = "brass"                 # the metal case or stub: "brass" or "steel"
+
+
+CASE_MATERIALS = {"brass": 8500.0, "steel": 7850.0}   # kg/m^3
 
 
 @dataclass
@@ -362,8 +404,9 @@ class MuzzleDevice:
     mass: float | None = None             # kg, added to the gun; None = from its steel
 
 
-ACTION_TYPES = ("bolt", "gas", "direct_impingement", "blowback", "short_recoil", "roller_delayed", "lever_delayed", "gas_delayed")
-STANCES = ("shoulder", "free")
+ACTION_TYPES = ("bolt", "gas", "direct_impingement", "blowback", "short_recoil", "roller_delayed", "lever_delayed",
+                "gas_delayed", "chain", "sliding_wedge")
+STANCES = ("shoulder", "free", "mount")
 
 
 @dataclass
@@ -380,6 +423,15 @@ class Action:
     a light head and a carrier that rollers (a lever) drive delay_ratio times
     as fast; "gas_delayed" has gas from a port by the chamber push a piston on
     the slide forwards. None = worked out from the cartridge (see action.py).
+
+    Externally powered and cannon breeches: "chain" is a chain gun, whose bolt
+    rides a master link that a motor drives round a rectangular track, so the
+    motor, not the shot, works the action (bolt_mass is the bolt and carrier);
+    "sliding_wedge" is a vertical sliding-block breech, locked while the gun
+    recoils, that the opening cam on the cradle drops as the gun runs out again
+    (bolt_mass is the block, bolt_travel its drop, spring_rate and
+    spring_preload its closing spring), and whose extractors throw the case or
+    its stub out.
     """
     type: str = "bolt"
     gun_mass: float = 4.0               # kg, the whole gun unloaded, bolt included
@@ -421,9 +473,20 @@ class Action:
     # Direct impingement: the tube from the gas block back to the carrier key.
     gas_tube_length: float | None = None  # m; None = from the port to the case head, plus a case length
     gas_tube_diameter: float = 1.8e-3     # m, inside
+    # Chain gun: a DC motor (torque falling linearly with speed) drives the chain; the bolt
+    # dwells locked while the master link crosses the front of the track and again, open,
+    # across the back, where the feeder (driven off the same chain) indexes the next round.
+    chain_rate: float = 200.0           # rounds/min the motor would drive with no load
+    motor_power: float = 1500.0         # W, the motor's peak power (a quarter of stall force x free speed)
+    drive_mass: float = 4.0             # kg: motor rotor, gears and chain as felt at the master link
+    chain_width: float | None = None    # m, across the track (the dwells); None = 0.35 overall lengths
+    sprocket_radius: float | None = None  # m, the track's corners; None = a quarter of its width
+    # Sliding wedge: the opening cam turns the crank over the last cam_travel of the run-out.
+    cam_travel: float = 0.12            # m of counter-recoil before battery
+    extractor_ratio: float = 2.5        # case speed out of the breech over the block's speed when it strikes the extractors
     # Stock and balance, for muzzle rise.
-    bore_height: float = 0.03           # m, bore axis above where the recoil is taken (the shoulder)
-    cg_distance: float = 0.40           # m, along the bore from the butt to the centre of mass
+    bore_height: float = 0.03           # m, bore axis above where the recoil is taken (the shoulder, or a mount's trunnions)
+    cg_distance: float = 0.40           # m, along the bore from the butt (or the trunnions) to the centre of mass
     radius_of_gyration: float = 0.25    # m, for pitching about the centre of mass
 
 
@@ -434,8 +497,10 @@ class Feed:
     "single_stack", "double_stack" and "quad_stack" are box magazines (one
     column, two staggered, two double stacks side by side under a funnel);
     "drum" winds them in a spiral on a sprung rotor under a short tower; "belt"
-    links them in a belt drawn across a feed tray by a cam on the bolt group.
-    None = filled in for the type.
+    links them in a belt drawn across a feed tray by a cam on the bolt group;
+    "dual_belt" has a belt coming in from each side, `capacity` each, and feeds
+    from the `select`ed one; "hand" is a loader putting each round into the
+    breech, from a ready rack of `capacity` rounds. None = filled in for the type.
     """
     type: str = "double_stack"
     capacity: int | None = None             # rounds (None = 10, 30, 60, 75, 100)
@@ -451,11 +516,44 @@ class Feed:
     belt_hang: float = 0.25                 # m of belt hanging from the feed tray
     belt_cam_start: float | None = None     # m of carrier travel where the feed cam starts drawing the belt (None = 20 % of the stroke)
     belt_cam: float | None = None           # m of carrier travel over which it draws one link (None = 35 % of the stroke)
+    select: str = "left"                    # dual belt: the belt that feeds ("left" or "right")
+
+
+@dataclass
+class Mount:
+    """The recoil system of a gun on a mount (shooter.stance = "mount"; gun_sim/action.py).
+
+    The recoiling parts (action.gun_mass) slide back in the cradle against a
+    spring, a hydropneumatic recuperator (gas compressed by a piston) and a
+    hydraulic buffer (oil forced through an orifice, which a throttling rod
+    closes down over the stroke so the force stays nearly level), with linear
+    damping and friction, up to a hard stop at `stroke`. The recuperator and
+    spring run the gun out again; the last `counter_buffer` of the run-out is
+    cushioned by the counter-recoil buffer. The cradle is held in elevation by
+    the elevation gear. Every element is off at 0.
+    """
+    stroke: float = 0.03                      # m, recoil travel to the hard stop
+    spring_rate: float = 0.0                  # N/m, mechanical recoil spring (a soft mount's)
+    spring_preload: float = 0.0               # N
+    damping: float = 0.0                      # N s/m, linear damper
+    friction: float = 0.0                     # N, slides and seals
+    recuperator_pressure: float = 0.0         # Pa, its gas in battery
+    recuperator_volume: float = 0.0           # m^3, its gas in battery
+    recuperator_area: float = 0.0             # m^2, its piston
+    buffer_area: float = 0.0                  # m^2, the buffer's piston (0 = no buffer)
+    buffer_orifice: float = 0.0               # m^2 open at the start of recoil
+    buffer_orifice_end: float | None = None   # m^2 open at full stroke (the throttling rod); None = the same
+    counter_orifice: float | None = None      # m^2 the oil returns through in the run-out; None = buffer_orifice
+    counter_buffer: float = 0.0               # m: over this last part of the run-out the return orifice closes to a tenth
+    oil_density: float = 870.0                # kg/m^3
+    stop_restitution: float = 0.2             # bounce off the hard stop
+    elevation_stiffness: float = 2e7          # N m/rad, the elevation gear holding the cradle
+    elevation_damping: float = 2e5            # N m s/rad
 
 
 @dataclass
 class Shooter:
-    """What holds the gun. "free" is free recoil: nothing holds it at all."""
+    """What holds the gun. "free" is free recoil: nothing holds it at all; "mount" is a mount's recoil system ([mount])."""
     stance: str = "shoulder"
     body_mass: float = 5.0              # kg of shooter that moves with the gun (shoulder and arms)
     shoulder_stiffness: float = 15e3    # N/m
@@ -464,7 +562,7 @@ class Shooter:
     hold_damping: float = 9.0           # N m s/rad
 
 
-STYLES = ("rifle", "ar15", "ak")
+STYLES = ("rifle", "ar15", "ak", "autocannon", "tank")
 
 
 @dataclass
@@ -472,7 +570,10 @@ class Appearance:
     """How the 3D view dresses the action (the solvers ignore it): "rifle" is a
     sporting stock, "ar15" an AR-15 / M4 (upper and lower receiver, pistol grip,
     carry handle or rail, buffer tube and collapsible stock), "ak" a Kalashnikov
-    (stamped receiver and dust cover, gas tube over the barrel, curved magazine)."""
+    (stamped receiver and dust cover, gas tube over the barrel, curved magazine),
+    "autocannon" a chain gun's box receiver and drive on a recoil-adapter mount,
+    "tank" a tank gun's breech ring, cradle, recoil cylinders, thermal sleeve and
+    bore evacuator."""
     style: str = "rifle"
 
 
@@ -490,6 +591,7 @@ class Gun:
     muzzle_device: MuzzleDevice = field(default_factory=MuzzleDevice)
     feed: Feed = field(default_factory=Feed)
     appearance: Appearance = field(default_factory=Appearance)
+    mount: Mount = field(default_factory=Mount)
 
     def __post_init__(self):
         scale = self.barrel.bore_diameter / _REF_BORE
@@ -498,6 +600,41 @@ class Gun:
             for key, value in ref.items():
                 if getattr(part, key) is None:
                     setattr(part, key, value * scale)
+        p, bore = self.projectile, self.barrel.bore_diameter
+        if p.type == "apfsds":
+            if p.penetrator_mass is None:
+                p.penetrator_mass = 0.6 * p.mass
+            if p.penetrator_diameter is None:
+                p.penetrator_diameter = 0.2 * bore
+            d = p.penetrator_diameter
+            if p.fin_span is None:
+                p.fin_span = min(3.5 * d, 0.95 * bore)
+            if p.fin_length is None:
+                p.fin_length = 6 * d
+            if p.sabot_length is None:
+                p.sabot_length = 1.2 * bore
+            if p.sabot_offset is None:
+                p.sabot_offset = 1.5 * p.fin_length
+        c = self.case
+        if c.stub_length is None:
+            c.stub_length = c.head_thickness + 0.2 * c.base_diameter
+
+    @property
+    def seat(self) -> float:
+        """Where the gas pushes the seated projectile, m from the case head: its base, or an APFSDS's sabot."""
+        p = self.projectile
+        return self.case.overall_length - p.length + (p.sabot_offset if p.type == "apfsds" else 0.0)
+
+    @property
+    def flight_mass(self) -> float:
+        """What flies on from the muzzle (kg): the projectile, or an APFSDS's rod once the sabot has gone."""
+        p = self.projectile
+        return p.penetrator_mass if p.type == "apfsds" else p.mass
+
+    @property
+    def flight_diameter(self) -> float:
+        p = self.projectile
+        return p.penetrator_diameter if p.type == "apfsds" else self.barrel.bore_diameter
 
     @property
     def chamber_length(self) -> float:
@@ -538,8 +675,15 @@ class Gun:
         self._validate_action()
         self._validate_device()
         self._validate_feed()
+        self._validate_mount()
+        self._validate_evacuator()
         if self.appearance.style not in STYLES:
             raise ValueError(f"appearance.style must be one of {", ".join(STYLES)}, not {self.appearance.style!r}")
+        c = self.case
+        if c.material not in CASE_MATERIALS:
+            raise ValueError(f"case.material must be one of {', '.join(CASE_MATERIALS)}, not {c.material!r}")
+        if c.combustible and not c.head_thickness <= c.stub_length < c.length:
+            raise ValueError("case.stub_length must be at least the head thickness and shorter than the case")
         solid_volume = p.charge_mass / p.density
         chamber = self.effective_chamber_volume
         if solid_volume >= chamber:
@@ -593,6 +737,24 @@ class Gun:
             raise ValueError("action.hammer_angle must be between 10 and 120 degrees")
         if not 0 <= a.rate_reducer_angle <= a.hammer_angle:
             raise ValueError("action.rate_reducer_angle must be between 0 and hammer_angle")
+        if a.type == "chain":
+            if not 10 <= a.chain_rate <= 3000 or a.motor_power <= 0 or a.drive_mass < 0:
+                raise ValueError("chain gun: chain_rate must be 10 to 3000 rounds/min, motor_power positive "
+                                 "and drive_mass not negative")
+            for name in ("chain_width", "sprocket_radius"):
+                value = getattr(a, name)
+                if value is not None and value <= 0:
+                    raise ValueError(f"action.{name} must be positive (or left out)")
+            if a.sprocket_radius is not None and a.chain_width is not None and 2 * a.sprocket_radius > a.chain_width:
+                raise ValueError("action.sprocket_radius must be at most half the chain_width")
+        if a.type == "sliding_wedge":
+            if a.cam_travel <= 0 or a.extractor_ratio <= 0:
+                raise ValueError("sliding wedge: cam_travel and extractor_ratio must be positive")
+            if s.stance != "mount":
+                raise ValueError("a sliding-wedge breech is opened by the gun running out on its recoil system: "
+                                 "set shooter.stance = \"mount\"")
+            if a.cam_travel >= self.mount.stroke:
+                raise ValueError("action.cam_travel must be shorter than the recoil stroke (mount.stroke)")
         for name in ("body_mass", "shoulder_stiffness", "shoulder_damping", "hold_stiffness", "hold_damping"):
             if getattr(s, name) < 0:
                 raise ValueError(f"shooter.{name} cannot be negative")
@@ -619,10 +781,50 @@ class Gun:
             raise ValueError("feed.ramp_angle must be between 5 and 80 degrees")
         if f.link_mass < 0 or f.belt_hang < 0:
             raise ValueError("feed.link_mass and belt_hang cannot be negative")
+        if f.select not in ("left", "right"):
+            raise ValueError("feed.select must be \"left\" or \"right\"")
+        if self.action.type == "chain" and f.type not in ("belt", "dual_belt"):
+            raise ValueError("a chain gun's feeder takes its rounds from a belt: feed.type \"belt\" or \"dual_belt\"")
+        if f.type == "hand" and self.action.type not in ("bolt", "sliding_wedge"):
+            raise ValueError("feed.type \"hand\" (a loader) needs a hand-worked breech: action.type \"bolt\" or \"sliding_wedge\"")
         for name in ("belt_cam_start", "belt_cam"):
             value = getattr(f, name)
             if value is not None and value <= 0:
                 raise ValueError(f"feed.{name} must be positive (or left out)")
+
+    def _validate_mount(self) -> None:
+        m = self.mount
+        for name in ("spring_rate", "spring_preload", "damping", "friction", "recuperator_pressure", "recuperator_volume",
+                     "recuperator_area", "buffer_area", "buffer_orifice", "counter_buffer", "elevation_stiffness",
+                     "elevation_damping"):
+            if getattr(m, name) < 0:
+                raise ValueError(f"mount.{name} cannot be negative")
+        if m.stroke <= 0 or m.oil_density <= 0 or not 0 <= m.stop_restitution <= 1:
+            raise ValueError("mount.stroke and oil_density must be positive, stop_restitution between 0 and 1")
+        if m.recuperator_pressure and m.recuperator_area * m.stroke >= m.recuperator_volume:
+            raise ValueError("mount: the recuperator's piston would sweep all its gas before full recoil "
+                             "(more recuperator_volume, or less recuperator_area)")
+        if m.buffer_area:
+            if m.buffer_orifice <= 0:
+                raise ValueError("mount: a buffer needs an orifice (buffer_orifice)")
+            for name in ("buffer_orifice_end", "counter_orifice"):
+                value = getattr(m, name)
+                if value is not None and value <= 0:
+                    raise ValueError(f"mount.{name} must be positive (or left out)")
+
+    def _validate_evacuator(self) -> None:
+        b = self.barrel
+        if not b.evacuator_position:
+            return
+        if not 0 < b.evacuator_position < b.travel:
+            raise ValueError("barrel.evacuator_position must be inside the barrel (less than barrel.travel)")
+        if b.evacuator_volume <= 0 or b.evacuator_nozzles < 1 or b.evacuator_nozzle_diameter <= 0:
+            raise ValueError("a bore evacuator needs a volume, at least one nozzle and a nozzle diameter")
+        if not 0 <= b.evacuator_angle < 90:
+            raise ValueError("barrel.evacuator_angle must be between 0 and 90 degrees")
+        if self.action.type in ("gas", "direct_impingement", "gas_delayed"):
+            raise ValueError("a bore evacuator with a gas-operated action is not supported (they share the "
+                             "bore gas the solvers record at one point)")
 
     def _validate_device(self) -> None:
         d, cfg = self.muzzle_device, self.solver
@@ -671,6 +873,7 @@ class Gun:
             "muzzle_device": MuzzleDevice,
             "feed": Feed,
             "appearance": Appearance,
+            "mount": Mount,
         }
         kwargs = {"name": data.get("name", "unnamed")}
         for key, section_cls in sections.items():

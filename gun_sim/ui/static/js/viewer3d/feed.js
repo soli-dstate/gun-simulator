@@ -14,7 +14,13 @@
 //   the left, hanging down to the ground and lying along it (the range swings
 //   it as a chain). A cam groove on top of the bolt group swings a feed lever in
 //   the hinged top cover, whose front end slides the feed pawl across, drawing
-//   the belt one link per cycle; empty links fall out to the right.
+//   the belt one link per cycle; empty links fall out to the right. A chain
+//   gun's feeder is driven off its chain, so its bolt group carries no cam. A
+//   dual feed has a belt coming in from each side; the selected one feeds, and
+//   the other waits a link out from the feed position.
+// * Hand: a loader's ready rack, the rounds lying side by side in rows, noses
+//   forwards, beside and behind the breech. It is fixed in the turret, so it
+//   doesn't recoil with the gun.
 //
 // The feed ramp runs from the chamber's edge back towards the magazine (from
 // the top, for a belt). Units are mm, in the gun's frame (gun.js).
@@ -24,7 +30,8 @@ import { chain, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { box, prism, rodProfile, tubeProfile } from "./shapes.js";
 
 const MM = 1e3;
-export const CAPACITY = { single_stack: 10, double_stack: 30, quad_stack: 60, drum: 75, belt: 100 };
+export const CAPACITY = { single_stack: 10, double_stack: 30, quad_stack: 60, drum: 75, belt: 100, dual_belt: 100, hand: 15 };
+const RACK_ROW = 8;         // rounds side by side in each row of a ready rack
 // As gun_sim/feed.py.
 const PITCH = { single_stack: 1.0, double_stack: 0.6, quad_stack: 0.3, drum: 1.0 };
 const STAGGER = 0.4, FUNNEL = 4, DRUM_TOWER = 4, LINK_PITCH = 1.2;
@@ -34,16 +41,17 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** Where the next round is presented and the feed angle (mm, rad), as feed.py geometry(). */
 export function feedGeometry(gun, dims) {
-  const f = gun.feed ?? {}, type = f.type ?? "double_stack", belt = type === "belt";
+  const f = gun.feed ?? {}, type = f.type ?? "double_stack", belt = type === "belt" || type === "dual_belt";
+  const hand = type === "hand";
   const d = 2 * dims.rimR, oal = Math.max(gun.case.overall_length * MM, dims.length);
   const boltR = Math.max(dims.rimR + 2.2, dims.baseR * 1.3);
   const sign = belt ? -1 : 1;
-  const present = belt ? 0 : PRESENT * d;
+  const present = belt || hand ? 0 : PRESENT * d;
   let under = boltR + d / 2, drop;
-  if (belt) { drop = under = under + BELT_RAISE * d; } else { drop = -(under - present); under = -under; }
+  if (belt) { drop = under = under + BELT_RAISE * d; } else if (hand) { drop = under = 0; } else { drop = -(under - present); under = -under; }
   const angle = f.feed_angle != null ? sign * f.feed_angle * Math.PI / 180 : Math.asin(Math.min(-drop / oal, 0.9));
   return {
-    type, belt, sign, d, oal, present, drop, under, angle,
+    type, belt, hand, dual: type === "dual_belt", sign, d, oal, present, drop, under, angle,
     capacity: Math.round(f.capacity ?? CAPACITY[type]),
     mouth: dims.baseR + 0.05, tip: Math.max((gun.projectile.meplat_diameter ?? 0) * MM / 2, 0.3),
     ramp: (f.ramp_angle ?? 35) * Math.PI / 180, face: dims.rimT + 0.6,
@@ -99,6 +107,10 @@ export function buildFeed(gun, ctx) {
 
   if (g.belt) {
     buildBelt(gun, ctx, g, { headX, xm, furniture, steel, meshes, cam, layout, f });
+    return { geo: g, furniture, magazine, steel, meshes, cam, layout };
+  }
+  if (g.hand) {
+    buildRack(ctx, g, { meshes, layout });
     return { geo: g, furniture, magazine, steel, meshes, cam, layout };
   }
 
@@ -245,22 +257,30 @@ function buildBelt(gun, ctx, g, o) {
   const { d, oal } = g;
   const pitch = LINK_PITCH * d, yB = g.drop;
   const trayLen = ctx.recR + 2 * pitch;
-  /** Where the link u mm along the belt from the feed position lies: in the tray, or beyond its edge (rising, held up to it). */
-  const point = (u) => (u <= trayLen ? [headX, yB, -u] : [headX, yB + 0.35 * (u - trayLen), -u]);
+  // The belt comes in from the left (-z); a dual feed has a second from the right, and feeds from the
+  // selected one. fs is the feeding belt's side.
+  const sides = g.dual ? [-1, 1] : [-1], fs = g.dual && f.select === "right" ? 1 : -1;
+  /** Where the link u mm along the belt from the feed position lies, on side `side`: in the tray, or beyond its edge (rising, held up to it). */
+  const point = (u, side = fs) => (u <= trayLen ? [headX, yB, side * u] : [headX, yB + 0.35 * (u - trayLen), side * u]);
 
-  // Tray under the rounds (open over the bolt at the feed position) and the cover over them,
+  // Trays under the rounds (open over the bolt at the feed position) and the cover over them,
   // hinged at its front to swing up for a new belt.
-  const trayY = yB - d / 2 - 1.2, trayFrom = -0.6 * pitch, trayTo = -trayLen;
-  steel.push(boxAt(oal, 1.5, trayFrom - trayTo, xm, trayY, (trayFrom + trayTo) / 2));
-  steel.push(boxAt(oal * 0.3, 3, trayFrom - trayTo, xm + oal * 0.3, trayY + 1.5, (trayFrom + trayTo) / 2));   // cartridge guide
-  const coverY = yB + d / 2 + 4, coverFrom = 2 * pitch, coverTo = -trayLen - 2, coverLen = oal + 26;
+  const trayY = yB - d / 2 - 1.2, trayFrom = 0.6 * pitch;
+  for (const s of sides) {
+    const zc = s * (trayFrom + trayLen) / 2, w = trayLen - trayFrom;
+    steel.push(boxAt(oal, 1.5, w, xm, trayY, zc));
+    steel.push(boxAt(oal * 0.3, 3, w, xm + oal * 0.3, trayY + 1.5, zc));   // cartridge guide
+  }
+  const coverY = yB + d / 2 + 4, coverLen = oal + 26;
+  const coverFrom = g.dual ? trayLen + 2 : 2 * pitch, coverTo = -trayLen - 2;
   meshes.cover = boxMesh(coverLen, 3, coverFrom - coverTo, xm - 6, coverY, (coverFrom + coverTo) / 2);
   const hingeX = xm - 6 + coverLen / 2, hingeY = coverY + 1.5;
 
-  // The ground the rest of the belt lies on, belt_hang below the tray, beside the gun.
+  // The ground the rest of the belt lies on, belt_hang below the tray, beside the gun (both sides for a dual feed).
   const hang = (f.belt_hang ?? 0.25) * MM, floor = yB - hang - d / 2;
   const far = trayLen + g.capacity * pitch + 60;
-  meshes.ground = boxMesh(oal + 80, 6, far - trayLen, xm, floor - 3, -(trayLen + far) / 2);
+  meshes.ground = g.dual ? boxMesh(oal + 80, 6, 2 * far, xm, floor - 3, 0)
+    : boxMesh(oal + 80, 6, far - trayLen, xm, floor - 3, -(trayLen + far) / 2);
 
   // A link: two clips round the case body and a loop out to the next one.
   const r = ctx.dims.baseR, x1 = 0.2 * oal, x2 = 0.45 * oal;
@@ -270,11 +290,11 @@ function buildBelt(gun, ctx, g, o) {
     boxMesh(x2 + 3 - x1, 0.6, pitch - 2 * r + 1.5, (x1 + x2 + 3) / 2, -r * 0.3, -(pitch / 2)),
   ]);
 
-  // Feed slide and pawl (moves +z as the cam draws the belt), and the lever that drives it.
+  // Feed slide and pawl (moves towards the middle as the cam draws the belt), and the lever that drives it.
   const slideX = xm + 0.15 * oal, ySlide = yB + d / 2 + 1.6;
   meshes.feedSlide = mergeLocal([
-    boxMesh(16, 1.4, 3 * pitch, slideX, ySlide, -pitch),
-    boxMesh(10, 0.55 * d, 1.6, slideX, ySlide - 0.3 * d, -1.5 * pitch),
+    boxMesh(16, 1.4, 3 * pitch, slideX, ySlide, fs * pitch),
+    boxMesh(10, 0.55 * d, 1.6, slideX, ySlide - 0.3 * d, fs * 1.5 * pitch),
   ]);
   const studX = headX - 8, xp = studX + 0.4 * (slideX - studX), armF = slideX - xp;
   const camTop = ctx.camTop;
@@ -286,26 +306,57 @@ function buildBelt(gun, ctx, g, o) {
   const strokeMM = ctx.stroke;
   const cs = (f.belt_cam_start != null ? f.belt_cam_start * MM : 0.2 * strokeMM);
   const ce = Math.min(cs + (f.belt_cam != null ? f.belt_cam * MM : 0.35 * strokeMM), 0.95 * strokeMM);
-  const lever = (frac) => -Math.asin(clamp(frac * pitch / armF, -0.95, 0.95));
+  const lever = (frac) => fs * Math.asin(clamp(frac * pitch / armF, -0.95, 0.95));
   const zEnd = (xp - studX) * Math.sin(lever(1));
   // The groove on the bolt group the stud rides in (bolt group's own coordinates: travel c puts the
   // stud over x = studX + c): straight, a slant over the cam's travel, straight again.
-  const end = Math.min(studX + strokeMM + 4, ctx.groupFront - 2), yRail = camTop + 1.2;
-  const segsXZ = [[studX - 4, 0, studX + cs, 0], [studX + cs, 0, studX + ce, zEnd], [studX + ce, zEnd, Math.max(end, studX + ce + 2), zEnd]];
-  for (const [ax, az, bx, bz] of segsXZ) {
-    const len = Math.hypot(bx - ax, bz - az) || 1, nx = -(bz - az) / len, nz = (bx - ax) / len;
-    for (const sgn of [1, -1]) cam.push(railXZ(ax + sgn * nx * 2.2, az + sgn * nz * 2.2, bx + sgn * nx * 2.2, bz + sgn * nz * 2.2, yRail, 2.4, 1.2));
+  if (!ctx.chainDriven) {
+    const end = Math.min(studX + strokeMM + 4, ctx.groupFront - 2), yRail = camTop + 1.2;
+    const segsXZ = [[studX - 4, 0, studX + cs, 0], [studX + cs, 0, studX + ce, zEnd], [studX + ce, zEnd, Math.max(end, studX + ce + 2), zEnd]];
+    for (const [ax, az, bx, bz] of segsXZ) {
+      const len = Math.hypot(bx - ax, bz - az) || 1, nx = -(bz - az) / len, nz = (bx - ax) / len;
+      for (const sgn of [1, -1]) cam.push(railXZ(ax + sgn * nx * 2.2, az + sgn * nz * 2.2, bx + sgn * nx * 2.2, bz + sgn * nz * 2.2, yRail, 2.4, 1.2));
+    }
   }
 
   Object.assign(layout, {
-    pitch, cam: [cs, ce], drop: yB, trayLen, point, floor, rest: floor + d / 2,
+    pitch, cam: [cs, ce], drop: yB, trayLen, point, floor, rest: floor + d / 2, sides, feedSide: fs,
     camFrac: (travel) => clamp((travel - cs) / Math.max(ce - cs, 1e-6), 0, 1),
-    slide: (frac) => translation(0, 0, frac * pitch),
+    slide: (frac) => translation(0, 0, -fs * frac * pitch),
     lever: (frac) => chain(translation(xp, ySlide, 0), rotationY(lever(frac))),
     /** The top cover (and the feed lever and slide in it) swung up `angle` rad about its front hinge. */
     coverAt: (angle) => chain(translation(hingeX, hingeY, 0), rotationZ(-angle), translation(-hingeX, -hingeY, 0)),
     lowered: () => 0,
-    ejectLink: () => [headX, yB, pitch],
+    ejectLink: () => [headX, yB, -fs * pitch],
+  });
+  layout.depth = 0;
+}
+
+/**
+ * A loader's ready rack: rows of RACK_ROW rounds side by side, noses forwards, heads at ctx.rack.x,
+ * the first row's first round at (ctx.rack.y, ctx.rack.z) and the rest going on to the left and down.
+ * The loader takes them from the first slot on, so with n left they are in the last n slots. The
+ * rack is fixed (it doesn't recoil): its matrices are in the world's frame.
+ */
+function buildRack(ctx, g, o) {
+  const { meshes, layout } = o, { d, oal } = g, at = ctx.rack, gap = 1.15 * d;
+  const rows = Math.ceil(g.capacity / RACK_ROW), across = Math.min(g.capacity, RACK_ROW);
+  const slot = (i) => translation(at.x, at.y - Math.floor(i / RACK_ROW) * gap, at.z - (i % RACK_ROW) * gap);
+  // A shelf under each row, and a stop the noses bear against.
+  const parts = [];
+  const zc = at.z - (across - 1) * gap / 2, wz = across * gap + 10;
+  for (let r = 0; r < rows; r++) {
+    const y = at.y - r * gap - d / 2 - 3;
+    parts.push(boxMesh(0.25 * oal, 4, wz, at.x + 0.2 * oal, y, zc), boxMesh(0.25 * oal, 4, wz, at.x + 0.75 * oal, y, zc));
+  }
+  parts.push(boxMesh(6, rows * gap + 10, wz, at.x + oal + 8, at.y - (rows - 1) * gap / 2, zc));
+  meshes.rack = mergeLocal(parts);
+  Object.assign(layout, {
+    rackStatic: true, slot,
+    rounds: (n) => Array.from({ length: Math.max(0, Math.min(n, g.capacity)) }, (_, k) => ({ round: true, m: slot(g.capacity - n + k) })),
+    /** Where the next round is taken from, with n left. */
+    next: (n) => slot(Math.max(g.capacity - n, 0)),
+    lowered: () => 0,
   });
   layout.depth = 0;
 }

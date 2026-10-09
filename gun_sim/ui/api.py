@@ -13,8 +13,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import action, devices, exterior, fluid, lumped, parallel, plume, rifling, sound
-from ..config import ACTION_TYPES, CORE_MATERIALS, DEVICE_TYPES, FEED_TYPES, STANCES, STYLES, Gun
+from .. import action, devices, evacuator, exterior, fluid, lumped, parallel, plume, rifling, sound
+from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, DEVICE_TYPES, FEED_TYPES, PROJECTILE_TYPES,
+                      STANCES, STYLES, Gun)
 from ..propellants import COMPOSITIONS, GRAINS, SUPPRESSANTS
 from ..results import ShotResult
 from ..sound import GROUNDS, PRESET_LABELS, PRESETS, SoundSettings
@@ -43,6 +44,11 @@ FIELDS = {
         ("leade_angle", "Leade angle", "°", 1),
         ("breech_diameter", "Outside diameter at breech", "mm", 1e-3),
         ("muzzle_diameter", "Outside diameter at muzzle", "mm", 1e-3),
+        ("evacuator_position", "Bore evacuator (travel from seat; 0 = none)", "mm", 1e-3),
+        ("evacuator_volume", "Evacuator reservoir", "L", 1e-3),
+        ("evacuator_nozzles", "Evacuator nozzles", "", 1),
+        ("evacuator_nozzle_diameter", "Evacuator nozzle diameter", "mm", 1e-3),
+        ("evacuator_angle", "Evacuator nozzle lean towards the muzzle", "°", 1),
     ],
     "case": [
         ("length", "Case length", "mm", 1e-3),
@@ -60,9 +66,13 @@ FIELDS = {
         ("head_thickness", "Head thickness", "mm", 1e-3),
         ("primer_diameter", "Primer diameter", "mm", 1e-3),
         ("primer_depth", "Primer pocket depth", "mm", 1e-3),
+        ("material", "Case metal", "choice", list(CASE_MATERIALS)),
+        ("combustible", "Combustible case (only a stub base is left)", "flag", None),
+        ("stub_length", "Stub base length (combustible; blank = from the head)", "mm", 1e-3),
     ],
     "projectile": [
-        ("mass", "Mass", "g", 1e-3),
+        ("type", "Projectile", "choice", list(PROJECTILE_TYPES)),
+        ("mass", "Mass (an APFSDS's rod and sabot)", "g", 1e-3),
         ("shot_start_pressure", "Shot-start pressure", "MPa", 1e6),
         ("bore_resistance", "Bore resistance", "MPa", 1e6),
         ("engraving_pressure", "Peak engraving resistance", "MPa", 1e6),
@@ -71,7 +81,7 @@ FIELDS = {
         ("meplat_diameter", "Meplat diameter", "mm", 1e-3),
         ("boat_tail_length", "Boat-tail length", "mm", 1e-3),
         ("boat_tail_angle", "Boat-tail angle", "°", 1),
-        ("drag_model", "Drag model", "choice", ["G7", "G1"]),
+        ("drag_model", "Drag model", "choice", ["G7", "G1", "LR"]),
         ("ballistic_coefficient", "Ballistic coefficient (blank = estimate)", "kg/m²", 1),
         ("ogive_radius_ratio", "Ogive radius ratio", "", 1),
         ("hollow_point_diameter", "Hollow-point diameter", "mm", 1e-3),
@@ -82,6 +92,12 @@ FIELDS = {
         ("jacket_thickness", "Jacket thickness", "mm", 1e-3),
         ("core_material", "Core material", "choice", list(CORE_MATERIALS)),
         ("exposed_core_length", "Exposed core length", "mm", 1e-3),
+        ("penetrator_mass", "APFSDS: rod mass (blank = 60 %)", "g", 1e-3),
+        ("penetrator_diameter", "APFSDS: rod diameter (blank = a fifth of the bore)", "mm", 1e-3),
+        ("fin_span", "APFSDS: fin span", "mm", 1e-3),
+        ("fin_length", "APFSDS: fin length", "mm", 1e-3),
+        ("sabot_length", "APFSDS: sabot length", "mm", 1e-3),
+        ("sabot_offset", "APFSDS: rod tail to the sabot's rear", "mm", 1e-3),
     ],
     "propellant": [
         ("charge_mass", "Charge mass", "g", 1e-3),
@@ -141,8 +157,15 @@ FIELDS = {
         ("gas_stroke", "Piston stroke before it vents", "mm", 1e-3),
         ("gas_tube_length", "Gas tube length (direct impingement; blank = from the port)", "mm", 1e-3),
         ("gas_tube_diameter", "Gas tube bore (direct impingement)", "mm", 1e-3),
-        ("bore_height", "Bore above the shoulder", "mm", 1e-3),
-        ("cg_distance", "Butt to centre of mass", "mm", 1e-3),
+        ("chain_rate", "Chain gun: rate with no load on the motor", "rounds/min", 1),
+        ("motor_power", "Chain gun: motor's peak power", "W", 1),
+        ("drive_mass", "Chain gun: drive mass at the master link", "kg", 1),
+        ("chain_width", "Chain gun: track width (blank = 0.35 × overall length)", "mm", 1e-3),
+        ("sprocket_radius", "Chain gun: sprocket radius (blank = width / 4)", "mm", 1e-3),
+        ("cam_travel", "Sliding wedge: run-out over which the cam opens it", "mm", 1e-3),
+        ("extractor_ratio", "Sliding wedge: extractor lever ratio", "", 1),
+        ("bore_height", "Bore above the shoulder (or trunnions)", "mm", 1e-3),
+        ("cg_distance", "Butt (or trunnions) to centre of mass", "mm", 1e-3),
         ("radius_of_gyration", "Radius of gyration (pitch)", "mm", 1e-3),
     ],
     "muzzle_device": [
@@ -172,6 +195,26 @@ FIELDS = {
         ("belt_hang", "Belt hanging from the feed tray", "mm", 1e-3),
         ("belt_cam_start", "Feed cam starts (carrier travel; blank = 20 % of stroke)", "mm", 1e-3),
         ("belt_cam", "Feed cam travel per link (blank = 35 % of stroke)", "mm", 1e-3),
+        ("select", "Dual belt: the belt that feeds", "choice", ["left", "right"]),
+    ],
+    "mount": [
+        ("stroke", "Recoil stroke to the stop", "mm", 1e-3),
+        ("spring_rate", "Recoil spring rate", "kN/mm", 1e6),
+        ("spring_preload", "Recoil spring preload", "kN", 1e3),
+        ("damping", "Linear damping", "kN·s/m", 1e3),
+        ("friction", "Cradle friction", "kN", 1e3),
+        ("recuperator_pressure", "Recuperator pressure in battery (0 = none)", "MPa", 1e6),
+        ("recuperator_volume", "Recuperator gas volume", "L", 1e-3),
+        ("recuperator_area", "Recuperator piston area", "cm²", 1e-4),
+        ("buffer_area", "Buffer piston area (0 = no buffer)", "cm²", 1e-4),
+        ("buffer_orifice", "Buffer orifice at the start of recoil", "mm²", 1e-6),
+        ("buffer_orifice_end", "Buffer orifice at full stroke (blank = the same)", "mm²", 1e-6),
+        ("counter_orifice", "Run-out orifice (blank = the buffer's)", "mm²", 1e-6),
+        ("counter_buffer", "Counter-recoil buffer length", "mm", 1e-3),
+        ("oil_density", "Buffer oil density", "kg/m³", 1),
+        ("stop_restitution", "Bounce off the recoil stop", "", 1),
+        ("elevation_stiffness", "Elevation gear stiffness", "MN·m/rad", 1e6),
+        ("elevation_damping", "Elevation gear damping", "kN·m·s/rad", 1e3),
     ],
     "appearance": [
         ("style", "3D model", "choice", list(STYLES)),
@@ -351,7 +394,9 @@ def action_to_json(a: action.ActionResult) -> dict:
         **{k: (None if getattr(a, k) is None else float(getattr(a, k))) for k in (
             "impulse", "free_recoil_velocity", "free_recoil_energy", "max_recoil", "peak_recoil_velocity",
             "peak_shoulder_force", "max_pitch", "bolt_max_travel", "rear_speed", "cycle_time", "cyclic_rate",
-            "unlock_pressure", "gas_peak_pressure", "port_cd", "gun_mass", "lock_time", "hammer_energy")},
+            "unlock_pressure", "gas_peak_pressure", "port_cd", "gun_mass", "lock_time", "hammer_energy",
+            "battery_time", "battery_speed", "stop_speed", "motor_peak_power", "open_time", "case_speed")},
+        "drive": None if a.drive is None else floats(a.drive),
         "port_cd_2d": a.port_cd_2d,
         "shot_times": [float(t) for t in a.shot_times],
         "feed": None if a.feed is None else [round(float(v), 4) for v in a.feed],
@@ -369,9 +414,11 @@ def action_to_json(a: action.ActionResult) -> dict:
 def result_to_json(r: ShotResult, gun: Gun | None = None, burst: int = 1, rounds: int | None = None) -> dict:
     t, x, v, pb, pbase = _downsample(r.time, r.travel, r.velocity, r.breech_pressure, r.base_pressure)
     spin = {k: float(v) for k, v in rifling.spin_report(gun, r).items()} if gun else None
-    recoil = None
+    recoil = evac = None
     if gun and r.left_muzzle and r.loads is not None:
-        recoil = action_to_json(action.simulate(gun, r, shots=burst, rounds=rounds))
+        cycle = action.simulate(gun, r, shots=burst, rounds=rounds)
+        recoil = action_to_json(cycle)
+        evac = evacuator.to_json(evacuator.simulate(gun, r, cycle.open_time))
     return {
         "model": r.model,
         "left_muzzle": bool(r.left_muzzle),
@@ -390,6 +437,7 @@ def result_to_json(r: ShotResult, gun: Gun | None = None, burst: int = 1, rounds
         "recoil_impulse": None if r.recoil_impulse is None else float(r.recoil_impulse),
         "device": devices.to_json(r.device) if r.device is not None else None,
         "grain_bed": _bed_to_json(r.grain_bed) if r.grain_bed else None,
+        "evacuator": evac,
     }
 
 

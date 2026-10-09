@@ -46,10 +46,11 @@
 // device is in the plume solution, so its flash and smoke come out of it as
 // they were solved to (a brake's sideways, a suppressor's late and dim).
 
+import { petalDirection } from "./cartridge.js";
 import { buildRifle } from "./gun.js";
 import { chain, invert, lookAt, perspective, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { feedCheck } from "./feed.js";
-import { CORE_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
+import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
 import { VolumeEffects } from "./volume.js";
 
 const MATERIALS = {
@@ -62,6 +63,9 @@ const MATERIALS = {
   ground: { color: srgbToLinear([0.3, 0.28, 0.23]), metallic: 0, roughness: 0.92, section: srgbToLinear([0.36, 0.33, 0.27]) },
   primer: { color: srgbToLinear([0.78, 0.78, 0.76]), metallic: 1, roughness: 0.38, section: srgbToLinear([0.5, 0.5, 0.5]) },
   projectile: { color: srgbToLinear([0.80, 0.47, 0.30]), metallic: 1, roughness: 0.28, section: srgbToLinear([0.55, 0.3, 0.18]) },
+  paint: { color: srgbToLinear([0.27, 0.3, 0.2]), metallic: 0.1, roughness: 0.7, section: srgbToLinear([0.35, 0.36, 0.3]) },
+  spentSteel: { color: srgbToLinear([0.25, 0.25, 0.23]), metallic: 0.8, roughness: 0.6, section: srgbToLinear([0.4, 0.4, 0.38]) },
+  ...ROUND_MATERIALS,
 };
 
 const DEFAULT_VIEW = { yaw: -0.42, pitch: 0.22, zoom: 1 };
@@ -72,6 +76,18 @@ const CYCLE_DELAY = 0.35;       // s after exit (real time) before the bolt is w
 const CYCLE = { lift: 0.18, back: 0.3, pause: 0.12, forward: 0.32, lower: 0.16 };
 const CYCLE_LENGTH = Object.values(CYCLE).reduce((a, b) => a + b, 0);
 const RELOAD = { out: 0.45, in: 0.55 };   // s: the empty magazine drops out, a full one goes in
+// s: a loader opening a breech that stayed shut (and pulling the case), taking a round from the rack and
+// lining it up behind the breech, ramming it, and the block springing shut as its rim trips the extractors.
+const LOAD = { open: 0.5, fetch: 1.1, ram: 0.55, close: 0.25 };
+const RACK_RELOAD = 1.2;        // s to restock the ready rack
+const LOAD_GAP = 60;            // mm between the round's tip and the breech as the loader lines it up
+const CHAIN_CYCLE = 1.4;        // s to turn a chain gun's chain round once by hand
+// Sabot petals, stripped off by the air at the muzzle: they fly out sideways at PETAL_SPREAD of the
+// rod's speed, and both their speeds die away over PETAL_TAU, so they fall back behind the rod.
+const PETAL_SPREAD = 0.04;
+const PETAL_TAU = 0.02;         // s
+const PETAL_TURN = 30;          // rad/s they tip outwards at, nose first
+const PETAL_LIFE = 0.25;        // s after exit they are drawn for
 const BELT_RELOAD = { open: 0.4, lay: 0.9, close: 0.35 };   // s: the cover swings up, a belt is laid in, it shuts
 const COVER_OPEN = 1.2;         // rad the top cover swings up
 const HAND_IN = 90;             // mm beyond the tray's edge the new belt's end starts from
@@ -184,9 +200,20 @@ export class FiringRange {
     this.reload = null;         // {t, swapped}
     this.beltAdv = 0;           // share of a link the belt has been drawn this cycle
     this.belt = null;           // the belt's chain {nodes: [{p, q, pin, local, round}], h}, the link at the feed position first
+    this.idleBelt = null;       // a dual feed's other belt, waiting a link out
     this.dropped = [];          // old belts falling out of the gun, {nodes, h, age}
     this.beltMoving = false;
+    this.chainQ = 0;            // a chain gun's chain, m round its track from the firing point (between shots)
   }
+
+  /** The kind of breech: "chain" (a chain gun), "wedge" (a sliding wedge), or "bolt" (anything else). */
+  get _breech() {
+    const k = this.rifle?.layout.mech.kind;
+    return k === "chain" ? "chain" : k === "sliding_wedge" ? "wedge" : "bolt";
+  }
+
+  /** True when a loader puts each round in by hand. */
+  get _byHand() { return !!this.rifle?.layout.feed.geo.hand; }
 
   // ---------- public API ----------
 
@@ -271,6 +298,16 @@ export class FiringRange {
   /** Work the bolt: eject what's in the chamber (or clear a jam) and load a new round. */
   startCycle() {
     if (this.cycle || this.reload || !this.rifle) return;
+    if (this._breech === "wedge") return this._startLoad();
+    if (this._breech === "chain") {
+      // The crew turns the chain round once by hand: the bolt draws back, ejects, and rams the next round.
+      this.cycle = { chain: true, t: 0, round: this.chamber === "jammed" ? null : this.chamber, ejected: false, fed: false, feeding: false, adv: 0 };
+      if (this.chamber === "jammed") this.chamber = null;
+      this.stuck = this.jam = null;
+      this._kick();
+      this.onChange?.();
+      return;
+    }
     const from = this.stuck?.travel ?? 0;
     const c = this.cycle = { t: 0, round: this.chamber, ejected: false, wispT: null, from, adv: 0, lift: 0, fed: false, jamAt: null };
     const heldOpen = this.stuck && !this.chamber;
@@ -286,6 +323,36 @@ export class FiringRange {
     this.stuck = this.jam = null;
     this._kick();
     this.onChange?.();
+  }
+
+  /**
+   * A loader at a sliding wedge: open the breech if it stayed shut (pulling out what is in it), take a
+   * round from the ready rack, line it up behind the breech and ram it; its rim trips the extractors
+   * and the block springs shut.
+   */
+  _startLoad() {
+    const open = !!this.stuck?.open;
+    this.cycle = { loader: true, t: open ? LOAD.open : 0, round: open ? null : this.chamber, ejected: open, taken: false, feeding: false };
+    this.stuck = this.jam = null;
+    this._kick();
+    this.onChange?.();
+  }
+
+  /** Where the round the loader carries is, `f` (0..1) of the way from its rack slot to behind the breech. */
+  _fetchMatrix(f) {
+    const L = this.layout, F = L.feed;
+    const from = F.slot(Math.max(F.capacity - this.mag - 1, 0)), to = apply(this._gunMatrix(), [-(L.oal + LOAD_GAP), 0, 0]);
+    const p = [0, 1, 2].map((k) => from[12 + k] + (to[k] - from[12 + k]) * f);
+    p[1] += Math.sin(Math.PI * f) * Math.max(3 * L.rimR, 150);   // lifted clear of the rack and the guard
+    return translation(...p);
+  }
+
+  /** Where a chain gun's chain is (mm round its track from the firing point): the simulation's, a hand cycle's, or at rest. */
+  _chainQ() {
+    const a = this._action, c = this.cycle;
+    if (c?.chain) return this.layout.chain.track.perimeter * smooth(c.t / CHAIN_CYCLE);
+    if (this.shot && a?.drive && this.T >= PIN_FALL) return interp(a.time, a.drive, Math.min(this.tSim, a.time[a.time.length - 1])) * 1e3;
+    return this.chainQ;
   }
 
   setCutaway(on) { this.cutaway = on; this.requestDraw(); }
@@ -354,7 +421,9 @@ export class FiringRange {
         // A manual bolt is worked now; so is an automatic one that failed to reload (once its cycle is over).
         const over = !this._auto || this.tSim > this._action.time[this._action.time.length - 1];
         // A bolt held open on an empty magazine, or a jam, stays as it is for the shooter to clear.
-        if (this.autoCycle && over && !this.cycle && !this.stuck && after > CYCLE_DELAY && this.chamber !== "live" && !s.cycled) {
+        // A sliding wedge's breech, opened as the gun ran out, is loaded next.
+        if (this.autoCycle && over && !this.cycle && (!this.stuck || this.stuck.open) && after > CYCLE_DELAY
+            && this.chamber !== "live" && !s.cycled) {
           s.cycled = true;
           this.startCycle();
         }
@@ -365,7 +434,9 @@ export class FiringRange {
       }
     }
 
-    if (this.cycle) {
+    if (this.cycle?.loader) this._stepLoad(dt);
+    else if (this.cycle?.chain) this._stepChainCycle(dt);
+    else if (this.cycle) {
       const c = this.cycle;
       c.t += dt;
       const t = c.t;
@@ -456,6 +527,67 @@ export class FiringRange {
     this.wisps = this.wisps.filter((w) => w.age < 4);
   }
 
+  /** A hand cycle is over: what is in the chamber now, and fire the shot waiting for it (or reload for it). */
+  _endCycle(chamber) {
+    this.cycle = null;
+    this.pin = 0;
+    this.chamber = chamber;
+    this.onChange?.();
+    if (this.pendingShot) {
+      if (this.chamber === "live") this._startShot(this.pendingShot);
+      else if (this.mag === 0) this.startReload();
+      else this.pendingShot = null;
+    }
+  }
+
+  _stepLoad(dt) {
+    const c = this.cycle, L = this.layout;
+    c.t += dt;
+    if (!c.ejected && c.t >= LOAD.open) {
+      // The loader has opened the breech by hand: the extractors throw out what was in it.
+      c.ejected = true;
+      if (c.round && c.round !== "live") this.ejected.push({ kind: c.round, pos: [-20, 0, 0], vel: [-2500, -400, 0], spin: 0, spinRate: 0, tumble: 0, tumbleRate: -2, age: 0 });
+      else if (c.round === "live") this.mag = Math.min(this.mag + 1, L.feed.capacity);   // an unfired round goes back in the rack
+      this.chamber = null;
+    }
+    if (!c.taken && c.t >= LOAD.open) {
+      c.taken = true;
+      if (this.mag > 0) { this.mag--; c.feeding = true; }
+    }
+    if (!c.feeding && c.t >= LOAD.open) {
+      // The rack is empty: the breech is left open.
+      this.stuck = { travel: L.stroke, round: null, open: true };
+      return this._endCycle(null);
+    }
+    if (c.t >= LOAD.open + LOAD.fetch + LOAD.ram + LOAD.close) this._endCycle("live");
+  }
+
+  _stepChainCycle(dt) {
+    const c = this.cycle, L = this.layout, F = L.feed, tr = L.chain.track;
+    c.t += dt;
+    const q = this._chainQ(), s = tr.at(q).s;
+    if (!c.ejected && s >= L.caseLength + 3) {
+      c.ejected = true;
+      if (c.round) this.ejected.push({ kind: c.round, pos: [-s, -0.5 * L.boltR, 0], vel: [1800, -1400, 150], spin: 0, spinRate: -6, tumble: 0, tumbleRate: 4, age: 0 });
+      this.chamber = null;
+    }
+    // Across the back of the track the feeder draws the belt a link; leaving it, the bolt strips the round.
+    if (F.belt && q > tr.rearStart) c.adv = this.beltAdv = clamp((q - tr.rearStart) / Math.max(tr.rearLength, 1e-6), 0, 1);
+    if (!c.fed && q > tr.rearStart + tr.rearLength) {
+      c.fed = true;
+      if (this.mag > 0) {
+        this.mag--;
+        c.feeding = true;
+        if (F.belt) this._shedLink();
+        this.beltAdv = 0;
+      }
+    }
+    if (c.t >= CHAIN_CYCLE) {
+      this.chainQ = 0;
+      this._endCycle(c.feeding ? "live" : null);
+    }
+  }
+
   // ---------- recoil and automatic actions ----------
 
   /** The shot's action simulation, if it has one. */
@@ -488,8 +620,9 @@ export class FiringRange {
     if (!a || this.T < PIN_FALL) return 0;
     const end = a.time[a.time.length - 1];
     const v = interp(a.time, a[key], Math.min(t, end));
-    // A bolt held open or jammed stays where it stopped; the rest settles home.
-    if (key === "bolt" && (a.held_open || a.jam)) return v;
+    // A bolt held open or jammed stays where it stopped, as does a sliding wedge's block (held open by
+    // the extractors, or stuck part open); the rest settles home.
+    if (key === "bolt" && (a.held_open || a.jam || a.kind === "sliding_wedge")) return v;
     return t > end ? v * (1 - smooth((t - end) / SETTLE)) : v;
   }
 
@@ -505,6 +638,40 @@ export class FiringRange {
     return chain(translation(-recoil, 0, 0), translation(px, py, 0), rotationZ(pitch), translation(-px, -py, 0));
   }
 
+  /** A mount's cradle: it pitches about the trunnions with the gun, but the gun recoils in it. */
+  _mountMatrix() {
+    const pitch = this._actionAt("pitch", this.tSim);
+    if (!pitch) return translation(0, 0, 0);
+    const [px, py] = this.layout.pivot;
+    return chain(translation(px, py, 0), rotationZ(pitch), translation(-px, -py, 0));
+  }
+
+  /**
+   * The sabot's petals of every shot that has left the muzzle in the last PETAL_LIFE: per shot, a model
+   * per petal. Each flies out from the axis and tips outwards, nose first, as the air strips it off,
+   * and both its speeds die away over PETAL_TAU.
+   */
+  _petals() {
+    const s = this.shot, r = s?.result, L = this.layout, R = L.round, out = [];
+    if (!r?.left_muzzle) return out;
+    const v = r.muzzle_velocity * 1e3, len = R.sabotLength ?? 0;
+    for (const t0 of this._shotTimes) {
+      const tau = this.tSim - t0 - r.muzzle_time;
+      if (tau <= 0 || tau > PETAL_LIFE) continue;
+      const gone = PETAL_TAU * (1 - Math.exp(-tau / PETAL_TAU));
+      const x = L.muzzleX - this._actionAt("recoil", t0 + r.muzzle_time) * 1e3 + v * gone;
+      const spread = PETAL_SPREAD * v * gone, tilt = Math.min(PETAL_TURN * tau, 1.4);
+      const models = [];
+      for (let k = 0; k < R.petals; k++) {
+        const [cy, cz] = petalDirection(k, R.petals), a = Math.atan2(cz, cy);
+        models.push(chain(translation(x, 0, 0), rotationX(a), translation(len / 2, spread, 0), rotationZ(tilt),
+                          translation(-len / 2, 0, 0), rotationX(-a)));
+      }
+      out.push(models);
+    }
+    return out;
+  }
+
   /** Fire, eject and chamber when the action simulation says so, shot by shot. */
   _stepAutoAction() {
     const s = this.shot, a = this._action, t = this.tSim;
@@ -516,11 +683,24 @@ export class FiringRange {
       once(`eject${k}`, this._eventTime("case ejected", k), () => {
         const bolt = this._actionAt("bolt", t) * 1e3, recoil = this._actionAt("recoil", t) * 1e3;
         const speed = (interp(a.time, a.bolt_velocity, t) + interp(a.time, a.recoil_velocity, t)) * 1e3;  // mm/s
-        this.ejected.push({
-          kind: "spent", pos: [-bolt - recoil, 0, 0],
-          vel: [-0.5 * speed, 1500 + 0.05 * speed, 2600 + 0.15 * speed],
-          spin: 0, spinRate: -40, tumble: 0, tumbleRate: 18, age: 0,
-        });
+        const breech = this._breech;
+        if (breech === "wedge") {
+          // The extractors flick the case (or a combustible case's stub) straight back out of the breech,
+          // down into the bag; without the evacuator sweeping the bore, fumes come out after it.
+          const out = (a.case_speed ?? 2) * 1e3;
+          this.ejected.push({ kind: "spent", pos: [-recoil, 0, 0], vel: [-out, -0.08 * out, 0], spin: 0, spinRate: 0, tumble: 0, tumbleRate: -1.5, age: 0 });
+          if (!this.shot.result.evacuator?.clear) this.wisps.push({ age: 0, gun: this._gunMatrix() });
+        } else if (breech === "chain") {
+          // A chain gun throws its cases forwards and down, out of the bottom of the receiver.
+          this.ejected.push({ kind: "spent", pos: [-bolt - recoil, -0.5 * this.layout.boltR, 0], vel: [2200 + 0.3 * speed, -1500, 150],
+                              spin: 0, spinRate: -8, tumble: 0, tumbleRate: 6, age: 0 });
+        } else {
+          this.ejected.push({
+            kind: "spent", pos: [-bolt - recoil, 0, 0],
+            vel: [-0.5 * speed, 1500 + 0.05 * speed, 2600 + 0.15 * speed],
+            spin: 0, spinRate: -40, tumble: 0, tumbleRate: 18, age: 0,
+          });
+        }
         this.chamber = null;
       });
       once(`battery${k}`, this._eventTime("back in battery", k), () => { this.chamber = "live"; this.pin = 0; });
@@ -542,6 +722,10 @@ export class FiringRange {
       if (a.held_open || a.jam) {
         const travel = a.bolt[a.bolt.length - 1] * 1e3;
         this.stuck = { travel, round: a.jam ? this._feedingRound(travel) : null };
+      } else if (a.kind === "sliding_wedge" && a.open_time !== null) {
+        // The breech is held open on the extractors for the loader.
+        this.stuck = { travel: a.bolt[a.bolt.length - 1] * 1e3, round: null, open: true };
+        this.chamber = null;
       }
     });
   }
@@ -558,6 +742,7 @@ export class FiringRange {
   _reloadTimes() {
     const B = BELT_RELOAD;
     if (this.layout.feed.belt) return { swap: B.open, end: B.open + B.lay + B.close };
+    if (this._byHand) return { swap: RACK_RELOAD / 2, end: RACK_RELOAD };
     return { swap: RELOAD.out, end: RELOAD.out + RELOAD.in };
   }
 
@@ -577,30 +762,39 @@ export class FiringRange {
     return (F.trayLen + HAND_IN) * (1 - smooth((r.t - B.open) / (0.85 * B.lay)));
   }
 
-  /** Link i of the belt (0 at the feed position): whether it is held (in the tray, or in the hand) and where, in the gun's frame. */
-  _beltSlot(i, adv, lay) {
-    const F = this.layout.feed, u = (i - adv) * F.pitch + lay;
+  /**
+   * Link i of the belt (0 at the feed position): whether it is held (in the tray, or in the hand) and where, in the
+   * gun's frame. A dual feed's idle belt waits on the other side, its first round a link out from the feed position.
+   */
+  _beltSlot(i, adv, lay, idle = false) {
+    const F = this.layout.feed;
+    if (idle) {
+      const u = (i + 1) * F.pitch;
+      return { pin: u <= F.trayLen + 1e-6, local: F.point(u, -F.feedSide) };
+    }
+    const u = (i - adv) * F.pitch + lay;
     return { pin: u <= F.trayLen + 1e-6 || (lay > 0 && i === 0), local: F.point(u) };
   }
 
   /** A belt as it is put in: its held links in place, the rest hanging from the last of them to the ground and lying along it. */
-  _newBelt() {
+  _newBelt(idle = false) {
     const F = this.layout.feed, M = this._gunMatrix(), adv = this._feedState().adv, lay = this._layOffset();
+    const side = idle ? -F.feedSide : F.feedSide, count = idle ? F.capacity : this.mag + 1;
     const nodes = [];
-    for (let i = 0; i <= this.mag; i++) {
-      const s = this._beltSlot(i, adv, lay);
+    for (let i = 0; i < count; i++) {
+      const s = this._beltSlot(i, adv, lay, idle);
       let p;
       if (s.pin || !nodes.length) {
         p = apply(M, s.local);
       } else {
         const [x, y, z] = nodes[i - 1].p, drop = y - F.rest;
         if (drop >= F.pitch) p = [x, y - F.pitch, z];
-        else if (drop > 0) p = [x, F.rest, z - Math.sqrt(F.pitch ** 2 - drop ** 2)];
-        else p = [x, F.rest, z - F.pitch];
+        else if (drop > 0) p = [x, F.rest, z + side * Math.sqrt(F.pitch ** 2 - drop ** 2)];
+        else p = [x, F.rest, z + side * F.pitch];
       }
-      nodes.push({ p, q: p.slice(), pin: s.pin, local: s.local, round: i > 0 });
+      nodes.push({ p, q: p.slice(), pin: s.pin, local: s.local, round: idle || i > 0 });
     }
-    return { nodes, h: 0 };
+    return { nodes, h: 0, idle };
   }
 
   /** Keep the chain to the rounds in the belt: a stripped link leaves it (it is shed), a new belt replaces it. */
@@ -608,16 +802,21 @@ export class FiringRange {
     const n = this.mag + 1;
     if (!this.belt || this.belt.nodes.length < n) this.belt = this._newBelt();
     while (this.belt.nodes.length > n) this.belt.nodes.shift();
+    if (this.layout.feed.sides?.length > 1 && !this.idleBelt) this.idleBelt = this._newBelt(true);
   }
+
+  /** Every belt's chain: the feeding one, a dual feed's idle one, and old ones falling away. */
+  get _belts() { return [this.belt, ...(this.idleBelt ? [this.idleBelt] : []), ...this.dropped]; }
 
   /** What is left of the old belt is pulled out to the left and dropped. */
   _dropBelt() {
     const b = this.belt, h = BELT_STEP;
     this.belt = null;
     if (!b) return;
+    const side = this.layout.feed.feedSide ?? -1;
     for (const n of b.nodes) {
       n.pin = false;
-      n.q = [n.p[0], n.p[1] - 250 * h, n.p[2] + 700 * h];     // up and out to the left
+      n.q = [n.p[0], n.p[1] - 250 * h, n.p[2] - side * 700 * h];     // up and out to its side
     }
     this.dropped.push({ nodes: b.nodes, h, age: 0 });
   }
@@ -626,20 +825,22 @@ export class FiringRange {
   _stepBelt(dt) {
     this._beltSync();
     const M = this._gunMatrix(), adv = this._feedState().adv, lay = this._layOffset();
-    this.belt.nodes.forEach((n, i) => {
-      const s = this._beltSlot(i, adv, lay);
-      n.pin = s.pin;
-      n.local = s.local;
-      n.from = n.p.slice();
-      n.to = s.pin ? apply(M, s.local) : null;
-    });
+    for (const belt of [this.belt, this.idleBelt]) {
+      belt?.nodes.forEach((n, i) => {
+        const s = this._beltSlot(i, adv, lay, belt.idle);
+        n.pin = s.pin;
+        n.local = s.local;
+        n.from = n.p.slice();
+        n.to = s.pin ? apply(M, s.local) : null;
+      });
+    }
     for (const c of this.dropped) c.age += dt;
     this.dropped = this.dropped.filter((c) => c.age < BELT_DROPPED);
     if (dt <= 0) return;
     const steps = Math.min(Math.ceil(dt / BELT_STEP), 40), h = dt / steps;
     let fastest = 0;
     for (let k = 1; k <= steps; k++) {
-      for (const c of [this.belt, ...this.dropped]) fastest = Math.max(fastest, this._beltStep(c, h, k / steps));
+      for (const c of this._belts) fastest = Math.max(fastest, this._beltStep(c, h, k / steps));
     }
     this.beltMoving = fastest > 1 || this.dropped.length > 0;
   }
@@ -749,7 +950,8 @@ export class FiringRange {
     let round = null;
     const jammed = a.jam && a.jam.shot === k;
     if (t < this._eventTime("case ejected", k)) {
-      if (this.chamber && this.chamber !== "jammed") round = { kind: this.chamber, x: -travel, y: 0 };
+      // A sliding wedge drops away from the case, which stays in the chamber until the extractors throw it.
+      if (this.chamber && this.chamber !== "jammed") round = { kind: this.chamber, x: this._breech === "wedge" ? 0 : -travel, y: 0 };
     } else if (!jammed && t >= this._eventTime("back in battery", k)) {
       round = { kind: "live", x: 0, y: 0 };
     } else if (t >= this._eventTime("strips the next round", k)) {
@@ -767,7 +969,7 @@ export class FiringRange {
     const L = this.layout, u = mech.unlock;
     const free = u > 0 ? clamp(travel / u, 0, 1) : 0;
     const out = { angle: 0, carrier: travel, barrel: 0, lock: 0, lever: 0 };
-    if (mech.kind === "gas" || mech.kind === "direct_impingement") {
+    if (mech.kind === "gas" || mech.kind === "direct_impingement" || mech.kind === "chain") {
       out.angle = -LUG_TURN * free;
     } else if (mech.kind === "roller_delayed" || mech.kind === "lever_delayed") {
       // The carrier runs `ratio` times as fast as the head until the delay ends, then keeps its lead.
@@ -801,11 +1003,21 @@ export class FiringRange {
   _boltPose() {
     const L = this.layout;
     const c = this.cycle;
-    if (!c && this._auto) return this._autoBoltPose();
+    // Once the bolt has been worked by hand (or a wedge loaded), it is where that left it, not where the shot did.
+    if (!c && this._auto && !this.shot?.cycled) return this._autoBoltPose();
     if (!c) {
       // Shut, or stopped short after the shot: held open on an empty magazine, or on a jammed round.
       const travel = this.stuck?.travel ?? 0;
       const round = this.stuck ? this.stuck.round : this.chamber ? { kind: this.chamber, x: 0, y: 0 } : null;
+      return { travel, round, ...this._mechPose(travel) };
+    }
+    if (c.loader) return this._loadPose();
+    if (c.chain) {
+      // Turning the chain by hand: the bolt follows the track.
+      const travel = L.chain.track.at(this._chainQ()).s;
+      let round = null;
+      if (!c.ejected && c.round) round = { kind: c.round, x: -travel, y: 0 };
+      else if (c.feeding) round = c.t >= CHAIN_CYCLE * 0.98 ? { kind: "live", x: 0, y: 0 } : this._feedingRound(travel);
       return { travel, round, ...this._mechPose(travel) };
     }
     const t = c.t;
@@ -837,6 +1049,24 @@ export class FiringRange {
     return { travel, round, ...this._mechPose(travel), angle };
   }
 
+  /** The loader at a sliding wedge: the block's drop, and the round on its way from the rack into the chamber. */
+  _loadPose() {
+    const L = this.layout, c = this.cycle, t = c.t, { open, fetch, ram, close } = LOAD;
+    let travel = L.stroke, round = null;
+    if (t < open) {
+      travel = L.stroke * smooth(t / open);
+      if (c.round) round = { kind: c.round, x: 0, y: 0 };
+    } else if (t < open + fetch) {
+      if (c.feeding) round = { kind: "live", world: this._fetchMatrix(smooth((t - open) / fetch)) };
+    } else if (t < open + fetch + ram) {
+      round = { kind: "live", x: -(L.oal + LOAD_GAP) * (1 - smooth((t - open - fetch) / ram)), y: 0 };
+    } else {
+      travel = L.stroke * (1 - smooth((t - open - fetch - ram) / close));
+      round = { kind: "live", x: 0, y: 0 };
+    }
+    return { travel, round, ...this._mechPose(travel) };
+  }
+
   /** Projectile base position (mm) of the first shot when it is under way, or null. */
   _projectileX() {
     return this._projectiles()[0]?.x ?? null;
@@ -858,7 +1088,7 @@ export class FiringRange {
       } else if (r.left_muzzle && local > r.muzzle_time) {
         const recoil = this._actionAt("recoil", t0 + r.muzzle_time) * 1e3;
         const x = L.muzzleX - recoil + r.muzzle_velocity * (local - r.muzzle_time) * 1e3;
-        if (x < L.muzzleX + 4000) out.push({ x, inBore: false });
+        if (x < L.muzzleX + Math.max(4000, 60 * L.bore)) out.push({ x, inBore: false });
       } else {
         out.push({ x: L.seat + interp(r.time, r.travel, local) * 1e3, inBore: true });
       }
@@ -967,8 +1197,11 @@ export class FiringRange {
           state.light = { position: light.position, color: [0.6 * g, 0.3 * g, 0.11 * g], range: f.size };
         }
         // What was left in the bore and the device seeps out of the exit afterwards and rises: from the
-        // exit as it is now, into a puff that stays above where the muzzle was at exit.
-        const age = this.tSim - latest - P.times[P.times.length - 1], tr = P.trickle;
+        // exit as it is now, into a puff that stays above where the muzzle was at exit. A bore evacuator
+        // blows its charge, and the bore's fumes with it, out of the muzzle over the time it blows.
+        const ev = r.evacuator, age = this.tSim - latest - P.times[P.times.length - 1];
+        const tr = ev ? { ...P.trickle, mass: P.trickle.mass + ev.charge, tau: Math.max(P.trickle.tau, (ev.blow_end - r.muzzle_time) / 3) }
+          : P.trickle;
         if (age > 0 && age < SMOKE_LIFE && tr.mass > 0) {
           const out = tr.mass * (1 - Math.exp(-age / tr.tau));
           const R = Math.cbrt(3 * out * SEEP_DILUTION / (4 * Math.PI * 1.2)) * 1e3 + 1.5 * bore + 15 * age;
@@ -1101,16 +1334,26 @@ export class FiringRange {
 
     const pose = this._boltPose();
     const gunAt = this._gunMatrix();           // the whole rifle, recoiling
-    const boltAt = chain(gunAt, translation(-pose.travel, 0, 0));
+    const wedge = this._breech === "wedge";
+    // A sliding wedge drops to open; every other bolt draws back along the bore.
+    const boltAt = chain(gunAt, wedge ? translation(0, -pose.travel, 0) : translation(-pose.travel, 0, 0));
     const pinBack = (this.cycle && this.cycle.t > CYCLE.lift * 0.5) || (this._auto && pose.travel > 0.5) ? 0 : this.pin;
     const barrelAt = chain(gunAt, translation(-pose.barrel, 0, 0));   // a short-recoil barrel recoils on its own
+    const mountAt = this._mountMatrix();       // a mount's cradle pitches with the gun but doesn't recoil
+    const still = translation(0, 0, 0);
     const optional = (mesh, model, material, clip = false) => (mesh ? [{ mesh, model, material, clip }] : []);
-    const lv = L.lever;
+    const lv = L.lever, ck = L.crank;
     const items = [
       { mesh: m.steel, model: gunAt, material: MATERIALS.steel },
       { mesh: m.furniture, model: gunAt, material: MATERIALS.black },
       ...optional(m.wood, gunAt, MATERIALS.wood, true),
       ...optional(m.barrel, barrelAt, MATERIALS.steel, true),
+      ...optional(m.paint, gunAt, MATERIALS.paint, true),
+      ...optional(m.mount, mountAt, MATERIALS.paint, true),
+      ...optional(m.pedestal, still, MATERIALS.black, true),
+      ...optional(m.rack, still, MATERIALS.black, true),
+      // A sliding wedge's crank turns as the block drops.
+      ...optional(m.crank, ck && chain(gunAt, translation(ck.px, ck.py, ck.z), rotationZ(-ck.turn * pose.travel / L.stroke)), MATERIALS.bolt),
       // The bolt stays whole in the cutaway, so it reads clearly inside the cut receiver.
       { mesh: m.bolt, model: chain(boltAt, rotationX(pose.angle)), material: MATERIALS.bolt, clip: false },
       ...optional(m.shroud, boltAt, MATERIALS.steel),
@@ -1123,28 +1366,55 @@ export class FiringRange {
       ...optional(m.lever, lv && chain(boltAt, translation(lv.px, lv.py, 0), rotationZ(pose.lever), translation(-lv.px, -lv.py, 0)), MATERIALS.bolt),
       // The hammer turns on its pin in the receiver.
       ...optional(m.hammer, L.hammer && chain(gunAt, translation(L.hammer.px, L.hammer.py, 0), rotationZ(this._hammerAngle())), MATERIALS.bolt),
-      { mesh: m.striker, model: chain(gunAt, translation(-pose.travel + pinBack * L.pinTravel, 0, 0)), material: MATERIALS.bolt, clip: false },
+      // A wedge's firing pin is in its block.
+      { mesh: m.striker, model: wedge ? boltAt : chain(gunAt, translation(-pose.travel + pinBack * L.pinTravel, 0, 0)), material: MATERIALS.bolt, clip: false },
     ];
-    const addProjectile = (model, clip) => {
-      items.push({ mesh: m.projectile, model, material: MATERIALS.projectile, clip });
+    // A chain gun's chain round its track (the master link carrying the carrier's T-slot), and its sprockets turning.
+    if (L.chain && m.chainLink) {
+      const C = L.chain, tr = C.track, q = this._chainQ();
+      for (let j = 0; j < C.links; j++) {
+        const p = tr.at(q + (j * tr.perimeter) / C.links);
+        items.push({ mesh: j ? m.chainLink : m.masterLink, material: j ? MATERIALS.steel : MATERIALS.bolt,
+                     model: chain(gunAt, translation(C.xFront - p.x, C.yC + p.y, C.z), rotationZ(Math.PI - p.angle)) });
+      }
+      for (const [x, y] of C.corners) {
+        items.push({ mesh: m.sprocket, model: chain(gunAt, translation(x, y, C.z), rotationZ(q / tr.radius)), material: MATERIALS.steel });
+      }
+    }
+    const R = L.round;
+    const projMaterial = R.solidMetal !== null && R.solidMetal !== undefined ? CORE_MATERIALS[R.solidMetal] : MATERIALS.projectile;
+    const addProjectile = (model, clip, sabot = true) => {
+      items.push({ mesh: m.projectile, model, material: projMaterial, clip });
       if (m.core) items.push({ mesh: m.core, model, material: CORE_MATERIALS[L.coreMaterial], clip });
+      if (m.fins) items.push({ mesh: m.fins, model, material: MATERIALS.fins, clip });
+      if (sabot) for (let k = 0; k < R.petals; k++) items.push({ mesh: m[`sabot${k}`], model, material: MATERIALS.sabot, clip });
     };
+    const steelCase = R.caseMetal === "steel";
     const addRound = (kind, model) => {
-      items.push({ mesh: m.case, model, material: kind === "spent" ? MATERIALS.spent : MATERIALS.case });
+      const caseMaterial = kind === "spent" ? (steelCase ? MATERIALS.spentSteel : MATERIALS.spent) : (steelCase ? MATERIALS.steelCase : MATERIALS.case);
+      items.push({ mesh: m.case, model, material: caseMaterial });
       items.push({ mesh: m.primer, model, material: MATERIALS.primer });
-      if (kind === "live") addProjectile(chain(model, translation(L.seat, 0, 0)), true);
+      if (kind === "live") {
+        // A combustible case's felt body burns with the charge: a spent one is only its stub.
+        if (m.caseBody) items.push({ mesh: m.caseBody, model, material: MATERIALS.felt });
+        addProjectile(chain(model, translation(L.seat, 0, 0)), true);
+      }
     };
-    if (pose.round) addRound(pose.round.kind, chain(gunAt, translation(pose.round.x, pose.round.y, 0), rotationZ(pose.round.angle ?? 0)));
-    // The magazine (dropped out while it is changed), its follower and the rounds left in it; or the belt.
+    if (pose.round) addRound(pose.round.kind, pose.round.world ?? chain(gunAt, translation(pose.round.x, pose.round.y, 0), rotationZ(pose.round.angle ?? 0)));
+    // The magazine (dropped out while it is changed), its follower and the rounds left in it; a loader's
+    // ready rack, which stays put; or the belt.
     const F = L.feed, feedState = this._feedState();
     const magAt = chain(gunAt, translation(0, -this._magDrop(), 0));
     if (m.magazine) items.push({ mesh: m.magazine, model: magAt, material: MATERIALS.black });
     if (m.magFollower) items.push({ mesh: m.magFollower, model: chain(magAt, F.follower(this.mag, feedState.lift)), material: MATERIALS.black });
-    if (!F.belt) {
+    if (F.rackStatic) {
+      for (const e of F.rounds(this.mag)) addRound("live", e.m);
+    } else if (!F.belt) {
       for (const e of F.rounds(this.mag, feedState.lift)) addRound("live", chain(magAt, e.m));
     } else {
       // The cover (swung up for a new belt) carries the feed lever and slide; the belt lies on the ground beside the gun.
-      const frac = F.camFrac(pose.carrier), coverAt = chain(gunAt, F.coverAt(this._coverAngle()));
+      // A chain gun's feeder is driven off its chain rather than a cam on the carrier.
+      const frac = L.chain ? feedState.adv : F.camFrac(pose.carrier), coverAt = chain(gunAt, F.coverAt(this._coverAngle()));
       items.push({ mesh: m.cover, model: coverAt, material: MATERIALS.black });
       items.push({ mesh: m.feedSlide, model: chain(coverAt, F.slide(frac)), material: MATERIALS.bolt });
       items.push({ mesh: m.feedLever, model: chain(coverAt, F.lever(frac)), material: MATERIALS.bolt });
@@ -1152,7 +1422,7 @@ export class FiringRange {
       this._beltSync();
       // The round drawn to the feed position is held at the feed angle, ready for the bolt.
       const tilt = feedState.adv >= 1 ? F.geo.angle : 0;
-      for (const c of [this.belt, ...this.dropped]) {
+      for (const c of this._belts) {
         c.nodes.forEach((n, i) => {
           const model = n.pin ? chain(gunAt, translation(...n.local), rotationZ(c === this.belt && i === 1 ? tilt : 0))
             : this._linkFrame(c.nodes, i, gunAt);
@@ -1170,9 +1440,15 @@ export class FiringRange {
       addRound(e.kind, chain(translation(...e.pos), translation(half, 0, 0), rotationY(e.spin), rotationZ(e.tumble), translation(-half, 0, 0)));
     }
     // Fired projectiles are drawn on their own, whole even in the cutaway; in the bore they move with the gun.
+    // An APFSDS's sabot is stripped off at the muzzle: its petals fly apart and fall behind the rod.
     if (this.shot) {
       for (const p of this._projectiles()) {
-        addProjectile(p.inBore ? chain(gunAt, translation(p.x, 0, 0)) : translation(p.x, 0, 0), false);
+        addProjectile(p.inBore ? chain(gunAt, translation(p.x, 0, 0)) : translation(p.x, 0, 0), false, p.inBore);
+      }
+      if (R.apfsds) {
+        for (const model of this._petals()) {
+          for (let k = 0; k < R.petals; k++) items.push({ mesh: m[`sabot${k}`], model: model[k], material: MATERIALS.sabot, clip: false });
+        }
       }
     }
 
@@ -1190,15 +1466,22 @@ export class FiringRange {
     if (!this.hud) return;
     const s = this.shot;
     const F = this.layout.feed;
-    const ammo = ["rounds", `${this.chamber === "live" ? 1 : 0} + ${this.mag} / ${F.capacity} ${F.belt ? "in the belt" : "in the magazine"}`];
+    const where = F.rackStatic ? "in the ready rack" : F.sides?.length > 1 ? `in the ${F.feedSide > 0 ? "right" : "left"} belt`
+      : F.belt ? "in the belt" : "in the magazine";
+    const ammo = ["rounds", `${this.chamber === "live" ? 1 : 0} + ${this.mag} / ${F.capacity} ${where}`];
+    const c = this.cycle;
+    const working = c?.loader ? (c.t < LOAD.open ? "Loader opens the breech" : c.t < LOAD.open + LOAD.fetch ? "Loader takes a round from the rack"
+      : c.t < LOAD.open + LOAD.fetch + LOAD.ram ? "Loader rams the round" : "The block springs shut")
+      : c?.chain ? "Turning the chain by hand" : "Working the bolt";
     if (!s) {
       const belt = () => (this.reload.t < BELT_RELOAD.open ? "Opening the top cover"
         : this.reload.t < BELT_RELOAD.open + BELT_RELOAD.lay ? "Laying in a new belt" : "Closing the top cover");
-      const what = this.reload ? (F.belt ? belt() : "Changing the magazine")
-        : this.cycle ? "Working the bolt"
+      const what = this.reload ? (F.belt ? belt() : F.rackStatic ? "Restocking the ready rack" : "Changing the magazine")
+        : c ? working
         : this.chamber === "jammed" ? `Jammed (${this.jam ?? "feed"}): work the bolt to clear it`
         : this.chamber === "live" ? "Ready: round chambered"
         : this.chamber === "spent" ? "Spent case in the chamber"
+        : this.stuck?.open ? "Breech open: ready to load"
         : this.stuck ? "Empty: bolt held open" : this.mag === 0 ? "Empty" : "Chamber empty";
       this.hud.innerHTML = `<b>${what}</b><span>${ammo[0]}</span><span>${ammo[1]}</span>`;
       return;
@@ -1215,12 +1498,14 @@ export class FiringRange {
       const last = a.events.filter((e) => e.time <= this.tSim && !(e.name === "fires" && e.shot === 1)).pop();
       const done = this.tSim > a.time[a.time.length - 1];
       const label = (e) => (e.name === "fires" ? `Shot ${e.shot} fires` : e.name[0].toUpperCase() + e.name.slice(1));
-      phase = this.cycle ? "Clearing: working the bolt by hand"
+      const breech = this._breech;
+      phase = this.cycle ? (breech === "bolt" ? "Clearing: working the bolt by hand" : working)
+        : s.cycled ? (this.chamber === "live" ? "Smoke · loaded by hand" : "Smoke")
         : last && !done ? label(last)
-        : !last && !done ? "Gas drives the piston"
-        : a.status === "cycled" ? "Smoke · reloaded" : `Smoke · ${a.status}`;
+        : !last && !done ? (breech === "wedge" ? "Recoiling" : breech === "chain" ? "The chain carries the bolt on" : "Gas drives the piston")
+        : a.status === "cycled" ? "Smoke · reloaded" : a.status === "breech opened" ? "Smoke · breech open" : `Smoke · ${a.status}`;
     }
-    else phase = this.cycle ? "Working the bolt" : "Smoke";
+    else phase = this.cycle ? working : "Smoke";
     if (this.rate >= 0.999) slow = "real time";
     else if (this.rate > 0) slow = `${Math.round(1 / this.rate).toLocaleString()}× slower`;
     else slow = "";
@@ -1251,9 +1536,11 @@ export class FiringRange {
       const vel = this._actionAt("recoil_velocity", this.tSim);
       rows.push(["recoil", `${recoil.toFixed(1)} mm at ${vel.toFixed(2)} m/s`],
                 ["muzzle rise", `${(pitch * 180 / Math.PI).toFixed(2)}°`]);
-      if (this._auto) {
+      if (this._auto && !s.cycled) {
         const bolt = this._actionAt("bolt", this.tSim) * 1e3, bv = this._actionAt("bolt_velocity", this.tSim);
-        rows.push(["bolt", `${bolt.toFixed(0)} mm, ${bv >= 0 ? "back" : "forward"} at ${Math.abs(bv).toFixed(1)} m/s`]);
+        // A sliding wedge's block drops (and is open, or shut) rather than going back and forward.
+        rows.push(this._breech === "wedge" ? ["breech block", `${bolt.toFixed(0)} mm down at ${Math.abs(bv).toFixed(2)} m/s`]
+          : ["bolt", `${bolt.toFixed(0)} mm, ${bv >= 0 ? "back" : "forward"} at ${Math.abs(bv).toFixed(1)} m/s`]);
       }
     }
     rows.push(ammo);

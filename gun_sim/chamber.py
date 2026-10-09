@@ -116,7 +116,7 @@ class ChamberProfile:
     def from_case(cls, gun: Gun, bins: int = 400) -> ChamberProfile:
         x_cav, r_cav = case_cavity(gun)
         head = x_cav[0]
-        seat = gun.case.overall_length - gun.projectile.length  # projectile base, from the case head
+        seat = gun.seat  # projectile base (an APFSDS's sabot), from the case head
         if seat <= head:
             raise ValueError("the projectile base sits below the top of the case web "
                              "(case overall length too short for the projectile)")

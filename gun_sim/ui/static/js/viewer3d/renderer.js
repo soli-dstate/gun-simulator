@@ -171,7 +171,16 @@ export const CORE_MATERIALS = [
   { color: srgbToLinear([0.62, 0.63, 0.67]), metallic: 0.9, roughness: 0.5, section: srgbToLinear([0.5, 0.51, 0.55]) },
   { color: srgbToLinear([0.33, 0.35, 0.4]), metallic: 1, roughness: 0.34, section: srgbToLinear([0.22, 0.24, 0.28]) },
   { color: srgbToLinear([0.9, 0.52, 0.38]), metallic: 1, roughness: 0.3, section: srgbToLinear([0.7, 0.36, 0.24]) },
+  { color: srgbToLinear([0.42, 0.43, 0.45]), metallic: 1, roughness: 0.42, section: srgbToLinear([0.55, 0.56, 0.58]) },   // tungsten
 ];
+
+/** Materials of a round's parts that aren't brass, copper or a core (cartridge.js roundParts names them). */
+export const ROUND_MATERIALS = {
+  steelCase: { color: srgbToLinear([0.32, 0.33, 0.3]), metallic: 0.8, roughness: 0.5, section: srgbToLinear([0.45, 0.46, 0.44]) },
+  felt: { color: srgbToLinear([0.62, 0.52, 0.36]), metallic: 0, roughness: 0.85, section: srgbToLinear([0.5, 0.4, 0.26]) },
+  sabot: { color: srgbToLinear([0.72, 0.73, 0.75]), metallic: 1, roughness: 0.35, section: srgbToLinear([0.6, 0.61, 0.63]) },
+  fins: { color: srgbToLinear([0.3, 0.31, 0.33]), metallic: 1, roughness: 0.4, section: srgbToLinear([0.4, 0.4, 0.42]) },
+};
 
 export class Renderer {
   /** opaque: draw a backdrop instead of leaving the canvas transparent. */

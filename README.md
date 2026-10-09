@@ -55,7 +55,8 @@ load and save gun `.toml` files, and **Preset** picks one from `configs/`
 (the example rifle, the same cartridge in a gas-operated rifle, that rifle
 with a suppressor, a roller-delayed rifle, a two-phase grain bed, a
 7-perforated-grain load, a hollow-point round, and three real rifles: the
-M4A1, AKM and AK-74).
+M4A1, AKM and AK-74; and two cannon, the Mk44 Bushmaster II 30 mm chain gun and the
+Rheinmetall Rh-120 L/55 120 mm smoothbore tank gun).
 The window has two tabs.
 
 **Editor.** Everything about the gun and the shot, one section at a time:
@@ -94,6 +95,12 @@ Every action type has its own moving parts:
 - *direct_impingement*: no piston. A gas tube runs from the gas block back to a
   key on top of the carrier, and a seven-lug bolt head turns in it;
 - *blowback*: a plain heavy bolt with a charging knob;
+- *chain*: a four-lug bolt head turning in a carrier, whose arm reaches out
+  through the receiver's side to a T-slot. The master link of the drive chain
+  rides in it round a track of four sprockets, the motor on the rear one, so
+  the chain going round the track carries the bolt back and forth;
+- *sliding_wedge*: a breech block that drops in the breech ring, with the
+  crank on the ring's side turning as it does;
 - *short_recoil*: the barrel and its extension recoil with the bolt until the
   barrel stops, and a locking block drops out from under the bolt as it does;
 - *roller_delayed* and *lever_delayed*: a light bolt head with the carrier
@@ -235,16 +242,17 @@ example.
 
 | Section | Parameters |
 | --- | --- |
-| `[barrel]` | bore diameter, projectile travel, chamber volume; `chamber_shape` (`"cylinder"`, or `"case"` to solve inside the real case); outside diameter at the breech and muzzle (3D view only); rifling: `twist` (m per turn, negative for left-hand, 0 for a smooth bore), `groove_depth`, `freebore` (travel before the lands), `leade_angle` (forcing-cone half-angle, degrees) |
-| `[case]` | case length, overall length, rim, extractor groove, base and shoulder diameters, shoulder position and angle, neck and body wall, head thickness, primer pocket (the solver uses it with `chamber_shape = "case"`) |
-| `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1 or G7) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"` or `"copper"`) and `exposed_core_length` (soft point) |
+| `[barrel]` | bore diameter, projectile travel, chamber volume; `chamber_shape` (`"cylinder"`, or `"case"` to solve inside the real case); outside diameter at the breech and muzzle (3D view only); rifling: `twist` (m per turn, negative for left-hand, 0 for a smooth bore), `groove_depth`, `freebore` (travel before the lands), `leade_angle` (forcing-cone half-angle, degrees); a bore evacuator: `evacuator_position` (travel from the seat to its nozzles, 0 = none), `evacuator_volume`, `evacuator_nozzles`, `evacuator_nozzle_diameter`, `evacuator_angle` |
+| `[case]` | case length, overall length, rim, extractor groove, base and shoulder diameters, shoulder position and angle, neck and body wall, head thickness, primer pocket (the solver uses it with `chamber_shape = "case"`); `material` (`"brass"` or `"steel"`); `combustible` (a felt body that burns with the charge, on a metal stub base `stub_length` long, which is all that is extracted) |
+| `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1, G7, or LR for a fin-stabilised long rod) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"`, `"copper"` or `"tungsten"`; a solid steel or tungsten projectile is drawn in it) and `exposed_core_length` (soft point). `type = "apfsds"`: a long rod (`length` tail to tip) in a discarding sabot; `mass` is the launch package, and `penetrator_mass`, `penetrator_diameter`, `fin_span`, `fin_length`, `sabot_length` and `sabot_offset` (rod tail to the sabot's rear face, where the gas pushes) describe it |
 | `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win. `flash_suppressant` (`potassium_sulfate`, `potassium_nitrate`, `potassium_cryolite`) with `suppressant_fraction` (share of the charge mass) puts out the secondary flash, at some impetus and more smoke |
 | `[ignition]` | igniter pressure; with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
-| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"` or `"gas_delayed"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
-direct impingement the "piston" is the bolt's tail in the carrier); `gas_tube_length` and `gas_tube_diameter` (direct impingement); bore height above the shoulder, butt to centre of mass, radius of gyration (muzzle rise) |
-| `[shooter]` | `stance` (`"shoulder"`, or `"free"` for free recoil); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
+| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"`, `"gas_delayed"`, `"chain"` or `"sliding_wedge"`); gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
+direct impingement the "piston" is the bolt's tail in the carrier); `gas_tube_length` and `gas_tube_diameter` (direct impingement); chain gun: `chain_rate` (rounds/min with no load), `motor_power`, `drive_mass`, `chain_width`, `sprocket_radius`; sliding wedge: `cam_travel`, `extractor_ratio` (the block is `bolt_mass`, its drop `bolt_travel`, its closing spring `spring_rate` and `spring_preload`); bore height above the shoulder (or trunnions), butt to centre of mass, radius of gyration (muzzle rise) |
+| `[shooter]` | `stance` (`"shoulder"`, `"free"` for free recoil, or `"mount"` for a mount's recoil system); body mass moving with the gun, shoulder stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"`, `"suppressor"` or `"flash_hider"`); length, outer diameter, number of baffles (prongs for a flash hider), baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake, flash hider), `flare_angle` (flash hider bore), mass. Missing sizes are scaled from the bore |
-| `[appearance]` | `style` (`"rifle"`, `"ar15"` or `"ak"`): how the 3D view dresses the gun; the solvers ignore it |
+| `[mount]` | a mount's recoil system: `stroke` to the recoil stop, a spring (`spring_rate`, `spring_preload`), linear `damping`, `friction`, a hydropneumatic recuperator (`recuperator_pressure`, `recuperator_volume`, `recuperator_area`), a hydraulic buffer (`buffer_area`, `buffer_orifice` closing to `buffer_orifice_end` along the stroke, `counter_orifice` for the run-out, `oil_density`), the `counter_buffer` length, `stop_restitution`, and the elevation gear's `elevation_stiffness` and `elevation_damping` |
+| `[appearance]` | `style` (`"rifle"`, `"ar15"`, `"ak"`, `"autocannon"` or `"tank"`): how the 3D view dresses the gun; the solvers ignore it |
 | `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `two_phase` (a moving grain bed lit by the primer's flame); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
 
 You can leave out any geometry value (the barrel's outside diameters, twist
@@ -653,6 +661,91 @@ composition. See the plume section. The values in the library
 are illustrative textbook-range figures, not data for any real powder. See
 `configs/example_7perf.toml`.
 
+### Cannon: chain gun, sliding wedge, mount, evacuator and APFSDS
+
+Two presets are cannon, and bring the systems they need.
+
+**Mk44 Bushmaster II** (`configs/mk44_bushmaster_ii.toml`): 30x173 mm HEI-T, 0.363 kg at
+1,086 m/s and 409 MPa from a 2.41 m barrel, dual-fed from two belts, on a soft mount.
+
+- **Chain action** (`action.type = "chain"`). The motor, not the shot, works the bolt.
+  The bolt carrier rides the master link of a chain that a DC motor drives round a
+  rectangular track. Its force falls linearly with the chain's speed (`motor_power`
+  peak, `chain_rate` with no load). Across the front of the track the bolt dwells
+  locked in battery, and the shot is fired in the middle of that dwell. It is drawn
+  back along one side, dwells open across the back while the feeder (driven off the
+  same chain) draws the belt a link, and rams the next round along the other side.
+  The bolt's travel is the track's s(q), so the gun, the bolt and the drive (rotor,
+  gears and chain as `drive_mass`) are solved together from their kinetic energy.
+  The bolt's mass going round the corners and the belt's weight slow the chain, so
+  the gun fires a little under its no-load rate (about 199 rounds/min against 216).
+  While the bolt is locked, dS/dq = 0, so the shot pushes only the gun. The breech
+  stays shut through the dwell, about 45 ms after exit (the bore is down to under
+  5 MPa when it unlocks), which is the chain gun's protection against a hangfire.
+  A motor too weak for the load stalls the drive.
+- **Dual feed** (`feed.type = "dual_belt"`, `select = "left"` or `"right"`). A belt
+  comes in from each side; the selected one feeds and the other waits a link out.
+  Cases leave forwards, out of the bottom of the receiver.
+- **Soft mount** (`shooter.stance = "mount"`, `[mount]`). A recoil adapter, a spring
+  pack and damper with 35 mm of travel, takes the 160 kg gun back 24 mm at 41 kN
+  peak, and returns it to battery in 34 ms.
+
+**Rheinmetall Rh-120 L/55** (`configs/rh120_l55.toml`): a DM53-like APFSDS-T, an 8.35 kg
+launch package with a 4.9 kg tungsten rod, at 1,756 m/s and 598 MPa from a 6.6 m smoothbore.
+
+- **APFSDS** (`projectile.type = "apfsds"`). The gas drives the whole launch package and
+  pushes on the sabot's rear face (`gun.seat`); the rod's fins reach back behind it into
+  the propellant. At the muzzle the air strips the three sabot petals off (the 3D view
+  throws them out and back), and the trajectory flies the rod alone: its mass and
+  diameter, against `LR`, a long-rod drag curve with BC = m / d² (an illustrative curve:
+  the rod loses about 59 m/s per km). The sound's crack is the rod's too. A smoothbore
+  has no spin, so the rod is fin-stabilised and has no spin drift.
+- **Combustible case** (`case.combustible`). The felt body burns with the charge (count
+  its mass in the charge); only the steel stub base is extracted.
+- **Recoil system** (`[mount]`). The 3.5 t of recoiling parts slide back in the cradle
+  against a hydraulic buffer and a hydropneumatic recuperator. The buffer forces oil
+  through an orifice (force rho A³ v² / (2 (Cd a)²)) that a throttling rod closes down
+  along the stroke, so its force stays nearly level as the gun slows. The recuperator's
+  gas is compressed polytropically (n = 1.3) as the gun recoils, and then runs it out
+  again. The return oil goes through `counter_orifice`, and the counter-recoil buffer
+  closes it to a tenth over the last `counter_buffer` before battery. The gun recoils
+  307 mm (the stop is at 340) at up to 395 kN, and is back in battery after 0.52 s. The
+  elevation gear holds the cradle's pitch: the jump is 0.2 mrad. A missing buffer hits
+  the stop, and a weak recuperator leaves the gun out of battery; both are reported.
+- **Semi-automatic sliding wedge** (`action.type = "sliding_wedge"`). The block stays
+  locked while the gun recoils. As the gun runs out, the opening cam on the cradle
+  catches the crank over the last `cam_travel` (120 mm) and drives the block down. The
+  gun carries the block's inertia through the cam (the block's mass times the cam
+  ratio squared), and its closing spring and friction, less its weight. In battery the
+  block strikes the extractors, which throw the stub out backwards at `extractor_ratio`
+  times its speed (3.9 m/s) and hold the block open for the loader. A run-out too weak
+  for the cam leaves the breech part open.
+- **Loader** (`feed.type = "hand"`). A ready rack of 15 rounds. On the range the loader
+  takes each round from the rack, lines it up behind the breech and rams it; its rim
+  trips the extractors and the block springs shut.
+- **Bore evacuator** (`gun_sim/evacuator.py`, `barrel.evacuator_*`). A reservoir two-thirds
+  of the way along the barrel, joined to the bore by six nozzles that lean 30° towards
+  the muzzle. Once the projectile has passed them, the bore gas charges it through
+  them (an orifice, from the gas the solvers record at the nozzles), to 4.1 MPa with
+  182 g of gas. When the bore has blown down, the reservoir empties back through the
+  same nozzles as jets up the bore. With the breech open, the jets' forward momentum
+  flux J = mdot v cos(angle) draws air in at the breech and up the bore at the speed
+  U where J = rho A U² (1 + K_entry + f L/D). It blows for 0.8 s. When the breech
+  opens at 0.52 s it draws air at 38 m/s and sweeps the breech end clear in 0.12 s.
+  If it had stopped by then, the fumes would come back into the turret, which is
+  reported. The lumped model only records the bore gas at the nozzles while the
+  projectile is in the bore, not in its blowdown, so its evacuator charges less and
+  it reports the fumes coming back.
+
+Bigger parts ring lower and longer in the mechanical sounds (their modes are divided by
+(mass / 1 kg)^(1/3)), so the 3.5 t gun running out into battery is a deep clank.
+
+Not modelled: the motor's electrical side and its start-up (the chain is already turning
+at its free speed when the first shot fires), the feeder's own mechanism (its draw is a
+straight ramp over the rear dwell), the stub's flight inside the turret, the turret's
+own motion, the gas the evacuator takes from the bore during the shot, and the sabot's
+aerodynamics (the petals' flight is drawn, not solved).
+
 ### External ballistics (`gun_sim/exterior.py`)
 
 After muzzle exit the projectile is a point mass (3 degrees of freedom) under
@@ -888,6 +981,7 @@ gun_sim/
   kernels.py     the two flow solvers' inner loops, compiled with Numba
   parallel.py    worker processes, so a shot's separate solves run at the same time
   devices.py     muzzle brake/suppressor/flash hider and gas port geometry, coupling to the bore, discharge coefficient
+  evacuator.py   bore evacuator: charging from the bore, the jets, and how they sweep the fumes out
   plume.py       muzzle flash and smoke: the bore's outflow solved in 2D into the air, with afterburning
   propellants.py propellant compositions and grain shapes -> form function
   exterior.py    point-mass trajectory solver: G1/G7 drag, atmosphere, zeroing, range tables
@@ -959,6 +1053,7 @@ build_exe.ps1    one-command Windows build
 - [x] Flash hiders
 - [ ] Flash-suppressant propellant additives; afterburning in the coupled device run (sound, recoil)
 - [x] Projectile variants: secant ogive, hollow point, cannelure, jacket/core section
+- [x] Cannon: chain gun, sliding-wedge breech, mount recoil systems, bore evacuator, APFSDS, combustible cases
 - [ ] Richer GUI: side-by-side gun comparison, parameter sweeps, live animation of the bore flow
 
 ## Disclaimer

@@ -1,0 +1,141 @@
+# Rheinmetall Rh-120 L/55: a 120 mm smoothbore tank gun firing a DM53-like
+# APFSDS-T round. A vertical sliding-wedge breech, opened semi-automatically
+# as the gun runs out; a combustible case with a steel stub base; a thermal
+# sleeve and a bore evacuator; a hydraulic buffer and hydropneumatic
+# recuperator on the cradle; loaded by hand from the ready rack.
+# Published figures where there are any (calibre, barrel length, the round's
+# masses, lengths and muzzle velocity, the chamber pressure, the recoil length);
+# the burn law is tuned to them, and the recoil system, breech and evacuator
+# are illustrative. All units are SI (m, kg, s, Pa, J).
+
+name = "Rh-120 L/55 (120 mm APFSDS-T)"
+
+[barrel]
+bore_diameter   = 120.0e-3  # m, smoothbore
+travel          = 5.95      # m, sabot's seat to the muzzle (a 6.6 m barrel)
+chamber_volume  = 9.0e-3    # m^3, the space behind the sabot
+breech_diameter = 0.26      # m, the barrel's breech end, in the breech ring
+muzzle_diameter = 0.165     # m
+twist           = 0.0       # smoothbore: the rod is fin-stabilised
+# Bore evacuator: a canister two-thirds of the way along, charged through six
+# nozzles that lean towards the muzzle.
+evacuator_position        = 3.30     # m of travel from the seat
+evacuator_volume          = 0.030    # m^3
+evacuator_nozzles         = 6
+evacuator_nozzle_diameter = 9.0e-3   # m
+evacuator_angle           = 30.0     # degrees
+
+[projectile]
+# A tungsten long rod with fins, carried down the bore by a three-petal
+# aluminium sabot that the air strips off at the muzzle. The mass is the whole
+# launch package; the rod flies on alone.
+type                = "apfsds"
+mass                = 8.35      # kg, rod and sabot
+penetrator_mass     = 4.90      # kg
+penetrator_diameter = 22.0e-3   # m
+length              = 0.745     # m, the rod from its tail to its tip
+fin_span            = 0.080     # m
+fin_length          = 0.110     # m
+sabot_length        = 0.270     # m
+sabot_offset        = 0.260     # m, rod tail to the sabot's rear face
+ogive_length        = 0.060     # m, the windshield
+meplat_diameter     = 2.0e-3    # m
+boat_tail_length    = 0.0
+core_material       = "tungsten"
+shot_start_pressure = 40e6      # Pa, the sabot's obturator into the bore
+bore_resistance     = 4e6       # Pa
+drag_model          = "LR"      # fin-stabilised long rod; BC = rod mass / diameter^2
+
+[case]
+# 120 x 570 mm: a felted nitrocellulose body that burns with the charge, on a
+# steel stub base that is all the breech has to extract.
+length            = 0.570    # m
+overall_length    = 0.982    # m
+rim_diameter      = 0.160    # m
+rim_thickness     = 0.012    # m
+groove_diameter   = 0.170    # m (no extractor groove: the extractors take the rim)
+groove_width      = 0.005    # m
+base_diameter     = 0.155    # m
+shoulder_diameter = 0.147    # m
+shoulder_position = 0.470    # m
+shoulder_angle    = 30.0     # degrees
+neck_wall         = 3.0e-3   # m
+body_wall         = 4.0e-3   # m
+head_thickness    = 0.030    # m
+primer_diameter   = 0.020    # m, the electric primer
+primer_depth      = 0.025    # m
+combustible       = true
+stub_length       = 0.065    # m
+material          = "steel"
+
+[propellant]
+# A double-base, 19-perforated grain charge (the combustible case's
+# nitrocellulose is counted in it).
+charge_mass     = 8.1       # kg
+force           = 1.10e6    # J/kg
+covolume        = 1.0e-3    # m^3/kg
+gamma           = 1.23
+density         = 1600      # kg/m^3
+grain           = "19-perf"
+web             = 1.6e-3    # m
+grain_length    = 25e-3     # m
+perforation_diameter = 0.5e-3  # m
+burn_rate_coeff = 6.8e-9    # (m/s)/Pa^n, tuned to 1,750 m/s at about 600 MPa
+burn_rate_exp   = 0.9
+molar_mass      = 0.024     # kg/mol
+
+[ignition]
+pressure = 10e6  # Pa, the electric primer and its igniter tube
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+max_time     = 0.05
+
+[action]
+# The breech block drops in the breech ring to open. It stays locked while the
+# gun recoils; as it runs out, the opening cam on the cradle turns the crank and
+# drives the block down, cocking its closing spring. In battery the block
+# strikes the extractors, which flick the stub base out backwards and hold the
+# block open until the loader rams the next round, whose rim trips them.
+type             = "sliding_wedge"
+gun_mass         = 3500.0   # kg, the recoiling parts: barrel, breech ring and block
+bolt_mass        = 110.0    # kg, the breech block
+spring_rate      = 6.0e3    # N/m, the closing spring
+spring_preload   = 1.6e3    # N, enough to lift the block shut
+friction         = 150.0    # N, the block sliding in the ring
+cam_travel       = 0.12     # m of run-out before battery over which the cam opens it
+extractor_ratio  = 5.0      # the extractors are levers: the stub leaves this much faster than the block strikes them
+bore_height        = 0.01   # m, the bore above the line of the recoil cylinders
+cg_distance        = 0.05   # m, trunnions to the centre of mass: a balanced gun
+radius_of_gyration = 1.60   # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+# The cradle's recoil system: a hydraulic buffer whose throttling rod closes its
+# orifice along the stroke so the force stays level, and a hydropneumatic
+# recuperator whose gas runs the gun out again. The last 25 mm of the run-out
+# is cushioned by the counter-recoil buffer.
+stroke               = 0.34      # m, to the recoil stop
+friction             = 3.0e3     # N
+recuperator_pressure = 5.0e6     # Pa
+recuperator_volume   = 8.0e-3    # m^3
+recuperator_area     = 4.0e-3    # m^2
+buffer_area          = 6.4e-3    # m^2 (two buffers)
+buffer_orifice       = 1.9e-4    # m^2
+buffer_orifice_end   = 2.5e-5    # m^2
+counter_orifice      = 1.8e-4    # m^2
+counter_buffer       = 0.025     # m
+elevation_stiffness  = 5.0e7     # N m/rad
+elevation_damping    = 5.0e5     # N m s/rad
+
+[feed]
+# The loader takes each round from the ready rack in the turret bustle.
+type     = "hand"
+capacity = 15
+
+[appearance]
+style = "tank"

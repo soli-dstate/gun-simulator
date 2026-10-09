@@ -17,7 +17,13 @@ across: as the carrier travels from `belt_cam_start` over `belt_cam` it draws
 the belt one link along, lifting the hanging belt (`belt_hang` of it) and
 accelerating it. The carrier feels the belt as a mass r^2 m and a force r T
 through the cam (r = link pitch / cam travel). A carrier that doesn't finish
-the cam leaves the next round short of the bolt face.
+the cam leaves the next round short of the bolt face. A chain gun's feeder is
+driven off its chain instead (action.py). A dual feed has a belt from each side
+and feeds from the selected one; a loader ("hand") puts each round in himself,
+so nothing in the gun feeds it.
+
+Cases. A combustible case's body burns with the charge, so a round's metal is
+only its stub base (case_mass), which is all the breech extracts.
 
 Feed angle. The lips hold the round tilted, nose towards the bore, by
 `feed_angle` (None: aimed so its tip meets the bore axis), with its head
@@ -39,13 +45,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .config import Gun
 
-FEED_TYPES = ("single_stack", "double_stack", "quad_stack", "drum", "belt")
-CAPACITY = {"single_stack": 10, "double_stack": 30, "quad_stack": 60, "drum": 75, "belt": 100}
+FEED_TYPES = ("single_stack", "double_stack", "quad_stack", "drum", "belt", "dual_belt", "hand")
+CAPACITY = {"single_stack": 10, "double_stack": 30, "quad_stack": 60, "drum": 75, "belt": 100, "dual_belt": 100, "hand": 15}
 # Magazine spring force on the top round, empty and full (N).
 SPRING = {"single_stack": (8.0, 30.0), "double_stack": (10.0, 40.0), "quad_stack": (14.0, 60.0), "drum": (15.0, 55.0)}
 SPRING_ROUND = 0.013  # kg, the round those springs are for
 # Follower mass (kg); a drum's is its rotor, as felt at the feed lips.
-FOLLOWER = {"single_stack": 0.008, "double_stack": 0.010, "quad_stack": 0.015, "drum": 0.12, "belt": 0.0}
+FOLLOWER = {"single_stack": 0.008, "double_stack": 0.010, "quad_stack": 0.015, "drum": 0.12, "belt": 0.0,
+            "dual_belt": 0.0, "hand": 0.0}
 # Depth of the stack per round, in rim diameters: a single column, two staggered columns,
 # two side by side double stacks (under a double-stack funnel), and a drum's single-file track.
 PITCH = {"single_stack": 1.0, "double_stack": 0.6, "quad_stack": 0.3, "drum": 1.0}
@@ -68,17 +75,33 @@ def capacity(gun: Gun) -> int:
 
 
 def belt(gun: Gun) -> bool:
-    return gun.feed.type == "belt"
+    return gun.feed.type in ("belt", "dual_belt")
 
 
-def round_mass(gun: Gun) -> float:
-    """A loaded round (kg): the projectile, the charge and the case's brass."""
+def hand(gun: Gun) -> bool:
+    """Loaded by hand, a round at a time: nothing in the gun feeds it."""
+    return gun.feed.type == "hand"
+
+
+def case_mass(gun: Gun) -> float:
+    """The metal of the case that is left after the shot (kg): the whole case, or a combustible case's stub base."""
+    from .config import CASE_MATERIALS
     c = gun.case
+    density = CASE_MATERIALS.get(c.material, BRASS)
+    head = math.pi / 4 * c.rim_diameter**2 * c.head_thickness * 0.7
+    if c.combustible:
+        # The stub: the head, and a wall up to stub_length.
+        wall = math.pi * c.base_diameter * max(c.stub_length - c.head_thickness, 0.0) * c.body_wall * 1.5
+        return density * (head + wall)
     neck_d = gun.barrel.bore_diameter + 2 * c.neck_wall
     body = math.pi * 0.5 * (c.base_diameter + c.shoulder_diameter) * c.shoulder_position * c.body_wall * 1.2
     neck = math.pi * neck_d * max(c.length - c.shoulder_position, 0.0) * c.neck_wall
-    head = math.pi / 4 * c.rim_diameter**2 * c.head_thickness * 0.7
-    return gun.projectile.mass + gun.propellant.charge_mass + BRASS * (body + neck + head)
+    return density * (body + neck + head)
+
+
+def round_mass(gun: Gun) -> float:
+    """A loaded round (kg): the projectile, the charge (a combustible case's body counted in it) and the case's metal."""
+    return gun.projectile.mass + gun.propellant.charge_mass + case_mass(gun)
 
 
 def spring(gun: Gun, rounds: int) -> float:
@@ -129,10 +152,12 @@ def geometry(gun: Gun) -> dict:
     d = c.rim_diameter
     bolt_r = max(d / 2 + 2.2e-3, c.base_diameter / 2 * 1.3)   # as the 3D view draws the bolt
     sign = -1.0 if belt(gun) else 1.0                         # the round comes from below (+1) or above
-    present = PRESENT * d if not belt(gun) else 0.0
+    present = PRESENT * d if not (belt(gun) or hand(gun)) else 0.0
     under = bolt_r + d / 2                                    # held against the bolt's side
     if belt(gun):
         drop = under = under + BELT_RAISE * d                 # the tray sits clear over the receiver
+    elif hand(gun):
+        drop = under = 0.0                                    # the loader rams it straight in along the bore
     else:
         drop, under = -(under - present), -under
     if f.feed_angle is not None:
