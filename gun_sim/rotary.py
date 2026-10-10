@@ -31,11 +31,14 @@ Drives (`rotary_drive`):
 * "electric": a DC motor, its torque falling linearly with speed from stall to the free
   speed at which the gun would fire `rotary_rate` rounds/min (motor_power is its peak
   power, a quarter of stall torque times free speed). It runs on after the last round to
-  clear the gun, then brakes dynamically. (A gas- or recoil-driven gun has a rotor brake, which stops it in
-ROTOR_BRAKE_TIME from its top speed once it is clear.)
+  clear the gun, then brakes dynamically, with a torque that fades with the speed, so the rotor
+  winds down over a second or so. (A gas- or recoil-driven gun has a rotor brake, which slows
+  it with the time constant ROTOR_BRAKE_TIME once it is clear.) Running down, the rotor is also
+  slowed a stroke at a time by its bolts' rollers dragging in the cam track (CAM_FRICTION).
 * "hydraulic": a hydraulic motor fed through a valve that opens over `valve_time`; full
   torque (motor_power at rotary_rate) until the supply's flow runs out at the speed for
-  rotary_rate, where it falls away steeply. Closing the valve brakes the rotor hard.
+  rotary_rate, where it falls away steeply. The valve closes over valve_time once the gun is
+  clear, and the motor, pumping against it, brakes the rotor.
 * "gas": the gun drives itself. A starter (a pyrotechnic or pneumatic cartridge,
   `starter_energy`) turns the rotor up to the first shot; then each barrel that has just
   fired bleeds gas from its port into its own cylinder (as action.py's gas system), whose
@@ -94,8 +97,11 @@ MAX_TIME = 10.0                      # s, from the trigger
 SPIN_LIMIT = 2.0                     # s the rotor may take to reach its first shot
 STOP_SHARE = 0.01                    # the rotor is taken to have stopped below this share of its top speed
 SETTLE = 0.3                         # s the mount is followed after the rotor stops, at most
-BRAKE = {"electric": 0.35, "hydraulic": 0.8}   # braking torque as a share of the drive's stall (top) torque
-ROTOR_BRAKE_TIME = 0.4              # s a self-driven gun's rotor brake takes to stop it from its top speed
+# Braking torque at the rated speed, as a share of the drive's stall (top) torque; it falls away with the
+# speed (a motor braking dynamically into a resistor, a hydraulic motor pumping through its closed valve).
+BRAKE = {"electric": 0.15, "hydraulic": 0.25}
+ROTOR_BRAKE_TIME = 0.35             # s, a self-driven gun's rotor brake: the time constant it slows the rotor with
+CAM_FRICTION = 0.04                 # the bolts' rollers in the cam track: drag, as a share of the cam's push on them
 HYDRAULIC_KNEE = 0.04               # the flow limit takes the torque away over this share of top speed
 STALL_SHARE = 0.03
 UNLOCK_PRESSURE_WARNING = 20e6       # Pa
@@ -137,15 +143,16 @@ def drum_mass(gun: Gun) -> float:
 def rotor_inertia(gun: Gun) -> float:
     """The rotor's moment of inertia about its axis (kg m^2), empty: given, or estimated.
 
-    Gatling: the barrels at the cluster radius, with their clamps, rotor and bolt carrier half
-    as much again. Revolver: the drum as a solid steel cylinder (less its chambers).
+    Gatling: the barrels at the cluster radius, with their clamps, the rotor body, its bolt
+    tracks and the barrels' own turn about their axes as much again and a half. Revolver: the
+    drum as a solid steel cylinder (less its chambers).
     """
     a = gun.action
     if a.rotor_inertia is not None:
         return a.rotor_inertia
     r = radius(gun)
     if a.rotary_layout == "gatling":
-        return 1.5 * stations(gun) * barrel_mass(gun) * r * r
+        return 2.5 * stations(gun) * barrel_mass(gun) * r * r
     outer = r + 0.65 * gun.case.rim_diameter
     return 0.5 * drum_mass(gun) * outer * outer
 
@@ -345,6 +352,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     feeding_on = True
     clearing = braking = stalled = False
     stopped = None                     # when the rotor stopped
+    braked_at = 0.0                    # when the drive began to brake
     unlock_pressure = None
     w_peak = 0.0
     power_peak = 0.0
@@ -392,15 +400,17 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
 
         # Drive torque.
         if drive == "electric":
-            tau_d = -BRAKE[drive] * tau_top if braking else tau_top * max(1 - w / w_rated, 0.0)
+            tau_d = -BRAKE[drive] * tau_top * w / w_rated if braking else tau_top * max(1 - w / w_rated, 0.0)
         elif drive == "hydraulic":
             if braking:
-                tau_d = -BRAKE[drive] * tau_top
+                # The valve closes as it opened; the motor then pumps against it.
+                shut = min((t - braked_at) / a.valve_time, 1.0) if a.valve_time > 0 else 1.0
+                tau_d = -BRAKE[drive] * tau_top * shut * w / w_rated
             else:
                 ramp = min(t / a.valve_time, 1.0) if a.valve_time > 0 else 1.0
                 tau_d = tau_top * ramp * min(max((w_rated - w) / (HYDRAULIC_KNEE * w_rated), 0.0), 1.0)
         elif braking:
-            tau_d = -j_rotor * w_peak / ROTOR_BRAKE_TIME    # the rotor brake
+            tau_d = -j_rotor * w / ROTOR_BRAKE_TIME    # the rotor brake
         else:
             tau_d = tau_start if phi < starter_angle else 0.0
         if braking and w <= 0:
@@ -424,10 +434,13 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
             gas_p = max(gas_p, p_c)
         tau_d += tau_gas
         drawing = feeding_on and fed < shots and mag > 0
-        tau_load = (tau_fric if w > 0 else 0.0) + a.rotor_damping * w + \
+        jt, half, cams = j_eff()
+        # Each bolt stroking drags its roller along the cam track: a pulse of drag as every station
+        # draws back and rams, growing with the speed squared, so the rotor slows a stroke at a time.
+        cam_drag = CAM_FRICTION * r * w * w * sum(abs(m * d2) for _, _, d2, m in cams)
+        tau_load = (tau_fric if w > 0 else 0.0) + a.rotor_damping * w + cam_drag + \
             (feed_work(mag) / pitch if drawing and w > 0 else 0.0)
 
-        jt, half, cams = j_eff()
         # The bolts' cam reactions on the gun (+ rearwards): the cam drives each bolt with m a.
         tau_net = tau_d - tau_load - half * w * w
         if recoil_drive:
@@ -559,7 +572,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
             clearing = True
             event("trigger released", "the feeder stops; the gun turns on to clear its last cases")
         if clearing and not braking and all(s == "empty" for s in state):
-            braking = True
+            braking, braked_at = True, t_end
             event("drive brakes" if drive in BRAKE else "rotor brake on", "every station clear")
         # A powered drive that can't turn the gun, or a self-driven one that has run down with rounds aboard.
         if not stalled and not braking and t_end > 0.3 and w < STALL_SHARE * max(w_peak, w_rated * 0.2):
@@ -567,6 +580,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
                 stalled = True
                 event("the gun stops", "the rotor has run down with rounds in it")
                 braking = clearing = True
+                braked_at = t_end
                 feeding_on = False
         if t_end > SPIN_LIMIT and not shot_times:
             stalled = True

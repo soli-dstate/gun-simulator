@@ -1164,7 +1164,7 @@ async function fire(animate = true) {
   const id = ++shotId;
   const version = gunVersion;
   // Start the sound right away; it's needed by the time the projectile leaves the muzzle.
-  if ($("sound-on").checked) synthesizeSound(gun, id);
+  const sound = $("sound-on").checked ? synthesizeSound(gun, id) : null;
   const btn = $("run");
   btn.disabled = true;
   btn.textContent = gun.muzzle_device?.type && gun.muzzle_device.type !== "none" ? "Simulating (2D)…" : "Simulating…";
@@ -1194,6 +1194,11 @@ async function fire(animate = true) {
     if (lastShot.left_muzzle) {
       btn.textContent = "Simulating flash (2D)…";
       lastShot.plume = await plume;
+    }
+    // The range waits for the sound too: one that arrives after the animation has ended would never be heard.
+    if (animate && sound && range) {
+      btn.textContent = "Synthesising sound…";
+      await sound;
     }
   } catch (e) {
     showError(e.message);

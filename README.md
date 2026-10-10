@@ -914,12 +914,16 @@ station on one rotor and fires as it reaches the top.
   the bolts and the drive are solved together from their kinetic energy, so the bolts' strokes pull
   on the rotor as the cam drives them. A round is caught from rest by its station (its share of the
   rotor's momentum, and the energy that costs), rides round as part of the rotor, and its case leaves
-  at the ejection port; the belt's (or a `linkless` chute's) pull is a torque while it feeds.
+  at the ejection port; the belt's (or a `linkless` chute's) pull is a torque while it feeds. The
+  bolts' rollers drag in the cam track as they stroke, a pulse of drag per stroke that grows with the
+  speed squared, so a rotor running down slows a stroke at a time.
 - **Drives** (`rotary_drive`).
   - *electric*: a DC motor whose torque falls with speed to its free speed at `rotary_rate`. It runs
-    on to clear the last cases, then brakes.
+    on to clear the last cases, then brakes dynamically, with a torque that fades as it slows, so the
+    heavy rotor winds down over a second or so.
   - *hydraulic*: a hydraulic motor behind a valve that opens over `valve_time`, full torque until the
-    supply's flow runs out at `rotary_rate`; closing the valve brakes it.
+    supply's flow runs out at `rotary_rate`; the valve closes as slowly once the gun is clear, and
+    the motor pumping against it winds the rotor down.
   - *gas*: the gun drives itself. A starter cartridge (`starter_energy`) turns it up to its first
     shot; then each barrel that has fired bleeds gas into its own cylinder (as the gas action does),
     whose piston turns the rotor through a helical cam (`cam_lever` m per radian) until it has moved
