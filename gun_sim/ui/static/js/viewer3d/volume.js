@@ -256,8 +256,8 @@ vec3 gasGlow(vec3 roW, vec3 rdW, float tScene) {
 }
 
 // ---- Mach cones ----
-// How much of a conical shock sheet the ray crosses before tScene: the cone has its apex at `apex`
-// and opens back along -x with tan k, out to `len` behind the apex. Each crossing counts the more
+// How much of a conical shock sheet the ray crosses before tScene: the cone has its apex at apex
+// and opens back along -x with tan k, out to len behind the apex. Each crossing counts the more
 // the more nearly edge on it is (the ray runs further through the sheet), and less the further
 // behind the projectile it is (a shock weakens as r^-3/4 as it spreads).
 float shockSheet(vec3 ro, vec3 rd, vec3 apex, float k, float len, float cal, float tScene) {
