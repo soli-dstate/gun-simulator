@@ -853,6 +853,15 @@ function actionRows(a) {
     rows += `<span>Sliding wedge</span><span class="${ok ? "" : "bad"}">${a.status}` +
       (a.open_time !== null ? ` ${(a.open_time * 1e3).toFixed(0)} ms after the shot` : "") + "</span>";
     if (a.case_speed !== null) rows += `<span>Case thrown out</span><span>${a.case_speed.toFixed(1)} m/s</span>`;
+    const al = a.autoloader;
+    if (al) {
+      rows += `<span>Autoloader</span><span class="${al.loaded ? "" : "bad"}">${al.label}, ${al.drive}: ` +
+        (al.loaded ? `loaded, ready to fire ${al.ready_time.toFixed(1)} s after the shot (${al.rate.toFixed(1)} rounds/min); ${al.rounds_after} left`
+          : al.status) + "</span>";
+      if (al.seat_speed !== null) rows += `<span>Rammed home</span><span class="${al.seat_speed < 1.2 ? "bad" : ""}">the ${al.two_piece ? "projectile" : "round"} seats at ${fmt(al.seat_speed, "velocity", 2)}${al.block_speed !== null ? `; the block springs shut at ${al.block_speed.toFixed(2)} m/s` : ""}</span>`;
+      const steps = al.stages.map((s) => `${s.start.toFixed(2)}–${s.end.toFixed(2)} s ${s.name}`).join("<br>");
+      if (steps) rows += `<span>Its cycle</span><span>${steps}</span>`;
+    }
     return rows;
   }
   if (a.shot_times.length > 1) {

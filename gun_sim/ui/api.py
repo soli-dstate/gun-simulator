@@ -12,8 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import (action, designer, devices, evacuator, exterior, fluid, lumped, parallel, plume, rifling, sound,
-                terminal)
+from .. import (action, autoloader, designer, devices, evacuator, exterior, fluid, lumped, parallel, plume, rifling,
+                sound, terminal)
 from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES,
                       FIRE_MODES, LOCKINGS, PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Gun)
 from ..designer import CONFIG_DIR
@@ -208,6 +208,15 @@ FIELDS = {
         ("belt_cam", "Feed cam travel per link (blank = 35 % of stroke)", "mm", 1e-3),
         ("select", "Dual belt: the belt that feeds", "choice", ["left", "right"]),
         ("loading", "Cylinder: how it is reloaded", "choice", list(CYLINDER_LOADING)),
+        ("drive", "Autoloader: drive (blank = the type's)", "choice", ["", *autoloader.DRIVES]),
+        ("ammunition", "Autoloader: rounds (blank = two-piece in a carousel, else unitary)", "choice",
+         ["", *autoloader.AMMUNITION]),
+        ("load_angle", "Autoloader: loading angle (blank = the type's; none for an oscillating turret)", "°", 1),
+        ("gun_elevation", "Autoloader: the gun's elevation when it fires", "°", 1),
+        ("elevation_rate", "Autoloader: elevation drive's speed", "°/s", 1),
+        ("index_steps", "Autoloader: positions turned to the chosen round", "", 1),
+        ("drive_power", "Autoloader: each drive's power (blank = the type's)", "kW", 1e3),
+        ("ram_speed", "Autoloader: rammer's top speed (blank = the type's)", "m/s", 1),
     ],
     "trigger": [
         ("type", "Trigger", "choice", list(TRIGGER_TYPES)),
@@ -498,6 +507,7 @@ def action_to_json(a: action.ActionResult) -> dict:
         "jam": None if a.jam is None else {k: (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
                                            for k, v in a.jam.items()},
         "feed_angle": float(a.feed_angle),
+        "autoloader": autoloader.to_json(a.autoloader),
     }
 
 

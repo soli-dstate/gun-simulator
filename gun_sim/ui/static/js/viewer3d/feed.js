@@ -23,6 +23,8 @@
 //   doesn't recoil with the gun.
 // * Cylinder: a revolver's. Its rounds sit in the cylinder's chambers, which
 //   handgun.js builds and range.js turns, so there is nothing here.
+// * A tank gun's autoloader (az, mz, bustle, oscillating): autoloader.js builds
+//   and animates it, so there is nothing here either.
 //
 // A handgun's box magazine rakes back with its grip (ctx.rake): each round
 // lies level on the one below, a little behind it.
@@ -30,12 +32,14 @@
 // The feed ramp runs from the chamber's edge back towards the magazine (from
 // the top, for a belt). Units are mm, in the gun's frame (gun.js).
 
+import { AUTOLOADERS } from "./autoloader.js";
 import { lathe } from "./lathe.js";
 import { chain, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { box, prism, rodProfile, tubeProfile } from "./shapes.js";
 
 const MM = 1e3;
-export const CAPACITY = { single_stack: 10, double_stack: 30, quad_stack: 60, drum: 75, belt: 100, dual_belt: 100, hand: 15, cylinder: 6 };
+export const CAPACITY = { single_stack: 10, double_stack: 30, quad_stack: 60, drum: 75, belt: 100, dual_belt: 100, hand: 15, cylinder: 6,
+                          az: 22, mz: 28, bustle: 22, oscillating: 12 };
 const RACK_ROW = 8;         // rounds side by side in each row of a ready rack
 // As gun_sim/feed.py.
 const PITCH = { single_stack: 1.0, double_stack: 0.6, quad_stack: 0.3, drum: 1.0 };
@@ -56,7 +60,7 @@ export function feedGeometry(gun, dims) {
   if (belt) { drop = under = under + BELT_RAISE * d; } else if (hand || cylinder) { drop = under = 0; } else { drop = -(under - present); under = -under; }
   const angle = f.feed_angle != null ? sign * f.feed_angle * Math.PI / 180 : Math.asin(Math.min(-drop / oal, 0.9));
   return {
-    type, belt, hand, cylinder, dual: type === "dual_belt", sign, d, oal, present, drop, under, angle,
+    type, belt, hand, cylinder, autoloader: AUTOLOADERS.includes(type), dual: type === "dual_belt", sign, d, oal, present, drop, under, angle,
     capacity: Math.round(f.capacity ?? CAPACITY[type]),
     mouth: dims.baseR + 0.05, tip: Math.max((gun.projectile.meplat_diameter ?? 0) * MM / 2, 0.3),
     ramp: (f.ramp_angle ?? 35) * Math.PI / 180, face: dims.rimT + 0.6,
@@ -99,6 +103,12 @@ export function buildFeed(gun, ctx) {
   const xm = headX + oal / 2;
   const furniture = [], magazine = [], steel = [], meshes = {}, cam = [];
   const layout = { geo: g, headX, type: g.type, belt: g.belt, capacity: g.capacity };
+
+  if (g.autoloader) {
+    // A tank gun's autoloader holds its rounds itself (autoloader.js builds it and range.js draws them).
+    Object.assign(layout, { autoloaderFeed: true, rounds: () => [], lowered: () => 0, depth: 0 });
+    return { geo: g, furniture, magazine, steel, meshes, cam, layout };
+  }
 
   // The feed ramp from the chamber's edge to where the top round lies under the bolt; only the part
   // below the bolt's path is drawn (the rest is cut into the barrel extension around the bolt).

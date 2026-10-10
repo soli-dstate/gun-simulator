@@ -14,7 +14,10 @@ brass) at the place it happens:
 * a chain gun's drive (motor()): the electric motor's whine and its gears,
   the chain's links clattering onto the sprocket and the brushes' hiss, at the
   speed and load the action simulation has the chain running at, so the whine
-  sags as the bolt loads the motor and surges as it lets go.
+  sags as the bolt loads the motor and surges as it lets go;
+* a tank gun's autoloader (autoloader()): its drives over each move of its
+  cycle (servos, a geared motor and chains, or a hydraulic pump and valves),
+  its clutches, latches and stops, the rounds seating and the block shutting.
 
 A bigger part rings lower and longer: a steel part of more than a kilogram
 has its modes divided by (mass / 1 kg)^(1/3), as its size, and its decay
@@ -146,6 +149,124 @@ def motor(fs: float, t: np.ndarray, q: np.ndarray, gun, track: dict, seed: int =
     # Ease in and out over a few ms, so it doesn't click where its clock starts and stops.
     edge = np.minimum(1.0, np.minimum(np.arange(n), np.arange(n)[::-1]) / (3e-3 * fs))
     return wave * p_rms * edge
+
+
+SERVO_RPM = 3000.0          # an electric autoloader's servo motors at their top speed
+SERVO_PWM = 8000.0          # Hz, their drives' switching whine
+GEAR_MOTOR_RPM = 4500.0     # an electromechanical one's motor, at the mechanism's top speed
+GEAR_TEETH = 17             # its first pinion
+RAMMER_CHAIN_PITCH = 25.4e-3  # m, a chain rammer's links
+PUMP_RPM = 1500.0           # a hydraulic autoloader's pump, running all through the cycle
+PUMP_PISTONS = 9
+PUMP_IDLE = 0.15            # share of the drives' power the pump makes noise with when nothing moves
+ENGINE_SHARES = {"whine": 0.35, "mesh": 0.3, "chain": 0.25, "hiss": 0.1}
+
+
+def _band_noise(n: int, fs: float, centre: float, width: float, rng) -> np.ndarray:
+    """Noise in a log-normal band round `centre` Hz, unit rms."""
+    spec = np.fft.rfft(rng.standard_normal(n))
+    f = np.fft.rfftfreq(n, 1 / fs)
+    spec *= np.exp(-0.5 * (np.log(np.maximum(f, 1.0) / centre) / width) ** 2)
+    x = np.fft.irfft(spec, n)
+    rms = math.sqrt(np.mean(x * x)) or 1.0
+    return x / rms
+
+
+def _drive_wave(fs: float, d: dict, rng) -> np.ndarray:
+    """Pressure (Pa) at 1 m of one powered move of an autoloader: its motor (or valve) over the move."""
+    n = int(math.ceil(d["t"][-1] * fs)) + 1
+    tt = np.arange(n) / fs
+    v = np.interp(tt, d["t"], d["v"])
+    share = np.clip(v / d["v_cap"], 0.0, 1.0)
+    acc = np.gradient(v, 1 / fs)
+    power = np.abs((d["resist"] + d["mass"] * acc) * v) + NO_LOAD_LOSS * d["power"] * share
+    p_rms = np.sqrt(RHO_C * DRIVE_RADIATION * power / (4 * math.pi))
+    nyq = 0.45 * fs
+    parts = {}
+    if d["drive"] in ("electric", "electromechanical"):
+        rpm = SERVO_RPM if d["drive"] == "electric" else GEAR_MOTOR_RPM
+        phase = 2 * math.pi * np.cumsum(rpm / 60 * share) / fs
+        whine = np.zeros(n)
+        for h, amp in ((MOTOR_SLOTS, 1.0), (2 * MOTOR_SLOTS, 0.35), (1, 0.25), (2, 0.15)):
+            if rpm / 60 * h < nyq:
+                whine += amp * np.sin(h * phase + rng.uniform(0, 2 * math.pi))
+        parts["whine"] = whine
+        if d["drive"] == "electric":
+            pwm = np.sin(2 * math.pi * min(SERVO_PWM, nyq) * tt) * (share > 0.01)
+            parts["hiss"] = 0.6 * pwm + 0.4 * _band_noise(n, fs, 5000.0, 0.5, rng)
+        else:
+            parts["mesh"] = np.sin(GEAR_TEETH * phase) + 0.5 * np.sin(2 * GEAR_TEETH * phase)
+            parts["hiss"] = _band_noise(n, fs, 3000.0, 0.6, rng)
+        if d["part"] == "rammer" or d["drive"] == "electromechanical":
+            # A chain rammer's (or the gearing's chain's) links ticking over the sprocket.
+            links = np.cumsum(v) / fs / RAMMER_CHAIN_PITCH
+            ticks = np.zeros(n)
+            at = np.nonzero(np.diff(np.floor(links)) > 0)[0] + 1
+            ticks[at] = share[at]
+            ring_t = np.arange(int(4e-3 * fs)) / fs
+            kernel = sum(amp * np.sin(2 * math.pi * f * ring_t) * np.exp(-ring_t / (tau * 0.15))
+                         for f, tau, amp in STEEL if f < nyq)
+            parts["chain"] = np.convolve(ticks, kernel)[:n]
+    else:
+        # A valve opening the move's flow: the oil's hiss through it, louder the faster it moves.
+        parts["hiss"] = _band_noise(n, fs, 2500.0, 0.7, rng)
+    moving = share > 0.05
+    wave = np.zeros(n)
+    for name, x in parts.items():
+        rms = math.sqrt(np.mean(x[moving] ** 2)) if moving.any() else 0.0
+        if rms > 0:
+            wave += x / rms * math.sqrt(ENGINE_SHARES[name])
+    edge = np.minimum(1.0, np.minimum(np.arange(n), np.arange(n)[::-1]) / (3e-3 * fs))
+    return wave * p_rms * edge
+
+
+def autoloader(fs: float, al: dict, seed: int = 47) -> tuple[float, np.ndarray] | None:
+    """Pressure (Pa) at 1 m of an autoloader's cycle (gun_sim/autoloader.py): (start, s from ignition, and the wave).
+
+    Its drives as they move (an electric one's servos whining up and down with each move and their
+    switching hiss; an electromechanical one's motor, gears and chains; a hydraulic one's pump running
+    all through the cycle and its valves hissing as each move flows), and every clutch, valve, latch and
+    stop, the round seating in the forcing cone and the block springing shut, as the cycle has them.
+    """
+    if al is None or not al.get("stages"):
+        return None
+    rng = np.random.default_rng(seed)
+    drives = al.get("drives", [])
+    times = [st["start"] for st in al["stages"]] + [e["time"] for e in al["events"]]
+    t0 = max(min(times) - 0.05, 0.0)
+    t1 = al["end"] + 0.5
+    n = int(math.ceil((t1 - t0) * fs))
+    wave = np.zeros(n)
+
+    def add(at: float, x: np.ndarray) -> None:
+        i = int(round((at - t0) * fs))
+        lo, hi = max(i, 0), min(i + len(x), n)
+        if hi > lo:
+            wave[lo:hi] += x[lo - i: hi - i]
+
+    for d in drives:
+        add(d["t0"], _drive_wave(fs, d, rng))
+    hyd = [d for d in drives if d["drive"] == "hydraulic"]
+    if hyd:
+        # The pump runs from the first move to the last, labouring while any move flows.
+        a, b = min(d["t0"] for d in hyd), max(d["t0"] + d["t"][-1] for d in hyd)
+        m = int(math.ceil((b - a) * fs))
+        tt = np.arange(m) / fs
+        load = np.full(m, PUMP_IDLE)
+        for d in hyd:
+            load = np.maximum(load, np.interp(tt, d["t0"] - a + d["t"], d["v"] / d["v_cap"], left=0.0, right=0.0))
+        rpm = PUMP_RPM * (1 - 0.06 * load)        # it sags a little under load
+        phase = 2 * math.pi * np.cumsum(rpm / 60) / fs
+        x = sum(amp * np.sin(PUMP_PISTONS * h * phase + rng.uniform(0, 2 * math.pi))
+                for h, amp in ((1, 1.0), (2, 0.5), (3, 0.3), (4, 0.15)))
+        x = x / math.sqrt(np.mean(x * x)) + 0.3 * _band_noise(m, fs, 1500.0, 0.6, rng)
+        power = max(d["power"] for d in hyd) * load
+        edge = np.minimum(1.0, np.minimum(np.arange(m), np.arange(m)[::-1]) / (0.08 * fs))
+        add(a, x * np.sqrt(RHO_C * DRIVE_RADIATION * power / (4 * math.pi)) * edge)
+    for k, e in enumerate(al["events"]):
+        if e["energy"] > 0:
+            add(e["time"], ring(fs, e["energy"], steel(max(e["mass"], 0.05)), seed=seed + k))
+    return t0, wave
 
 
 def impacts(action_result, gun) -> list[dict]:

@@ -79,7 +79,8 @@ Actions. Which body the bore forces push depends on the action:
   strikes the extractors, which throw the case (or a combustible case's stub)
   out at `extractor_ratio` times its speed and hold it open for the loader.
   If the run-out is too weak to drive the block all the way, the breech stays
-  part shut.
+  part shut. With an autoloader, its cycle then rams the next round
+  (gun_sim/autoloader.py, ActionResult.autoloader).
 
 * revolver: nothing moves under the shot (it pushes the whole gun). Between
   shots the hammer is cocked, by the trigger (double action) or the
@@ -192,6 +193,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from . import autoloader as autoloading
 from . import feed as feeding
 from . import revolver as cylinder
 
@@ -564,6 +566,7 @@ class ActionResult:
     striker_energy: float | None = None   # J it hits the primer with
     strike_energy: float = 0.15           # J the primer needs
     semi: bool = False                    # each shot has a pull of its own (trigger.mode "semi", or a revolver)
+    autoloader: dict | None = None        # a tank gun's autoloader's cycle after the shot (gun_sim/autoloader.py)
 
     @property
     def shots(self) -> int:
@@ -601,6 +604,8 @@ class ActionResult:
             if self.case_speed is not None:
                 line += f", the case thrown out at {self.case_speed:.1f} m/s"
             lines.append(line)
+            if self.autoloader is not None:
+                lines.append(autoloading.summary(self.autoloader))
         elif self.kind == "revolver":
             line = f"  revolver             {self.status}, {self.shots} shot{'s' if self.shots > 1 else ''}"
             if self.cyclic_rate and self.shots > 1:
@@ -794,7 +799,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     # Feeding: rounds left, the top round's rise once the bolt is past it (m, m/s), the belt's draw.
     fd = gun.feed
     belted = feeding.belt(gun)
-    by_hand = feeding.hand(gun)
+    by_hand = feeding.hand(gun) or feeding.autoloader(gun)   # nothing in the gun feeds it
     loose = by_hand or revolving     # no magazine spring presses a round on the bolt
     cap = feeding.capacity(gun)
     mag = cap if rounds is None else int(min(max(rounds, 0), cap))
@@ -1534,7 +1539,7 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     again_work = (da_work if tr.type == "double_action_only" or (revolving and double) else sa_work) if told else None
     lock_time = (0.0 if chain else striker_time + PRIMER_DELAY if striker else fall[0] + PRIMER_DELAY if hammer
                  else LOCK_TIME)
-    return ActionResult(
+    result = ActionResult(
         kind=kind, stance=sh.stance, time=arr["t"],
         recoil=arr["x"], recoil_velocity=arr["v"], pitch=arr["th"],
         bolt=arr["s"], bolt_velocity=arr["u"], force=arr["force"],
@@ -1588,3 +1593,10 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
         strike_energy=strike,
         semi=semi,
     )
+    if feeding.autoloader(gun):
+        # The autoloader rams the next round once the breech is open.
+        al = result.autoloader = autoloading.simulate(gun, result, mag)
+        result.warnings += [f"autoloader: {w}" for w in al["warnings"]]
+        if al["loaded"]:
+            result.rounds_left, result.chambered = al["rounds_after"], True
+    return result

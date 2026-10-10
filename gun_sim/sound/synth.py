@@ -333,6 +333,13 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
             wave = mechanical.motor(fs_int, cycle.time, cycle.drive, gun, track) / r
             arrivals.append(dict(name="action: chain drive", t0=float(cycle.time[0]) + r / c0, wave=wave, r=r,
                                  grazing=None, direction=vec / r))
+        loader = mechanical.autoloader(fs_int, cycle.autoloader)
+        if loader is not None:
+            # A tank gun's autoloader, in the turret behind the breech, all through its cycle.
+            vec = listener - (receiver - np.array([0.5, 0.0, 0.0]))
+            r = max(float(np.linalg.norm(vec)), 0.05)
+            arrivals.append(dict(name="action: autoloader", t0=loader[0] + r / c0, wave=loader[1] / r, r=r,
+                                 grazing=None, direction=vec / r))
 
     # ---- render every arrival on one timeline, at the internal rate ----
     first = min(a["t0"] + _onset(a["wave"]) / fs_int for a in arrivals)

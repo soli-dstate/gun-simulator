@@ -1,0 +1,131 @@
+# 2A46M-1: the T-80U's 125 mm smoothbore, firing the same 3BM42-like APFSDS round
+# as the T-90's from its MZ carousel autoloader. The MZ is hydraulic: a pump runs
+# all through the cycle and valves switch each move in. Its 28 cassettes stand
+# the charges upright round the outside of the carousel with the projectiles
+# lying flat inside them; the raised cassette's charge tray swings up into line
+# behind the projectile, and the stub catcher drops the last shot's stub into
+# the emptied cassette. Published figures where there are any (calibre, barrel
+# length, the round, the recoil length, the carousel's 28 rounds and its quoted
+# 7.1 s cycle); the recoil system, breech and drives are illustrative. SI units.
+
+name = "2A46M-1 125 mm (APFSDS, MZ autoloader)"
+
+[barrel]
+bore_diameter   = 125.0e-3  # m, smoothbore
+travel          = 5.10      # m, the projectile's seat to the muzzle (a 6.0 m, 48-calibre barrel)
+chamber_volume  = 12.0e-3   # m^3, behind the projectile
+breech_diameter = 0.27      # m
+muzzle_diameter = 0.17      # m
+twist           = 0.0       # smoothbore: the rod is fin-stabilised
+evacuator_position        = 3.00     # m of travel from the seat
+evacuator_volume          = 0.028    # m^3
+evacuator_nozzles         = 6
+evacuator_nozzle_diameter = 9.0e-3   # m
+evacuator_angle           = 30.0     # degrees
+
+[projectile]
+# A long rod with fins in a three-petal sabot (the whole launch package is the mass).
+type                = "apfsds"
+mass                = 7.05      # kg, rod and sabot
+penetrator_mass     = 4.85      # kg
+penetrator_diameter = 26.0e-3   # m
+length              = 0.574     # m, the projectile from its tail to its tip
+fin_span            = 0.085     # m
+fin_length          = 0.100     # m
+sabot_length        = 0.250     # m
+sabot_offset        = 0.200     # m, rod tail to the sabot's rear face
+ogive_length        = 0.055     # m, the windshield
+meplat_diameter     = 2.0e-3    # m
+boat_tail_length    = 0.0
+core_material       = "tungsten"
+shot_start_pressure = 40e6      # Pa
+bore_resistance     = 4e6       # Pa
+drag_model          = "LR"
+
+[case]
+# The charge: a combustible body on a steel stub base, rammed in behind the projectile. Its
+# length is the charge's; overall_length is from the stub's face to the projectile's tip.
+length            = 0.455    # m
+overall_length    = 0.990    # m (the fins reach 40 mm into the charge's front)
+rim_diameter      = 0.157    # m
+rim_thickness     = 0.012    # m
+groove_diameter   = 0.165    # m (no groove: the extractors take the rim)
+groove_width      = 0.005    # m
+base_diameter     = 0.150    # m
+shoulder_diameter = 0.146    # m
+shoulder_position = 0.430    # m
+shoulder_angle    = 30.0     # degrees
+neck_wall         = 3.0e-3   # m
+body_wall         = 4.0e-3   # m
+head_thickness    = 0.028    # m
+primer_diameter   = 0.020    # m, the electric primer
+primer_depth      = 0.025    # m
+combustible       = true
+stub_length       = 0.070    # m
+material          = "steel"
+
+[propellant]
+charge_mass     = 8.2       # kg (the combustible body's nitrocellulose counted in it)
+force           = 1.10e6    # J/kg
+covolume        = 1.0e-3    # m^3/kg
+gamma           = 1.23
+density         = 1600      # kg/m^3
+grain           = "19-perf"
+web             = 1.7e-3    # m
+grain_length    = 25e-3     # m
+perforation_diameter = 0.5e-3  # m
+burn_rate_coeff = 8.5e-9    # (m/s)/Pa^n, tuned to about 1,700 m/s at 400 MPa
+burn_rate_exp   = 0.9
+molar_mass      = 0.024     # kg/mol
+
+[ignition]
+pressure = 10e6  # Pa, the electric primer
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+max_time     = 0.05
+
+[action]
+# The block drops in the breech ring as the gun runs out; the rammed charge's stub rim trips the
+# extractors and its closing spring shuts it.
+type             = "sliding_wedge"
+gun_mass         = 2450.0   # kg, the recoiling parts
+bolt_mass        = 90.0     # kg, the breech block
+spring_rate      = 6.0e3    # N/m
+spring_preload   = 1.4e3    # N
+friction         = 150.0    # N
+cam_travel       = 0.11     # m
+extractor_ratio  = 5.0
+bore_height        = 0.01   # m
+cg_distance        = 0.05   # m
+radius_of_gyration = 1.50   # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+stroke               = 0.34      # m, to the recoil stop
+friction             = 2.5e3     # N
+recuperator_pressure = 4.5e6     # Pa
+recuperator_volume   = 7.0e-3    # m^3
+recuperator_area     = 3.5e-3    # m^2
+buffer_area          = 5.6e-3    # m^2 (two buffers)
+buffer_orifice       = 1.7e-4    # m^2
+buffer_orifice_end   = 2.2e-5    # m^2
+counter_orifice      = 1.6e-4    # m^2
+counter_buffer       = 0.025     # m
+elevation_stiffness  = 4.0e7     # N m/rad
+elevation_damping    = 4.0e5     # N m s/rad
+
+[feed]
+# The MZ: 28 cassettes round the carousel, hydraulic drives. The gun comes to its loading angle and
+# locks while the carousel turns the chosen cassette under the lift.
+type          = "mz"
+capacity      = 28
+gun_elevation = 0.0        # degrees
+index_steps   = 1
+
+[appearance]
+style = "tank"

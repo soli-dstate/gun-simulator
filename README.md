@@ -110,6 +110,9 @@ barrel, cartridge case, projectile, propellant, ignition, action and recoil,
 muzzle device, appearance, shooter, listener and air, plus the solver and sound-model settings under
 *Advanced*. Every value has a
 slider, a number box in friendly units, and a line explaining what it does.
+The sliders reach battleship sizes (bores to 460 mm, shells to 1.5 t, barrels to
+30 m), on a log scale where a range spans decades; a value typed past either end
+widens its slider round it.
 Next to the form is a live WebGL 2 preview of either the **Cartridge** or the
 whole **Rifle** (drag to rotate, wheel to zoom, double-click to reset;
 **Cutaway** shows a half-section). *At a glance* lists numbers derived from
@@ -327,7 +330,7 @@ example.
 | `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"`, `"gas_delayed"`, `"chain"`, `"sliding_wedge"` or `"revolver"`); short recoil's `locking` (`"block"` or `"tilt"`, 3D view only); a striker's `striker_mass`, `striker_spring_preload`, `striker_spring_rate`, `striker_travel` and `striker_precock`; a revolver's `cylinder_mass` and `cylinder_radius`; gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
 direct impingement the "piston" is the bolt's tail in the carrier); `gas_tube_length` and `gas_tube_diameter` (direct impingement); chain gun: `chain_rate` (rounds/min with no load), `motor_power`, `drive_mass`, `chain_width`, `sprocket_radius`; sliding wedge: `cam_travel`, `extractor_ratio` (the block is `bolt_mass`, its drop `bolt_travel`, its closing spring `spring_rate` and `spring_preload`); bore height above the shoulder (or trunnions), butt to centre of mass, radius of gyration (muzzle rise) |
 | `[trigger]` | `type` (`"single_action"`, `"double_action"`, `"double_action_only"` or `"striker"`), `mode` (`"auto"` for an automatic's burst, `"semi"` for a pull a shot), the single-action (or striker) `pull` and `travel`, the double-action `da_pull` and `da_travel`, `pull_time` (over a double-action pull, or to thumb-cock a hammer) and `split` (between shots fired as fast as the shooter can) |
-| `[feed]` | `type` (`"single_stack"`, `"double_stack"`, `"quad_stack"`, `"drum"`, `"belt"`, `"dual_belt"`, `"hand"` for a loader's rack, or `"cylinder"` for a revolver's), `capacity`, the magazine spring and follower, feed angle and ramp, `hold_open`; a belt's links, hang and feed cam; a dual feed's `select`; a cylinder's `loading` (`"swing_out"` or `"gate"`) |
+| `[feed]` | `type` (`"single_stack"`, `"double_stack"`, `"quad_stack"`, `"drum"`, `"belt"`, `"dual_belt"`, `"hand"` for a loader's rack, `"cylinder"` for a revolver's, or a tank gun's autoloader: `"az"`, `"mz"`, `"bustle"`, `"oscillating"`), `capacity`, the magazine spring and follower, feed angle and ramp, `hold_open`; a belt's links, hang and feed cam; a dual feed's `select`; a cylinder's `loading` (`"swing_out"` or `"gate"`); an autoloader's `drive` (`"electric"`, `"electromechanical"`, `"hydraulic"`, `"spring"`), `ammunition` (`"two_piece"` or `"unitary"`), `load_angle`, `gun_elevation`, `elevation_rate`, `index_steps`, `drive_power`, `ram_speed` (see [Autoloaders](#autoloaders-gun_simautoloaderpy)) |
 | `[shooter]` | `stance` (`"shoulder"`, `"hands"` for a handgun, `"free"` for free recoil, or `"mount"` for a mount's recoil system); body mass moving with the gun, shoulder (or arms') stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"`, `"suppressor"` or `"flash_hider"`); length, outer diameter, number of baffles (prongs for a flash hider), baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake, flash hider), `flare_angle` (flash hider bore), mass. Missing sizes are scaled from the bore |
 | `[mount]` | a mount's recoil system: `stroke` to the recoil stop, a spring (`spring_rate`, `spring_preload`), linear `damping`, `friction`, a hydropneumatic recuperator (`recuperator_pressure`, `recuperator_volume`, `recuperator_area`), a hydraulic buffer (`buffer_area`, `buffer_orifice` closing to `buffer_orifice_end` along the stroke, `counter_orifice` for the run-out, `oil_density`), the `counter_buffer` length, `stop_restitution`, and the elevation gear's `elevation_stiffness` and `elevation_damping` |
@@ -830,6 +833,74 @@ straight ramp over the rear dwell), the stub's flight inside the turret, the tur
 own motion, the gas the evacuator takes from the bore during the shot, and the sabot's
 aerodynamics (the petals' flight is drawn, not solved).
 
+### Autoloaders (`gun_sim/autoloader.py`)
+
+A tank gun's autoloader (`feed.type` `"az"`, `"mz"`, `"bustle"` or `"oscillating"`, with
+a sliding wedge on a mount) takes over once the breech has opened as the gun ran out.
+Each is its real sequence of moves, and each move is made by one of its drives against
+what it has to move: the drive pushes with a force falling as power / speed, never more
+than accelerates the load at the drive's limit, against gravity and friction, up to the
+speed the mechanism allows, and brakes to stop where it should. An electromechanical
+drive clutches each move in and brakes it out, a hydraulic one switches a valve, so each
+move has a dead time too. The rammer lets each piece go short of the chamber and it runs
+on into the forcing cone: a projectile has to arrive at 1.2 m/s or more to wedge its
+driving band in, or it can slide back out at the loading angle (reported). The last rim
+trips the extractors and the block springs shut on its closing spring. The gun can fire
+again once everything is put away and the gun is laid again.
+
+| Type | Preset | Rounds | Drive | Cycle |
+|---|---|---|---|---|
+| `az`, the T-72's and T-90's carousel | `configs/2a46m5_125_t90.toml` | 22, two-piece | electromechanical | 7.8 s |
+| `mz`, the T-64's and T-80's carousel | `configs/2a46m1_125_t80.toml` | 28, two-piece | hydraulic | 7.1 s |
+| `bustle`, the Leclerc's | `configs/cn120_26_leclerc.toml` | 22, unitary | electric | 3.1 s |
+| `bustle`, the Type 90's | `configs/rh120_l44_type90.toml` | 16, unitary | electromechanical | 4.7 s |
+| `oscillating`, the AMX-13's | `configs/sa50_75_amx13.toml` | 2 drums of 6, unitary | the recoil's spring | 1.8 s |
+
+- **AZ** (electromechanical). Two-piece rounds lie flat in cassettes round a carousel
+  under the turret floor, the projectile in the lower tier and the charge over it. The gun
+  comes to its 3° loading angle and locks while the carousel turns the chosen cassette
+  under the lift (with every round in it: 550 kg for the T-90's 22); the lift raises the
+  cassette behind the breech; the chain rammer rams the projectile, the lift raises the
+  charge's tier into line, the rammer rams the charge; the empty cassette is lowered and
+  the gun let go. The last shot's stub was thrown out of the turret through a hatch.
+- **MZ** (hydraulic). The charges stand upright round the outside of a bigger carousel, the
+  projectiles flat inside them. The pump runs all through the cycle and valves switch each
+  move in; the raised cassette's charge tray swings up into line behind the projectile, and
+  the stub catcher drops the last stub into the emptied cassette before it goes down.
+- **Bustle** (`feed.drive` `"electric"`, the Leclerc's servos, or `"electromechanical"`, the
+  Type 90's single motor with clutches, intermittent gearing and cams). Unitary rounds stand
+  nose-forwards in a conveyor loop in the turret bustle. The conveyor brings the chosen round
+  behind the breech while the blast door opens; the round drops onto the ramming tray and is
+  rammed straight in; the door shuts.
+- **Oscillating turret**. The upper turret elevates with the gun, so its two revolver drums
+  are always in line with the breech and it loads at any elevation (no `load_angle`). The
+  recoil cocks the rammer's spring over 60 % of the stroke (a recoil shorter than that
+  leaves it uncocked, reported): the extractors throw the case out through the rear
+  trapdoor, a drum turns a round on and drops it onto the loading tray, and the spring rams
+  it. The drums are refilled from outside the tank.
+
+`feed.index_steps` is how far the carousel or conveyor turns to the chosen round (the shorter
+way round: a different kind of round can be half the carousel away, which the T-90 takes
+3.5 s longer over); `feed.gun_elevation` where the gun was laid, and `elevation_rate` how fast
+it comes to `load_angle` and back. `drive_power` and `ram_speed` override the type's drives,
+`ammunition` its rounds (`"two_piece"` or `"unitary"`). A drive too weak to lift its load
+stalls the cycle, and an empty autoloader leaves the breech open. Everything is heard: an
+electric drive's servos whining up and down with each move over their switching hiss, an
+electromechanical one's motor, gears and chains and its clutches, a hydraulic one's pump
+humming all through the cycle and its valves hissing as each move flows; every latch, lock
+pin and stop, the rounds seating, the block springing shut. The 3D range plays the cycle on
+the shot's own clock, in step with the sound.
+
+The sequences are the real ones; the mechanisms' masses, travels and speeds are
+illustrative, scaled from the round. The cycle times are mechanical: the crew's
+re-laying on the target comes on top (the AMX-13's quoted rate of about a round in five
+seconds was set by its gunner, not its drums).
+
+In 3D the rounds wait lined up behind the breech, clear of the recoil, so the rammer has
+further to push them than the simulation's stroke: its head is drawn faster, so each piece
+seats exactly when the simulation (and the sound) has it seat. The bustle's and the drums'
+housings are drawn as open frames, and a restocked autoloader fills at once.
+
 ### Handguns: triggers, strikers and revolvers (`gun_sim/action.py`, `gun_sim/revolver.py`)
 
 Five presets: the Colt M1911A1 (.45 ACP M1911 ball), the Beretta M9 (9x19 mm M882), the
@@ -1133,6 +1204,7 @@ gun_sim/
   action.py      recoil and action cycling: gun, bolt, gas system, shooter, triggers, strikers, bursts
   revolver.py    a revolver's cylinder (geometry, inertia) and the gas lost through its gap
   feed.py        magazines, belts, a loader's rack and a revolver's cylinder; feed angle and jams
+  autoloader.py  tank guns' autoloaders: AZ and MZ carousels, bustle conveyor, oscillating turret
   axisym.py      2D axisymmetric compressible flow solver (face apertures for walls and ports)
   kernels.py     the two flow solvers' inner loops, compiled with Numba
   parallel.py    worker processes, so a shot's separate solves run at the same time

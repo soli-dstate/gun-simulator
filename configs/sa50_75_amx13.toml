@@ -1,0 +1,113 @@
+# 75 mm SA 50: the AMX-13's rifled gun in its FL-10 oscillating turret, firing a
+# full-calibre armour-piercing shot. The whole upper turret elevates with the gun,
+# so the two six-round revolver drums in its bustle are always in line with the
+# breech: the recoil cocks the rammer's spring, the extractors throw the case
+# out through the trapdoor in the turret rear, and a drum drops the next round
+# onto the tray for the spring to ram, at any elevation. The drums are refilled
+# from outside the tank.
+# Published figures where there are any (calibre, barrel length, the shot's mass
+# and muzzle velocity, the drums' twelve rounds); the burn law is tuned to them,
+# and the recoil system, breech and rammer are illustrative. All units are SI.
+
+name = "75 mm SA 50 (AP shot, oscillating turret)"
+
+[barrel]
+bore_diameter   = 75.0e-3   # m
+travel          = 3.95      # m, the shot's seat to the muzzle (a 61.5-calibre barrel)
+chamber_volume  = 3.6e-3    # m^3
+breech_diameter = 0.18      # m
+muzzle_diameter = 0.11      # m
+twist           = 1.875     # m per turn: 1 in 25 calibres
+groove_depth    = 1.2e-3    # m
+
+[projectile]
+# A solid steel shot with a ballistic cap, its copper driving band engraved by the rifling.
+mass                = 6.4       # kg
+length              = 0.300     # m
+ogive_length        = 0.130     # m
+meplat_diameter     = 6.0e-3    # m
+boat_tail_length    = 0.015     # m
+core_material       = "hardened_steel"
+shot_start_pressure = 30e6      # Pa
+bore_resistance     = 6e6       # Pa
+engraving_pressure  = 40e6      # Pa
+drag_model          = "G1"
+
+[case]
+# 75 x 597 mm R: a drawn brass case, rimmed, thrown out of the turret after each shot.
+length            = 0.597    # m
+overall_length    = 0.860    # m
+rim_diameter      = 0.104    # m
+rim_thickness     = 0.007    # m
+groove_diameter   = 0.104    # m (rimmed: no groove)
+groove_width      = 0.003    # m
+base_diameter     = 0.094    # m
+shoulder_diameter = 0.086    # m
+shoulder_position = 0.520    # m
+shoulder_angle    = 25.0     # degrees
+neck_wall         = 2.0e-3   # m
+body_wall         = 2.5e-3   # m
+head_thickness    = 0.016    # m
+primer_diameter   = 0.012    # m
+primer_depth      = 0.015    # m
+material          = "brass"
+
+[propellant]
+charge_mass     = 3.4       # kg
+composition     = "single_base"
+grain           = "7-perf"
+web             = 1.1e-3    # m
+grain_length    = 18e-3     # m
+perforation_diameter = 0.4e-3  # m
+burn_rate_coeff = 6.3e-9    # (m/s)/Pa^n, tuned to about 1,000 m/s at 340 MPa
+burn_rate_exp   = 0.85
+
+[ignition]
+pressure = 8e6  # Pa, the percussion-electric primer
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+max_time     = 0.05
+
+[action]
+# A vertical sliding wedge, opened as the gun runs out.
+type             = "sliding_wedge"
+gun_mass         = 1000.0   # kg, the recoiling parts
+bolt_mass        = 35.0     # kg, the breech block
+spring_rate      = 3.0e3    # N/m
+spring_preload   = 600.0    # N
+friction         = 60.0     # N
+cam_travel       = 0.10     # m
+extractor_ratio  = 4.0
+bore_height        = 0.01   # m
+cg_distance        = 0.05   # m
+radius_of_gyration = 1.10   # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+# The recoil runs long, cocking the rammer's spring on the way back.
+stroke               = 0.55      # m, to the recoil stop
+friction             = 1.5e3     # N
+recuperator_pressure = 3.0e6     # Pa
+recuperator_volume   = 4.0e-3    # m^3
+recuperator_area     = 2.0e-3    # m^2
+buffer_area          = 3.0e-3    # m^2
+buffer_orifice       = 1.6e-4    # m^2
+buffer_orifice_end   = 2.0e-5    # m^2
+counter_orifice      = 1.2e-4    # m^2
+counter_buffer       = 0.025     # m
+elevation_stiffness  = 1.5e7     # N m/rad
+elevation_damping    = 1.5e5     # N m s/rad
+
+[feed]
+# Two revolver drums of six in the oscillating turret's bustle.
+type          = "oscillating"
+capacity      = 12
+gun_elevation = 2.0        # degrees: it loads wherever the gun is laid
+
+[appearance]
+style = "tank"

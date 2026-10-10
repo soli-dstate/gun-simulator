@@ -14,7 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .feed import FEED_TYPES
+from .autoloader import AMMUNITION, DRIVES
+from .feed import AUTOLOADERS, FEED_TYPES
 from .propellants import COMPOSITIONS, form_coefficients, grain_geometry, is_multi_perf, sliver_phase, suppressant
 
 
@@ -542,7 +543,11 @@ class Feed:
     breech, from a ready rack of `capacity` rounds; "cylinder" is a revolver's,
     `capacity` chambers, reloaded by swinging it out (all the cases ejected at
     once, a speedloader putting the rounds in) or one at a time through a
-    loading `gate`. None = filled in for the type.
+    loading `gate`. A tank gun's autoloaders: "az" the T-72's electromechanical
+    carousel, "mz" the T-64's and T-80's hydraulic one, "bustle" a conveyor in
+    the turret bustle (the Leclerc's electric, the Type 90's electromechanical
+    drive), "oscillating" the drums of an oscillating turret (AMX-13). None =
+    filled in for the type.
     """
     type: str = "double_stack"
     capacity: int | None = None             # rounds (None = 10, 30, 60, 75, 100; a cylinder's 6 chambers)
@@ -560,6 +565,15 @@ class Feed:
     belt_cam: float | None = None           # m of carrier travel over which it draws one link (None = 35 % of the stroke)
     select: str = "left"                    # dual belt: the belt that feeds ("left" or "right")
     loading: str = "swing_out"              # cylinder: "swing_out" (crane and ejector star) or "gate" (one at a time)
+    # Autoloader (gun_sim/autoloader.py). None = the type's.
+    drive: str | None = None                # "electric", "electromechanical", "hydraulic" or "spring"
+    ammunition: str | None = None           # "two_piece" (projectile and charge rammed separately) or "unitary"
+    load_angle: float | None = None         # degrees: the gun is brought to this elevation to load
+    gun_elevation: float = 0.0              # degrees the gun is laid at when it fires
+    elevation_rate: float = 4.0             # deg/s the gun is driven to its loading angle and back
+    index_steps: int = 1                    # positions the carousel (conveyor) turns to bring the chosen round up
+    drive_power: float | None = None        # W, each of its drives
+    ram_speed: float | None = None          # m/s, the rammer's top speed
 
 
 @dataclass
@@ -928,6 +942,26 @@ class Gun:
             raise ValueError("a chain gun's feeder takes its rounds from a belt: feed.type \"belt\" or \"dual_belt\"")
         if f.type == "hand" and self.action.type not in ("bolt", "sliding_wedge"):
             raise ValueError("feed.type \"hand\" (a loader) needs a hand-worked breech: action.type \"bolt\" or \"sliding_wedge\"")
+        if f.type in AUTOLOADERS:
+            if self.action.type != "sliding_wedge":
+                raise ValueError("an autoloader rams into a cannon's breech: action.type \"sliding_wedge\"")
+            if f.drive is not None and f.drive not in DRIVES:
+                raise ValueError(f"feed.drive must be one of {', '.join(DRIVES)}, not {f.drive!r}")
+            if f.ammunition is not None and f.ammunition not in AMMUNITION:
+                raise ValueError(f"feed.ammunition must be one of {', '.join(AMMUNITION)}, not {f.ammunition!r}")
+            if f.load_angle is not None and not -10 <= f.load_angle <= 20:
+                raise ValueError("feed.load_angle must be between -10 and 20 degrees")
+            if not -10 <= f.gun_elevation <= 30:
+                raise ValueError("feed.gun_elevation must be between -10 and 30 degrees")
+            if not 0.2 <= f.elevation_rate <= 60:
+                raise ValueError("feed.elevation_rate must be between 0.2 and 60 deg/s")
+            if f.index_steps != int(f.index_steps) or not 0 <= f.index_steps <= 250:
+                raise ValueError("feed.index_steps must be a whole number of positions, 0 to 250")
+            f.index_steps = int(f.index_steps)
+            if f.drive_power is not None and not 10 <= f.drive_power <= 200e3:
+                raise ValueError("feed.drive_power must be between 10 W and 200 kW")
+            if f.ram_speed is not None and not 0.2 <= f.ram_speed <= 10:
+                raise ValueError("feed.ram_speed must be between 0.2 and 10 m/s")
         for name in ("belt_cam_start", "belt_cam"):
             value = getattr(f, name)
             if value is not None and value <= 0:

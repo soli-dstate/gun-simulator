@@ -38,6 +38,7 @@
 // closed); y is up and z is to the right, where the bolt handle and the
 // ejection port are.
 
+import { buildAutoloader } from "./autoloader.js";
 import { buildCartridge, roundMeshes } from "./cartridge.js";
 import { buildFeed, feedGeometry } from "./feed.js";
 import { HANDGUN_STYLES, buildHandgunFrame, buildPistolParts, buildRevolverParts, cylinderDims, gripRake,
@@ -356,7 +357,10 @@ export function buildRifle(gun) {
       mountParts.push(boxAt(xc0 - guardRear, ringTop - ringBottom + 40, 10, (xc0 + guardRear) / 2, ym, s * zg));
     }
     const bag0 = guardRear - 0.9 * oal, bagTop = ringBottom - 0.2 * rimR;
-    mountParts.push(boxAt(guardRear - bag0 + 2 * rimR, 2.2 * rimR, 2 * zg - 20, (bag0 + guardRear) / 2 + rimR, bagTop - 1.1 * rimR, 0));
+    // (A carousel's lift and an oscillating turret's trapdoor take the stub away, so they have no bag.)
+    if (!["az", "mz", "oscillating"].includes(gun.feed?.type)) {
+      mountParts.push(boxAt(guardRear - bag0 + 2 * rimR, 2.2 * rimR, 2 * zg - 20, (bag0 + guardRear) / 2 + rimR, bagTop - 1.1 * rimR, 0));
+    }
     // Thermal sleeve: segments clamped round the barrel from ahead of the cradle (at full recoil) to
     // near the muzzle, broken by the evacuator.
     const bar = gun.barrel, t = Math.max(4, 0.05 * 2 * rb);
@@ -399,7 +403,7 @@ export function buildRifle(gun) {
     magTop = ringBottom; frontOfReceiver = ringFront;
     yGas = yTube = ringTop;
     cgX = xt; buttX = Math.min(guardRear, bag0);
-    wedgeLayout = { blockT, blockW, blockTop, blockH, ringHalf, ringBottom, guardRear, bagTop, bag0 };
+    wedgeLayout = { blockT, blockW, blockTop, blockH, ringHalf, ringBottom, ringRear, ringFront, guardRear, bagTop, bag0 };
   } else if (autocannon) {
     // A chain gun: a box receiver round the bolt's path, with the belts' opening in its top. On its
     // right side the drive: a back plate, the chain round four sprockets (the motor on the rear
@@ -656,6 +660,8 @@ export function buildRifle(gun) {
                                 rake: handgun ? gripRake(style) : 0 });
   furnParts.push(...feed.furniture);
   steelParts.push(...feed.steel);
+  // A tank gun's autoloader, behind and under the breech (autoloader.js): its own meshes, moved by range.js.
+  const loader = feed.geo.autoloader ? buildAutoloader(gun, { d, oal, cart, wedge: wedgeLayout, mountStroke }) : null;
   // A handgun's frame, grip and trigger guard, round its magazine; it pivots in the hand at the web.
   let hand = null, pivotYAt = pivotY;
   if (handgun) {
@@ -947,6 +953,7 @@ export function buildRifle(gun) {
       ...(pedestalParts.length ? { pedestal: merge(...pedestalParts) } : {}),
       ...(crankMesh ? { crank: crankMesh } : {}),
       ...(feed.meshes.rack ? { rack: feed.meshes.rack } : {}),
+      ...(loader ? loader.meshes : {}),
       ...chainMeshes,
       ...(woodParts.length ? { wood: merge(...woodParts) } : {}),
       ...(shroud ? { shroud } : {}), ...(carrier ? { carrier } : {}),
@@ -969,7 +976,7 @@ export function buildRifle(gun) {
       stroke, pinTravel,
       seat: cart.seat, projectileLength: cart.projectileLength, coreMaterial: cart.coreMaterial,
       caseLength: d.length, head: d.head, caseInnerR: d.innerR, neckX: d.xn, rimR: d.rimR,
-      feed: feed.layout,
+      feed: feed.layout, autoloader: loader ? loader.layout : null,
     },
     warnings,
   };

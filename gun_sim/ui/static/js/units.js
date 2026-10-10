@@ -29,6 +29,8 @@ const FIELD_IMPERIAL = {
   N: ["lbf", 4.4482216],
   "N/mm": ["lbf/in", 0.17512685],
   L: ["in³", 0.016387064],
+  "m/s": ["ft/s", 0.3048],
+  kW: ["hp", 0.745699872],
 };
 
 let system = "metric";
