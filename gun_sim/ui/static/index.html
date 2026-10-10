@@ -256,9 +256,18 @@
   .verdict .why { color: var(--muted); }
   .verdict.stopped .big { color: var(--good); } .verdict.cratered .big { color: var(--warn); }
   .verdict.perforated .big, .verdict.ricochet .big, .verdict.breached .big, .verdict.scabbed .big,
-  .verdict.detonated .big, .verdict.through .big { color: var(--error); }
+  .verdict.detonated .big, .verdict.through .big, .verdict.spalled .big { color: var(--error); }
   .verdict.dusted .big { color: var(--good); } .verdict.airburst .big, .verdict.self-destructed .big { color: var(--warn); }
   #t-section { width: 100%; height: 260px; display: block; }
+  .t3d-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .t3d-head h3 { margin: 0; }
+  .t3d-head label { font-size: 12.5px; display: flex; align-items: center; gap: 4px; }
+  .t3d-wrap { position: relative; }
+  #t-3d { width: 100%; height: 420px; display: block; border-radius: 8px; cursor: grab; touch-action: none; }
+  .t3d-inset { position: absolute; right: 8px; top: 8px; width: 200px; background: rgba(20, 21, 24, 0.55); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 4px; }
+  .t3d-inset canvas { width: 100%; height: 130px; display: block; }
+  .t3d-inset .cap { font-size: 11px; color: #c9ccd2; text-align: center; }
+  @media (max-width: 600px) { #t-3d { height: 300px; } .t3d-inset { width: 130px; } .t3d-inset canvas { height: 90px; } }
   #c-pen { width: 100%; height: 280px; display: block; }
   .safety { font-size: 12.5px; color: var(--muted); }
   .safety li { margin: 3px 0; }
@@ -479,6 +488,13 @@
     <div class="panel card-pad"><h3>The hit</h3><div class="tiles-stat" id="t-stats"></div></div>
     <div class="panel card-pad" id="t-payload-panel" hidden><h3>What it carries</h3><div class="tiles-stat" id="t-payload"></div>
       <table class="data" id="t-parts" style="margin-top:10px"></table></div>
+    <div class="panel card-pad" id="t-3d-panel"><div class="t3d-head"><h3 id="t-3d-title">The hit in 3D</h3><span class="spacer"></span>
+        <label class="muted"><input type="checkbox" id="t-cut"> Cut in half</label>
+        <label class="muted"><input type="checkbox" id="t-sound" checked> Sound</label>
+        <button id="t-replay" class="bar-btn">Replay</button></div>
+      <div class="t3d-wrap"><canvas id="t-3d"></canvas>
+        <div class="t3d-inset" hidden><canvas id="t-3d-inset"></canvas><div class="cap"></div></div></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">Slow motion. Drag to turn, wheel to zoom, double-click to reset.</div></div>
     <div class="panel card-pad"><h3 id="t-section-title">Cross-section through the plate</h3><canvas id="t-section"></canvas></div>
     <div class="panel card-pad"><h3 id="t-chart-title">Penetration against range</h3><canvas id="c-pen"></canvas>
       <ul class="notes" id="t-notes" style="margin-top:10px"></ul></div>

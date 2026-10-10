@@ -2,7 +2,9 @@
 // equivalents, and what the round's fills do (terminal.py does the physics).
 
 import { cssVar, drawChart } from "./charts.js";
+import { ImpactSound } from "./impactsound.js";
 import { bulletMass, fmt, imperial, label, num, onUnits, toDisplay, toSI } from "./units.js";
+import { TerminalView } from "./viewer3d/terminal3d.js";
 
 const $ = (id) => document.getElementById(id);
 const INCH = 0.0254;
@@ -17,6 +19,7 @@ const VERDICTS = {
   ricochet: ["RICOCHET", "Too steep: the round glances off the face."],
   breached: ["BREACHED", "It goes off on the face and the blast tears a hole through the plate."],
   scabbed: ["SCABBED", "The squashed explosive's shock knocks a scab off the back face: it flies off inside at a few hundred m/s."],
+  spalled: ["SPALLED", "It doesn't get through, but the back face breaks away: steel flies off behind the plate."],
   dusted: ["DUSTED", "Frangible: it turns to powder on the face, without a crater or splash back."],
   airburst: ["AIRBURST", "The time fuze bursts it in the air before it gets there."],
   "self-destructed": ["SELF-DESTRUCTED", "It destroyed itself in flight before it got there."],
@@ -73,7 +76,17 @@ export class TargetRange {
       this.schedule(300);
     };
     $("t-material").onchange = () => { this.renderMode(); this.schedule(); };
-    $("t-fire").onclick = () => this.shoot(true);
+    $("t-fire").onclick = () => { this.sound.unlock(); this.shoot(true); };
+    this.sound = new ImpactSound();
+    try {
+      this.view = new TerminalView($("t-3d"), $("t-3d-inset"), this.sound);
+    } catch (e) {
+      this.view = null;
+      $("t-3d-panel").hidden = true;   // no WebGL 2
+    }
+    $("t-replay").onclick = () => { this.sound.unlock(); this.view?.replay(); };
+    $("t-cut").onchange = (e) => this.view?.setCut(e.target.checked);
+    $("t-sound").onchange = (e) => { this.sound.enabled = e.target.checked; if (e.target.checked) this.sound.unlock(); };
     this.renderDistance();
     this.renderMode();
     onUnits(() => { this.renderPlates(); this.renderDistance(); if (this.result) this.show(this.result); });
@@ -172,10 +185,25 @@ export class TargetRange {
     } else {
       tile("Gets through", mmIn(r.limit_thickness), "the thickest plate it would defeat here");
     }
+    const sp = r.spall, spl = r.splash;
+    if (sp?.cause) {
+      const what = { debris: "Debris behind", shock: "Spall (shock)", bulge: "Spall (bulge)", scab: "Scab" }[sp.cause];
+      tile(what, fmt(sp.mass, "mass_g", 1), `${sp.count} pieces at up to ${fmt(sp.velocity, "velocity")}, in a ${Math.round(2 * sp.cone)}° cone`, "bad");
+    }
+    if (spl) tile("Splash back", fmt(spl.mass, "mass_g", 2), `about ${spl.count} pieces off the face at up to ${fmt(spl.velocity, "velocity")}`, spl.velocity > 150 ? "warn" : "");
     $("t-stats").innerHTML = tiles.join("");
     this.showPayload(r);
 
     const notes = [];
+    if (sp?.cause === "shock") {
+      notes.push(["bad", "Spalls", `The impact's shock reflects off the back face as tension (${(sp.back_stress / 1e9).toFixed(1)} GPa against the plate's ${(sp.strength / 1e9).toFixed(1)} GPa spall strength) and tears a layer ${mmIn(sp.thickness)} thick off it.`]);
+    } else if (sp?.cause === "bulge") {
+      notes.push(["bad", "Spalls", `It nearly gets through: the back face bulges and a dish ${mmIn(sp.diameter)} across cracks off it.`]);
+    } else if (sp?.bulge > 0) {
+      notes.push(["warn", "Bulges", "It nearly gets through: the back face bulges, though it holds."]);
+    }
+    if (sp?.cause === "debris") notes.push(["bad", "Behind-armour debris", `The plug and pieces of plate${r.regime === "eroding" ? " and rod" : ""} fly on in a ${Math.round(2 * sp.cone)}° cone.`]);
+    if (spl && spl.velocity > 100) notes.push(["warn", "Splash", `Bullet fragments spray off the face, within about ${Math.round(spl.off_face)}° of it, at up to ${fmt(spl.velocity, "velocity")}. Angle the plate down to throw them at the ground.`]);
     const core = r.core;
     const what = { insert: "penetrator", rod: "rod", body: "body", core: "core" }[core.what] ?? "core";
     notes.push(["info", "Penetrator", `${core.label} ${what}, ${fmt(core.mass, "mass_g")}, ${mmIn(core.diameter)} across` +
@@ -199,6 +227,7 @@ export class TargetRange {
     notes.push(...this.payloadNotes(r));
     $("t-notes").innerHTML = notes.map(([k, t, x]) => `<li class="${k}"><b>${t}</b>${x}</li>`).join("");
 
+    this.view?.show(r, this.gun);
     this.drawSection(r);
     this.drawChart(r);
   }
@@ -291,12 +320,16 @@ export class TargetRange {
       if (r.fragmented) notes.push(["warn", "Fragments", `It breaks up at ${cm(r.fragment_depth)}; the fragments fly out from the track and leave much of the energy there.`]);
       if (r.expansion > 1.05) notes.push(["info", "Expands", `It opens to ${r.expansion.toFixed(1)}× its diameter over its first few centimetres.`]);
       else if (r.expansion <= 1.05 && /jhp|hp|jsp|polymer_tip|bonded|monolithic/.test(r.construction)) notes.push(["warn", "Doesn't open", "Too slow here to expand: it goes on like a round nose."]);
+      const rec = r.recovered;
+      if (rec && rec.yaw > 120) notes.push(["info", "Comes to rest base first", "It turned right round in the block: it is dug out with its base towards the face."]);
+      if (rec && rec.petals && rec.expansion > 1.05) notes.push(["info", "Petals", `It opens into ${rec.petals} petals, folded back over its shank.`]);
     }
     $("t-stats").innerHTML = tiles.join("");
     this.showPayload(r);
     notes.push(...this.payloadNotes(r));
     if (r.verdict === "detonated") notes.push(["bad", "Detonates", "An explosive round's fuze fires on the block: see what it carries."]);
     $("t-notes").innerHTML = notes.map(([k, t, x]) => `<li class="${k}"><b>${t}</b>${x}</li>`).join("");
+    this.view?.show(r, this.gun);
     this.drawGel(r);
     this.drawGelChart(r);
   }

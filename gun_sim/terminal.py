@@ -88,15 +88,19 @@ class Armour:
     hardness: float      # BHN
     density: float       # kg/m^3
     resistance: float    # Pa, the target's resistance R_t (Tate) and R (cavity expansion)
+    spall_strength: float = 3.0e9   # Pa: tension that tears its back face off (dynamic, at impact rates)
+    sound_speed: float = 5900.0     # m/s, longitudinal
+    modulus: float = 205e9          # Pa, Young's modulus (the plate's ring)
+    loss: float = 0.0006            # loss factor: how fast its ring dies away
 
 
 # AR500 is through-hardened abrasion-resistant plate (about 500 BHN) used for steel targets; RHA
 # (MIL-DTL-12560, about 300 BHN) is the reference armour.
 ARMOURS = {
-    "ar500": Armour("AR500 steel", 500.0, 7850.0, 7.2e9),
-    "rha": Armour("Rolled homogeneous armour (RHA)", 300.0, 7850.0, 5.0e9),
-    "mild_steel": Armour("Mild steel (A36)", 150.0, 7850.0, 2.8e9),
-    "aluminium": Armour("Aluminium armour (5083)", 95.0, 2660.0, 1.4e9),
+    "ar500": Armour("AR500 steel", 500.0, 7850.0, 7.2e9, 4.0e9),
+    "rha": Armour("Rolled homogeneous armour (RHA)", 300.0, 7850.0, 5.0e9, 3.2e9),
+    "mild_steel": Armour("Mild steel (A36)", 150.0, 7850.0, 2.8e9, 2.2e9, loss=0.001),
+    "aluminium": Armour("Aluminium armour (5083)", 95.0, 2660.0, 1.4e9, 1.1e9, 6400.0, 71e9, 0.002),
 }
 GELATIN = "gelatin"
 TARGETS = ("ar500", "rha", "mild_steel", "aluminium", GELATIN)   # what a target can be made of
@@ -296,6 +300,113 @@ def ballistic_limit(core: Core, armour: Armour, thickness: float, v_max: float) 
         else:
             lo = mid
     return hi
+
+
+# ---------------------------------------------------------------------------
+# What is left of the projectile, and what comes off the plate
+# ---------------------------------------------------------------------------
+def pancake(core: Core, v: float) -> float:
+    """How far a projectile that splashes spreads on the face: the disc's diameter over its own. It flows
+    once the impact's dynamic pressure beats its strength, more the further past it."""
+    pen = core.props
+    return min(4.5, 1 + 0.6 * math.log1p(0.5 * pen.density * v * v / pen.strength))
+
+
+def remnant(core: Core, armour: Armour, v: float, hit: Hit, los: float, regime: str, verdict: str,
+            angle: float, jacketed: bool) -> dict:
+    """What is left of the projectile after the hit, for drawing it: its state, how far it has spread
+    (expansion) or shortened (length_share), and how much of it stays in one piece (keep)."""
+    out = {"what": core.what, "material": core.material, "state": "intact", "expansion": 1.0, "length_share": 1.0,
+           "keep": 1.0, "stripped": False}
+    if verdict in ("airburst", "self-destructed", "breached", "scabbed") or regime in ("blast", "jet"):
+        out["state"] = "burst"
+    elif core.frangible and regime != "rigid":
+        out.update(state="dust", keep=0.0)
+    elif verdict == "ricochet":
+        # It glances off bent and a little flattened, leaving the face at a fraction of the angle it came in at.
+        e = 1 + 0.25 * (pancake(core, v * math.cos(math.radians(angle))) - 1)
+        out.update(state="ricochet", expansion=e, length_share=1 / e, departure=0.3 * (90.0 - angle))
+    elif regime == "splash":
+        # It flattens into a disc on the face; the faster it hits, the more of it sprays off the rim as splash.
+        e = pancake(core, v)
+        out.update(state="splash", expansion=e, length_share=1 / (e * e), keep=min(1.0, max(0.12, 1.25 - v / 900.0)))
+    elif regime == "eroding":
+        p_full, left = tate_depth(core, armour, v)
+        eroded = (1 - left / core.length) * min(1.0, los / max(p_full, 1e-9))
+        out.update(state="eroded", expansion=1.35, length_share=max(0.05, 1 - eroded), keep=max(0.05, 1 - eroded))
+    elif hit.shattered:
+        out.update(state="shattered", keep=0.0, pieces=int(min(30, 6 + core.mass / 2e-4)))
+    if out["state"] in ("intact", "shattered") and core.what in ("core", "insert") and jacketed:
+        out["stripped"] = True   # the jacket peels off on the face and the core goes on bare
+    return out
+
+
+def splash_back(core: Core, v: float, rem: dict) -> dict | None:
+    """Bullet splash thrown back off the face (what makes steel dangerous close up): its mass, how fast,
+    and how far off the plate's face it flies (degrees)."""
+    if rem["state"] == "splash":
+        mass = core.total_mass * (1 - rem["keep"] * 0.6)
+    elif rem["state"] == "dust":
+        mass = core.total_mass
+    elif rem["stripped"]:
+        mass = core.total_mass - core.mass
+    else:
+        return None
+    speed = (0.08 if rem["state"] == "dust" else 0.35) * v
+    count = int(min(60, max(6, mass / 3e-5)))
+    return {"mass": mass, "velocity": speed, "count": count, "off_face": 12.0 if rem["state"] == "splash" else 25.0,
+            "energy": 0.5 * mass * speed * speed}
+
+
+def back_spall(core: Core, armour: Armour, v: float, los: float, hit: Hit, regime: str, perforated: bool,
+               residual: float, scab: float | None) -> dict | None:
+    """What comes off the back face, if anything.
+
+    * **shock**: the impact sends a compressive pulse into the plate at the interface pressure
+      Z_p Z_t / (Z_p + Z_t) v (Z = rho c, the acoustic impedances), spreading as it crosses the plate. It
+      reflects off the free back face as tension; where that beats the plate's spall strength a layer tears
+      off and flies, carrying the excess momentum. The layer is about half the pulse long.
+    * **bulge**: a hit that nearly gets through dishes the back face and cracks it.
+    * **scab**: a squash head's shock (HESH).
+    * **debris**: once through, the plug and pieces of the plate and the penetrator fly on in a cone.
+    """
+    pen, t = core.props, armour
+    zp, zt = pen.density * pen.sound_speed, t.density * t.sound_speed
+    a = core.diameter / 2
+    p0 = zp * zt / (zp + zt) * v
+    p_back = p0 * (a / (a + los)) ** 2
+    out = {"cause": None, "back_stress": p_back, "strength": t.spall_strength, "bulge": 0.0}
+    if perforated:
+        plug = t.density * math.pi * a * a * los
+        eroded = core.mass * 0.5 if regime == "eroding" else 0.0
+        mass = 0.6 * plug + eroded
+        cone = {"rigid": 15.0, "eroding": 30.0, "jet": 35.0}.get(regime, 25.0)
+        speed = residual if residual > 0 else 0.3 * v if regime != "jet" else 1500.0
+        out.update(cause="debris", mass=mass, velocity=speed, cone=cone, diameter=2 * a + 2 * los * math.tan(math.radians(cone)),
+                   count=int(min(80, max(6, mass / 4e-4))))
+        return out
+    if scab:
+        th = min(0.3 * los, scab)
+        dia = 2 * los + 4 * a
+        out.update(cause="scab", mass=t.density * math.pi * dia * dia / 4 * th, velocity=200.0, cone=40.0, diameter=dia,
+                   thickness=th, count=18)
+        return out
+    near = hit.limit_thickness / los
+    if regime in ("rigid", "eroding") and near > 0.8:
+        out["bulge"] = min(1.0, (near - 0.8) / 0.2)
+    if p_back > t.spall_strength:
+        th = min(0.4 * los, 0.5 * core.length * t.sound_speed / pen.sound_speed)
+        dia = 1.6 * (a + los)
+        out.update(cause="shock", thickness=th, diameter=dia, mass=t.density * math.pi * dia * dia / 4 * th,
+                   velocity=2 * (p_back - t.spall_strength) / zt, cone=35.0, count=12)
+    elif out["bulge"] >= 0.6:
+        # A dish of the steel left behind the crater bottom (the ligament) cracks off.
+        ligament = max(los - hit.depth, 0.05 * los)
+        dia = 2 * a + 2 * ligament
+        th = 0.5 * ligament
+        out.update(cause="bulge", thickness=th, diameter=dia, mass=t.density * math.pi * dia * dia / 4 * th,
+                   velocity=0.05 * v, cone=25.0, count=5)
+    return out if out["cause"] or out["bulge"] > 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -555,10 +666,19 @@ def impact(gun: Gun, velocity: float, thickness: float, angle: float = 0.0, targ
             verdict = "stopped"
     if core.frangible and verdict in ("cratered", "stopped"):
         verdict = "dusted" if depth < CRATER else verdict
+    rem = remnant(core, armour, velocity, hit, los, regime, verdict, angle, p.jacket_thickness > 0)
+    spall = None
+    if verdict not in ("airburst", "self-destructed", "ricochet"):
+        spall = back_spall(core, armour, velocity, los, hit, regime, perforated, residual,
+                           pay.get("scab") if verdict == "scabbed" else None)
+    if spall and spall["cause"] in ("shock", "bulge") and verdict in ("cratered", "stopped"):
+        verdict = "spalled"
     return {
         "kind": "plate",
         "target": target,
         "target_label": armour.label,
+        "plate": {"density": armour.density, "modulus": armour.modulus, "loss": armour.loss,
+                  "sound_speed": armour.sound_speed},
         "velocity": velocity,
         "energy": energy,
         "thickness": thickness,
@@ -583,6 +703,9 @@ def impact(gun: Gun, velocity: float, thickness: float, angle: float = 0.0, targ
         "plate_rhae": los * efficiency,
         "efficiency": efficiency,
         "payload": pay,
+        "remnant": rem,
+        "splash": splash_back(core, velocity, rem) if verdict != "ricochet" else None,
+        "spall": spall,
     }
 
 
@@ -606,6 +729,8 @@ GEL_STOP = 40.0           # m/s: slower than this it stops
 CD_MUSHROOM = 0.5
 CD_TUMBLE = 1.2
 FBI = (0.305, 0.457)      # m: 12 to 18 in, the FBI's penetration window
+# How many petals an expanding bullet opens into (0: it mushrooms in a ragged ring rather than petals).
+PETALS = {"jhp": 6, "hp": 6, "monolithic": 4, "polymer_tip": 5}
 
 
 def gel(gun: Gun, velocity: float, *, distance: float = 0.0, time: float = 0.0,
@@ -645,30 +770,42 @@ def gel(gun: Gun, velocity: float, *, distance: float = 0.0, time: float = 0.0,
     frag_at = (yaw_at if yaw_at is not None else 2 * d) if frags else None
 
     dx = 5e-4
-    x, v, m = 0.0, velocity, m0
-    xs, vs, dedx, width, cavity = [], [], [], [], []
-    tumbling = fragmented = False
+    x, v, m, t = 0.0, velocity, m0, 0.0
+    xs, vs, dedx, width, cavity, ts, yaws, opens = [], [], [], [], [], [], [], []
+    fragmented = False
     lost_energy = 0.0
     spread_until = 0.0
+    shed = 0.0
+    yaw = 0.0
+    e = 1.0
     while x < 1.5 and v > GEL_STOP:
         prog = min(x / opening, 1.0)
         e = 1 + (expand - 1) * prog
         mass = m * (1 - (1 - keep) * prog) if not fragmented else m
-        if yaw_at is not None and x >= yaw_at:
-            tumbling = True
         if frag_at is not None and x >= frag_at and not fragmented:
             fragmented = True
             shed = mass * (1 - c.frag_retention)
             lost_energy = 0.5 * shed * v * v
             spread_until = x + 0.06
             m = mass = mass - shed
-        if tumbling:
-            area, cd, w = d * length * 0.8, CD_TUMBLE, length
+        # What is left of it is shorter once it has broken up (it breaks at the cannelure).
+        long = length * (m / m0 if fragmented else 1.0)
+        if yaw_at is not None and x >= yaw_at:
+            # It turns sideways over about one and a half lengths, then on round to base first over a few more.
+            s = (x - yaw_at) / length
+            yaw = 90 * _smoothstep(s / 1.5) + 90 * _smoothstep((s - 1.5) / 4.5)
+        if yaw > 0:
+            ca, sa = abs(math.cos(math.radians(yaw))), math.sin(math.radians(yaw))
+            area = math.pi * d * d / 4 * ca + d * long * 0.8 * sa
+            cd = (cd_nose if yaw < 90 else 0.9) * ca * ca + CD_TUMBLE * sa * sa
+            w = d * ca + long * sa
         else:
             area, cd, w = math.pi * (e * d) ** 2 / 4, CD_MUSHROOM if e > 1.05 else cd_nose, e * d
         force = area * (0.5 * GEL_DENSITY * cd * v * v + GEL_STRENGTH)
         extra = lost_energy / 0.06 if x < spread_until else 0.0   # the fragments' energy, over the next 6 cm
+        v_in = v
         v = math.sqrt(max(v * v - 2 * force / mass * dx, 0.0))
+        t += dx / max(0.5 * (v_in + v), 1.0)
         x += dx
         if len(xs) == 0 or x - xs[-1] >= 2e-3:
             xs.append(x)
@@ -677,9 +814,17 @@ def gel(gun: Gun, velocity: float, *, distance: float = 0.0, time: float = 0.0,
             dedx.append(de)
             width.append(w)
             cavity.append(math.sqrt(4 * de / (math.pi * GEL_CAVITY)))
+            ts.append(t)
+            yaws.append(yaw)
+            opens.append(e)
     retained = m * (1 - (1 - keep)) if not fragmented else m
     peak = max(range(len(dedx)), key=lambda i: dedx[i]) if dedx else 0
     in_window = FBI[0] <= x <= FBI[1]
+    # The bullet as it is dug out of the block, for drawing it.
+    recovered = {"expansion": e, "petals": PETALS.get(kind, 0), "yaw": yaw, "fragmented": fragmented,
+                 "length_share": (m / m0 if fragmented else 1.0) / max(1.0, e) ** 1.2, "retained_share": retained / m0,
+                 "fragments": int(min(40, max(4, shed / (0.015 * m0)))) if fragmented else 0,
+                 "fragment_mass": shed, "flattened": kind in ("lrn", "hp", "jsp", "bonded")}
     return {
         **base,
         "verdict": "through" if x >= 1.5 else "stopped",
@@ -696,5 +841,7 @@ def gel(gun: Gun, velocity: float, *, distance: float = 0.0, time: float = 0.0,
         "temporary_cavity": max(cavity) if cavity else 0.0,
         "permanent_cavity": max(width) if width else d,
         "fbi": "under" if x < FBI[0] else ("in" if in_window else "over"),
-        "series": {"depth": xs, "velocity": vs, "dedx": dedx, "width": width, "cavity": cavity},
+        "recovered": recovered,
+        "series": {"depth": xs, "velocity": vs, "dedx": dedx, "width": width, "cavity": cavity, "time": ts,
+                   "yaw": yaws, "expansion": opens},
     }

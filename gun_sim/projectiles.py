@@ -42,22 +42,23 @@ class Metal:
     pyrophoric: bool = False  # its fragments burn in air (depleted uranium)
     sharpening: float = 1.0   # adiabatic shear keeps an eroding rod's nose sharp: depth factor
     frangible: bool = False   # pressed powder: it turns to dust on a hard target
+    sound_speed: float = 5000.0  # m/s, longitudinal (its acoustic impedance meets the plate's on impact)
 
 
 # Order matters: config.core_material may be an index into it.
 METALS = {
-    "lead": Metal("lead (antimony-hardened)", 11340.0, 0.05e9, 8.0),
-    "steel": Metal("mild steel", 7850.0, 0.9e9, 200.0),
-    "copper": Metal("copper", 8960.0, 0.35e9, 90.0),
-    "tungsten": Metal("tungsten heavy alloy", 17600.0, 1.6e9, 360.0),
-    "hardened_steel": Metal("hardened steel", 7850.0, 2.0e9, 650.0, shatter=1100.0),
-    "tungsten_carbide": Metal("tungsten carbide", 14900.0, 4.0e9, 1300.0, shatter=1250.0),
-    "titanium": Metal("titanium alloy (Ti-6Al-4V)", 4430.0, 1.0e9, 330.0),
+    "lead": Metal("lead (antimony-hardened)", 11340.0, 0.05e9, 8.0, sound_speed=2160.0),
+    "steel": Metal("mild steel", 7850.0, 0.9e9, 200.0, sound_speed=5900.0),
+    "copper": Metal("copper", 8960.0, 0.35e9, 90.0, sound_speed=4760.0),
+    "tungsten": Metal("tungsten heavy alloy", 17600.0, 1.6e9, 360.0, sound_speed=5200.0),
+    "hardened_steel": Metal("hardened steel", 7850.0, 2.0e9, 650.0, shatter=1100.0, sound_speed=5900.0),
+    "tungsten_carbide": Metal("tungsten carbide", 14900.0, 4.0e9, 1300.0, shatter=1250.0, sound_speed=6900.0),
+    "titanium": Metal("titanium alloy (Ti-6Al-4V)", 4430.0, 1.0e9, 330.0, sound_speed=6100.0),
     "depleted_uranium": Metal("depleted uranium alloy (U-0.75Ti)", 18600.0, 1.4e9, 380.0, pyrophoric=True,
-                              sharpening=1.12),
-    "aluminium": Metal("aluminium alloy", 2800.0, 0.45e9, 120.0),
-    "brass": Metal("brass", 8500.0, 0.45e9, 130.0),
-    "sintered_copper": Metal("sintered copper-tin (frangible)", 7000.0, 0.15e9, 60.0, frangible=True),
+                              sharpening=1.12, sound_speed=3400.0),
+    "aluminium": Metal("aluminium alloy", 2800.0, 0.45e9, 120.0, sound_speed=6400.0),
+    "brass": Metal("brass", 8500.0, 0.45e9, 130.0, sound_speed=4700.0),
+    "sintered_copper": Metal("sintered copper-tin (frangible)", 7000.0, 0.15e9, 60.0, frangible=True, sound_speed=3500.0),
 }
 CORE_MATERIALS = tuple(METALS)
 
