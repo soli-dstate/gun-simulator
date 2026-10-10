@@ -771,7 +771,7 @@ def gel(gun: Gun, velocity: float, *, distance: float = 0.0, time: float = 0.0,
 
     dx = 5e-4
     x, v, m, t = 0.0, velocity, m0, 0.0
-    xs, vs, dedx, width, cavity, ts, yaws, opens = [], [], [], [], [], [], [], []
+    xs, vs, dedx, width, cavity, ts, yaws, opens, swell = [], [], [], [], [], [], [], [], []
     fragmented = False
     lost_energy = 0.0
     spread_until = 0.0
@@ -814,6 +814,9 @@ def gel(gun: Gun, velocity: float, *, distance: float = 0.0, time: float = 0.0,
             dedx.append(de)
             width.append(w)
             cavity.append(math.sqrt(4 * de / (math.pi * GEL_CAVITY)))
+            # The cavity's wall is thrown out against the gel's resistance: it takes about R sqrt(rho / P)
+            # to reach its widest (the same balance that sets the width).
+            swell.append(cavity[-1] / 2 * math.sqrt(GEL_DENSITY / GEL_CAVITY))
             ts.append(t)
             yaws.append(yaw)
             opens.append(e)
@@ -843,5 +846,5 @@ def gel(gun: Gun, velocity: float, *, distance: float = 0.0, time: float = 0.0,
         "fbi": "under" if x < FBI[0] else ("in" if in_window else "over"),
         "recovered": recovered,
         "series": {"depth": xs, "velocity": vs, "dedx": dedx, "width": width, "cavity": cavity, "time": ts,
-                   "yaw": yaws, "expansion": opens},
+                   "yaw": yaws, "expansion": opens, "swell": swell},
     }

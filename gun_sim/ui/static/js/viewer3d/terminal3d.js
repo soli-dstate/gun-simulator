@@ -89,7 +89,7 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 float noise(vec2 p) {
   vec2 i = floor(p), f = fract(p);
   f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 
 // Fissures: n thin sheets fanning out from the track, wandering with depth; each reaches its own way out.
@@ -116,7 +116,9 @@ void main() {
   tn = max(tn, 0.0);
   float tEnd = min(tf, tScene);
   if (tEnd <= tn) discard;
-  vec3 n = tlo.x >= tlo.y && tlo.x >= tlo.z ? vec3(-sign(rd.x), 0, 0) : tlo.y >= tlo.z ? vec3(0, -sign(rd.y), 0) : vec3(0, 0, -sign(rd.z));
+  // (Float literals throughout: D3D's HLSL can't tell vec3(float, int, int) constructors apart.)
+  vec3 n = tlo.x >= tlo.y && tlo.x >= tlo.z ? vec3(-sign(rd.x), 0.0, 0.0)
+         : tlo.y >= tlo.z ? vec3(0.0, -sign(rd.y), 0.0) : vec3(0.0, 0.0, -sign(rd.z));
 
   const int STEPS = 200;
   float dt = (tEnd - tn) / float(STEPS);
@@ -131,7 +133,10 @@ void main() {
     vec3 emit = AMBER * 0.0005;   // the room's light scattered in the gel
     if (age > 0.0 && cm > 0.0) {
       float s = age / tau;
-      float rc = cm * abs(sin(1.5708 * s)) * exp(-0.7 * max(s - 1.0, 0.0)) * step(s, 8.0);
+      // A real cavity is lumpy: its wall bulges unevenly round the track and along it.
+      float th = atan(p.z, p.y);
+      float lump = 1.0 + 0.32 * (noise(vec2(th * 1.6 + p.x * 0.01, p.x * 0.035)) - 0.5) + 0.12 * (noise(vec2(th * 4.0, p.x * 0.12 + 9.0)) - 0.5);
+      float rc = cm * lump * abs(sin(1.5708 * s)) * exp(-0.7 * max(s - 1.0, 0.0)) * step(s, 8.0);
       if (r < rc) {
         dens = 0.0;   // the cavity: air
         emit = vec3(0.0);
@@ -158,6 +163,9 @@ void main() {
   float F = 0.02 + 0.5 * pow(1.0 - abs(dot(n, rd)), 5.0);
   vec3 refl = reflect(rd, n);
   vec3 env = mix(vec3(0.04), vec3(0.75, 0.77, 0.82), smoothstep(-0.2, 0.8, refl.y));
+  // Gel is glossy: the room's two lights glint off its faces (the same lights the meshes have).
+  env += vec3(2.6, 2.5, 2.4) * pow(max(dot(refl, normalize(vec3(0.4, 0.8, 0.6))), 0.0), 120.0)
+       + vec3(0.7, 0.75, 0.9) * pow(max(dot(refl, normalize(vec3(-0.7, 0.3, -0.5))), 0.0), 120.0);
   if (u_pass == 0) {
     outColor = vec4(pow(T * (1.0 - F), vec3(1.0 / 2.2)), 1.0);
   } else {
@@ -355,8 +363,7 @@ export class TerminalView {
     this.frame = 0;
     this.scene = null;
     this._bindControls();
-    new ResizeObserver(() => this.requestDraw()).observe(canvas);
-  }
+    new ResizeObserver(() => this.requestDraw()).observe(canvas);  }
 
   setCut(on) {
     this.cut = on;
@@ -539,7 +546,7 @@ export class TerminalView {
     const xs = ser.depth.map((v) => v * MM), ts = ser.time.map((v) => v * MM);   // mm, ms
     const yaw = ser.yaw, open = ser.expansion;
     const cav = ser.cavity.map((v) => v * MM / 2), chan = ser.width.map((v) => v * MM / 2);
-    const vel = ser.velocity;
+    const swell = (ser.swell ?? ser.cavity.map((c) => c / 2 * 0.0186)).map((v) => v * MM);   // ms
     // The track texture.
     const track = new Float32Array(TRACK_SAMPLES * 4);
     let tauMax = 0;
@@ -547,8 +554,7 @@ export class TerminalView {
       const x = (i + 0.5) / TRACK_SAMPLES * Lb;
       const inside = x <= depth;
       const cm = inside ? interp(xs, cav, x) : 0;
-      const v = Math.max(interp(xs, vel, x), 40);
-      const tau = clamp(15 * cm / v, 0.15, 4);
+      const tau = clamp(interp(xs, swell, x), 0.05, 5);
       tauMax = Math.max(tauMax, inside ? tau : 0);
       track.set([cm, inside ? interp(xs, chan, x) : 0, inside ? (x < xs[0] ? x / v0 : interp(xs, ts, x)) : 1e4, tau], i * 4);
     }
