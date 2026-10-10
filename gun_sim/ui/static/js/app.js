@@ -417,11 +417,164 @@ function showSoundStats(data) {
     <div class="note">Peaks are unweighted (dBZ). Above about 140 dB peak, unprotected exposure risks permanent hearing damage.</div>`;
 }
 
+// ---------- checks and the assistant (expert mode) ----------
+// The backend lists every error with a fix (doctor.py); blank or unreadable numbers are caught here.
+let goodGun = null;       // the last gun that passed: the assistant goes back to its values
+let checkRequest = 0;
+let checkTimer = null;
+let checkFixed = null;    // the gun with every fix made
+let undoForm = null;      // the form's raw values from before the assistant's fix
+
+/** The gun in the editor, with unreadable numbers taken from the last good gun and reported. */
+function lenientGun() {
+  const gun = structuredClone(loadedGun);
+  gun.name = $("f-name").value || "unnamed";
+  const errors = [];
+  for (const [section, fields] of Object.entries(schema.fields)) {
+    gun[section] = { ...(gun[section] ?? {}) };
+    for (const f of fields) {
+      try {
+        gun[section][f[0]] = readField(section, f);
+      } catch (e) {
+        const ref = goodGun?.[section]?.[f[0]];
+        if (ref === undefined || ref === null) delete gun[section][f[0]];
+        else gun[section][f[0]] = ref;
+        errors.push({ message: e.message, fix: ref === undefined || ref === null ? null
+          : [{ section, key: f[0], old: null, new: ref }], blank: [section, f[0]] });
+      }
+    }
+  }
+  if (gun.propellant.grain) for (const key of GRAIN_FORM) delete gun.propellant[key];
+  return { gun, errors };
+}
+
+function scheduleCheck() {
+  clearTimeout(checkTimer);
+  if (mode !== "expert" || !schema) return;
+  checkTimer = setTimeout(runCheck, 300);
+}
+
+async function runCheck() {
+  const id = ++checkRequest;
+  const { gun, errors: blanks } = lenientGun();
+  try {
+    const res = await backend.check({ gun, reference: goodGun });
+    if (id !== checkRequest) return;
+    const errors = [...blanks, ...res.errors];
+    if (!errors.length) goodGun = gun;
+    checkFixed = res.fixed;
+    showChecks(errors, res.complete);
+  } catch (e) {
+    if (id !== checkRequest) return;
+    $("check-count").className = "check-count bad";
+    $("check-count").textContent = "Couldn't check the gun";
+    $("check-note").textContent = e.message;
+  }
+}
+
+const fieldDef = (section, key) => schema.fields[section]?.find((f) => f[0] === key);
+
+/** A config value as the form shows it: in display units, or the option's name. */
+function showValue(section, key, v) {
+  if (v === null || v === undefined) return "blank";
+  const f = fieldDef(section, key);
+  if (typeof v === "boolean") return v ? "on" : "off";
+  if (typeof v === "string") return v.replaceAll("_", " ");
+  if (!f || f[2] === "choice") return String(v);
+  const u = fieldUnit(f[2], f[3]);
+  return `${Number((v / u.scale).toPrecision(4))}${u.unit ? ` ${u.unit}` : ""}`;
+}
+
+const fieldName = (section, key) => fieldDef(section, key)?.[1] ?? `${section}.${key}`;
+
+function describeFix(fix) {
+  return fix.map((c) => c.removed ? `remove ${c.section}.${c.key}`
+    : `${fieldName(c.section, c.key)}: ${showValue(c.section, c.key, c.old)} → ${showValue(c.section, c.key, c.new)}`).join("; ");
+}
+
+function showChecks(errors, complete) {
+  const n = errors.length;
+  const count = $("check-count");
+  count.className = `check-count ${n ? "bad" : "ok"}`;
+  count.textContent = n ? `⚠ ${n}${complete ? "" : "+"} error${n === 1 ? "" : "s"}` : "✓ No errors";
+  const fixable = errors.filter((e) => e.fix).length;
+  $("check-fix").hidden = !fixable;
+  $("check-fix").textContent = fixable === n ? "✦ Assistant: fix all" : `✦ Assistant: fix ${fixable} of ${n}`;
+  if (n) $("check-note").textContent = complete ? "" : "the assistant could not get past the last one";
+  else if (!undoForm) $("check-note").textContent = "";
+  // Each error, what the assistant would change, and where: a badge per section, a mark per field.
+  const where = errors.map((e) => e.blank ? [e.blank] : (e.fix ?? []).filter((c) => !c.removed).map((c) => [c.section, c.key]));
+  $("check-list").hidden = !n;
+  $("check-list").innerHTML = errors.map((e, i) => `<li data-i="${i}"><span class="msg"></span>
+    <span class="fix ${e.fix ? "" : "none"}"></span></li>`).join("");
+  $("check-list").querySelectorAll("li").forEach((li, i) => {
+    const e = errors[i];
+    li.querySelector(".msg").textContent = e.message;
+    li.querySelector(".fix").textContent = e.fix ? `Fix: ${describeFix(e.fix)}` : "No fix found: change it by hand.";
+    const [first] = where[i];
+    li.onclick = () => {
+      if (!first) return;
+      const sec = SECTIONS.find((s) => s.id === first[0]) ? first[0] : null;
+      if (sec) showSection(sec);
+      $(`f-${first[0]}-${first[1]}`)?.focus();
+    };
+  });
+  const perSection = {};
+  const flagged = new Set();
+  for (const w of where) for (const [s, k] of w.slice(0, 1)) { perSection[s] = (perSection[s] ?? 0) + 1; flagged.add(`${s}.${k}`); }
+  for (const b of document.querySelectorAll("#sections button.sec")) {
+    b.querySelector(".err-badge")?.remove();
+    const c = perSection[b.dataset.section];
+    if (c) b.insertAdjacentHTML("beforeend", `<span class="err-badge">${c}</span>`);
+  }
+  for (const row of document.querySelectorAll("#fields .field")) row.classList.toggle("flagged", flagged.has(row.dataset.key));
+}
+
+/** Snapshot (and restore) the form's raw values, blanks included. */
+function formValues() {
+  const out = {};
+  for (const el of document.querySelectorAll("#fields [id^=f-], #f-name")) out[el.id] = el.type === "checkbox" ? el.checked : el.value;
+  return out;
+}
+
+function assistantFix() {
+  if (!checkFixed) return;
+  undoForm = { values: formValues(), loaded: structuredClone(loadedGun) };
+  const fixed = $("check-list").querySelectorAll(".fix:not(.none)").length;
+  setGun(checkFixed);
+  $("check-undo").hidden = false;
+  $("check-note").textContent = `The assistant fixed ${fixed} error${fixed === 1 ? "" : "s"}.`;
+}
+
+function undoFix() {
+  if (!undoForm) return;
+  loadedGun = undoForm.loaded;
+  for (const [id, v] of Object.entries(undoForm.values)) {
+    const el = $(id);
+    if (el.type === "checkbox") el.checked = v; else el.value = v;
+  }
+  undoForm = null;
+  $("check-undo").hidden = true;
+  $("check-note").textContent = "";
+  syncAll();
+  syncGrainFields();
+  gunChanged();
+}
+
+/** A hand edit: the assistant's fix can no longer be undone cleanly. */
+function forgetUndo() {
+  if (!undoForm) return;
+  undoForm = null;
+  $("check-undo").hidden = true;
+  $("check-note").textContent = "";
+}
+
 // ---------- workshop previews ----------
 function gunChanged() {
   gunVersion++;
   updatePreview();
   target?.stale();
+  scheduleCheck();
 }
 
 function updatePreview() {
@@ -531,6 +684,7 @@ function setMode(m) {
   $("derived").hidden = m !== "expert";
   if (m === "easy") setPreview("rifle");
   else updatePreview();
+  scheduleCheck();
 }
 
 // ---------- firing range ----------
@@ -1197,6 +1351,9 @@ async function init() {
   };
   $("fields").addEventListener("input", gunForm);
   $("f-name").addEventListener("input", gunForm);
+  $("fields").addEventListener("input", (e) => { if (e.target.id?.startsWith("f-")) forgetUndo(); });
+  $("check-fix").onclick = assistantFix;
+  $("check-undo").onclick = undoFix;
   $("f-propellant-grain").addEventListener("change", syncGrainFields);
   $("f-propellant-composition").addEventListener("change", applyComposition);
   $("fields").addEventListener("input", (e) => {

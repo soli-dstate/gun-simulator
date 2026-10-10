@@ -126,6 +126,20 @@
   #sections button.sec { text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 6px; }
   #sections button.sec:hover { background: var(--grid); }
   #sections button.sec[aria-selected=true] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .expert-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  #checks { padding: 10px 14px; }
+  .checks-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+  .check-count { font-weight: 650; }
+  .check-count.ok { color: var(--good); } .check-count.bad { color: var(--error); }
+  #check-note { font-size: 12px; }
+  #check-list { margin: 8px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  #check-list li { cursor: pointer; }
+  #check-list li:hover .msg { text-decoration: underline; }
+  #check-list .fix { display: block; color: var(--muted); font-size: 12px; }
+  #check-list .fix.none { color: var(--warn); }
+  #sections button.sec .err-badge { float: right; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--error); color: #fff;
+    font-size: 11px; font-weight: 700; text-align: center; line-height: 18px; }
+  .field.flagged { box-shadow: inset 3px 0 0 var(--error); padding-left: 8px; }
   #fields { padding: 14px 18px 18px; }
   #fields h2 { margin: 0; font-size: 18px; }
   #fields .blurb { color: var(--muted); margin: 4px 0 8px; }
@@ -323,7 +337,19 @@
       <div class="name-row"><label for="preset">Start from a preset</label><select id="preset"></select></div>
       <div class="name-row"><label for="f-name">Gun name</label><input type="text" id="f-name"></div>
     </div>
-    <section class="panel" id="fields"></section>
+    <div class="expert-main">
+      <div class="panel" id="checks">
+        <div class="checks-bar">
+          <span id="check-count" class="check-count">Checking…</span>
+          <span id="check-note" class="muted"></span>
+          <span class="spacer"></span>
+          <button id="check-undo" class="ghost" hidden title="Put back the values from before the assistant's fix">Undo</button>
+          <button id="check-fix" class="primary" hidden title="Let the assistant change the fields it needs to so the gun is valid">✦ Assistant: fix all</button>
+        </div>
+        <ol id="check-list" hidden></ol>
+      </div>
+      <section class="panel" id="fields"></section>
+    </div>
   </section>
 
   <!-- ======== shared preview column ======== -->

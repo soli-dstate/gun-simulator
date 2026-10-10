@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import (action, autoloader, designer, devices, evacuator, exterior, fluid, lumped, parallel, plume, rifling,
+from .. import (action, autoloader, designer, devices, doctor, evacuator, exterior, fluid, lumped, parallel, plume, rifling,
                 sound, terminal)
 from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES,
                       FIRE_MODES, LOCKINGS, PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Gun)
@@ -695,6 +695,14 @@ def trajectory(payload: dict) -> dict:
         "stability": float(traj.stability),
         "table": traj.table(exterior.nice_step(max_range)),
     }
+
+
+def check(payload: dict) -> dict:
+    """Expert mode's error count and assistant: every error in payload["gun"] with a fix (see doctor.py).
+
+    payload["reference"] is the last config that passed, so a bad edit can be undone.
+    """
+    return doctor.check(payload["gun"], payload.get("reference"))
 
 
 def parse_toml(text: str) -> dict:

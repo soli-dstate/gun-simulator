@@ -19,6 +19,7 @@ function desktopBackend(api) {
     trajectory: (payload) => unwrap(api.trajectory(payload)),
     design: (payload) => unwrap(api.design(payload)),
     target: (payload) => unwrap(api.target(payload)),
+    check: (payload) => unwrap(api.check(payload)),
     parse: (text) => unwrap(api.parse(text)),
     /** Returns the saved path, or null if the user cancelled. */
     saveToml: async (text, filename) => (await unwrap(api.save_toml(text, filename))).path,
@@ -42,6 +43,7 @@ const httpBackend = {
   trajectory: (payload) => http("api/trajectory", JSON.stringify(payload)),
   design: (payload) => http("api/design", JSON.stringify(payload)),
   target: (payload) => http("api/target", JSON.stringify(payload)),
+  check: (payload) => http("api/check", JSON.stringify(payload)),
   parse: (text) => http("api/parse", text),
   saveToml: async (text, filename) => {
     const a = document.createElement("a");

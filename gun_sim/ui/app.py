@@ -54,6 +54,9 @@ class Bridge:
     def target(self, payload):
         return self._call(api.target, payload)
 
+    def check(self, payload):
+        return self._call(api.check, payload)
+
     def parse(self, text):
         return self._call(api.parse_toml, text)
 
