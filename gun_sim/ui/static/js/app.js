@@ -136,6 +136,7 @@ function buildEditor() {
       box.insertAdjacentHTML("beforeend",
         `<div class="preset-row"><label for="listener">Quick pick</label><select id="listener">${presets}<option value="custom">Custom</option></select></div>`);
     }
+    if (sec.id === "projectile") box.insertAdjacentHTML("beforeend", designPicker());
     for (const f of sectionFields(sec.id)) box.appendChild(fieldRow(f));
     if (sec.id === "sound:listener") {
       const grounds = schema.sound.grounds.map((g) => `<option value="${g}">${g}</option>`).join("");
@@ -145,7 +146,33 @@ function buildEditor() {
     }
     panel.appendChild(box);
   }
+  $("p-design").onchange = () => applyDesign($("p-design").value);
   showSection(currentSection);
+}
+
+/** The projectile section's picker: a whole projectile type (FMJ, JHP, API-T, APFSDS, HEAT-FS, ...) in one go. */
+function designPicker() {
+  const groups = {};
+  for (const [k, d] of Object.entries(schema.projectiles.designs)) (groups[d.group] ??= []).push([k, d]);
+  const options = Object.entries(groups).map(([g, list]) => `<optgroup label="${g}">${
+    list.map(([k, d]) => `<option value="${k}" title="${d.blurb.replaceAll('"', "&quot;")}">${d.label}</option>`).join("")}</optgroup>`).join("");
+  return `<div class="preset-row"><label for="p-design">Projectile type</label>
+    <select id="p-design"><option value="">Choose one to apply…</option>${options}</select></div>
+    <p class="blurb" id="p-design-blurb">Sets the shape, the materials and every fill for this bore, and the mass from what the parts weigh.
+    A bullet keeps its length so it still fits the case; the case's overall length moves so the base stays where it is seated.</p>`;
+}
+
+async function applyDesign(key) {
+  if (!key) return;
+  try {
+    const out = await backend.projectile({ gun: getGun(), design: key });
+    setGun(out.gun);
+    $("p-design-blurb").textContent = `${out.label}: ${schema.projectiles.designs[key].blurb}`;
+    showError("");
+  } catch (e) {
+    showError(`Projectile type: ${e.message}`);
+  }
+  $("p-design").value = "";
 }
 
 function showSection(id) {
@@ -934,7 +961,10 @@ async function updateTrajectory() {
 function showTrajTable(data) {
   $("traj-status").textContent = `${data.drag_model} BC ${(data.ballistic_coefficient / 703.0696).toFixed(3)} lb/in²` +
     (data.stability ? ` · spin drift included (Sg ${data.stability.toFixed(2)})` : "") +
-    (data.stop_reason === "max range" ? "" : ` · flight ended at ${fmt(data.max_range, "length_m")} (${data.stop_reason})`);
+    (data.stop_reason === "max range" ? "" : ` · flight ended at ${fmt(data.max_range, "length_m")} (${data.stop_reason})`) +
+    (data.tracer_burnout ? ` · tracer burns ${data.tracer_burnout.time.toFixed(1)} s` +
+      (data.tracer_burnout.range !== null ? `, out at ${fmt(data.tracer_burnout.range, "length_m")}` : "") : "") +
+    (data.fuze && data.fuze.range !== null ? ` · ${data.fuze.type === "time" ? "airburst" : "self-destructs"} at ${fmt(data.fuze.range, "length_m")}` : "");
   const f = (v, d) => v.toFixed(d);
   const L = label("length_m"), D = label("drop"), V = label("velocity"), E = label("energy");
   $("traj-table").innerHTML = `<table class="data"><tr><th>range (${L})</th><th>drop (${D})</th><th>drop (MOA)</th><th>drop (mil)</th>` +
@@ -946,13 +976,17 @@ function showTrajTable(data) {
 }
 
 // ---------- results ----------
+const SUB_CALIBRE = ["apfsds", "apds"];
+/** What flies on from the muzzle: the projectile, or a sabot round's rod. */
+const flightMass = (gun) => (SUB_CALIBRE.includes(gun.projectile.type) ? gun.projectile.penetrator_mass : gun.projectile.mass);
+
 function showSummary(data, gun) {
   const r = data.results.find((x) => x.model === "fluid") || data.results[0];
   const tiles = [];
   const tile = (k, v, s = "", cls = "") => tiles.push(`<div class="stat ${cls}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`);
   if (!r.left_muzzle) tile("Projectile", "stuck", "it did not leave the muzzle", "bad");
   tile("Muzzle velocity", fmt(r.muzzle_velocity, "velocity"), `${r.model} model`);
-  const mass = gun.projectile.type === "apfsds" ? gun.projectile.penetrator_mass : gun.projectile.mass;
+  const mass = flightMass(gun);
   tile("Muzzle energy", fmt(0.5 * mass * r.muzzle_velocity ** 2, "energy"));
   tile("Peak breech pressure", fmt(r.peak_breech_pressure, "pressure"));
   tile("Time in barrel", `${(r.muzzle_time * 1e3).toFixed(3)} ms`, `${(r.burnt_at_muzzle * 100).toFixed(0)} % of the powder burnt`);
@@ -973,11 +1007,11 @@ function showCards(data, gun) {
     const card = document.createElement("details");
     card.className = "panel card";
     const status = r.left_muzzle ? "" : '<span class="bad">· projectile did not leave the muzzle</span>';
-    const mass = gun.projectile.type === "apfsds" ? gun.projectile.penetrator_mass : gun.projectile.mass;
+    const mass = flightMass(gun);
     card.innerHTML = `<summary>${r.model[0].toUpperCase() + r.model.slice(1)} model: all the numbers ${status}</summary><div class="stats">
       <span>Muzzle velocity</span><span>${fmt(r.muzzle_velocity, "velocity", 1)}</span>
       <span>Muzzle energy</span><span>${fmt(0.5 * gun.projectile.mass * r.muzzle_velocity ** 2, "energy")}</span>${
-        gun.projectile.type === "apfsds" ? `
+        SUB_CALIBRE.includes(gun.projectile.type) ? `
       <span>The rod's, once the sabot has gone</span><span>${fmt(0.5 * mass * r.muzzle_velocity ** 2, "energy")}</span>` : ""}
       <span>Time in barrel</span><span>${(r.muzzle_time * 1e3).toFixed(3)} ms</span>
       <span>Peak breech pressure</span><span>${fmt(r.peak_breech_pressure, "pressure", 1)}</span>

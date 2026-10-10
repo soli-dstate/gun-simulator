@@ -3,7 +3,7 @@
 
 import { buildCartridge, roundMeshes } from "./cartridge.js";
 import { lookAt, perspective, translation } from "./mat4.js";
-import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
+import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, partMaterial, projectileMaterial, sabotMaterial, srgbToLinear } from "./renderer.js";
 
 const MATERIALS = {
   case: { color: srgbToLinear([0.86, 0.66, 0.34]), metallic: 1, roughness: 0.32, section: srgbToLinear([0.62, 0.45, 0.2]) },
@@ -114,12 +114,14 @@ export class CartridgeViewer {
     const items = [
       { mesh: m.case, model: head, material: cart.caseMetal === "steel" ? ROUND_MATERIALS.steelCase : MATERIALS.case },
       { mesh: m.primer, model: head, material: MATERIALS.primer },
-      { mesh: m.projectile, model: proj, material: cart.solidMetal !== null ? CORE_MATERIALS[cart.solidMetal] : MATERIALS.projectile },
+      { mesh: m.projectile, model: proj, material: projectileMaterial(cart, MATERIALS.projectile) },
     ];
     if (m.caseBody) items.push({ mesh: m.caseBody, model: head, material: ROUND_MATERIALS.felt });
     if (m.core) items.push({ mesh: m.core, model: proj, material: CORE_MATERIALS[cart.coreMaterial] });
+    for (const f of cart.fills) items.push({ mesh: m[f.mesh], model: proj, material: partMaterial(f.material) });
     if (m.fins) items.push({ mesh: m.fins, model: proj, material: ROUND_MATERIALS.fins });
-    for (let k = 0; m[`sabot${k}`]; k++) items.push({ mesh: m[`sabot${k}`], model: proj, material: ROUND_MATERIALS.sabot });
+    const sabot = sabotMaterial(cart.sabotMaterial, ROUND_MATERIALS.sabot);
+    for (let k = 0; m[`sabot${k}`]; k++) items.push({ mesh: m[`sabot${k}`], model: proj, material: sabot });
     // Cut away the half facing the camera with a plane through the axis (x), so
     // its normal is the camera direction with the x part removed.
     const ny = eye[1], nz = eye[2], n = Math.hypot(ny, nz) || 1;

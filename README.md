@@ -92,7 +92,8 @@ NATO maximum, recoil, stability, rate of fire) and **What the computer worked
 out** says each of those decisions in plain words. **Fine-tune in Expert mode**
 opens the same gun with every parameter.
 
-**Target.** A steel plate downrange (AR500 for now): its thickness (the
+**Target.** A plate downrange (AR500, RHA, mild steel or aluminium armour), or a
+block of ballistic gelatin: its thickness (the
 standard 1/4″ to 1″ plates, or any), distance and angle. The last shot's
 muzzle velocity is flown out to it, and `gun_sim/terminal.py` works out what
 the hit does: **stopped**, **cratered**, **perforated** (with the exit
@@ -1032,6 +1033,49 @@ disconnector is the rule that a pull fires only with the slide home); the shoote
 pull disturbing the aim; the cylinder's timing (it always carries up to lock); the gas
 cutting the top strap; lead and powder fouling.
 
+### Projectiles: construction, fills and what they do (`gun_sim/projectiles.py`, `gun_sim/terminal.py`)
+
+A projectile is a body (a jacket of gilding metal, copper, copper-washed steel, brass, a polymer coat,
+or a shell's steel wall, round a core; or a solid of one metal) with fills inside it. The editor's
+**Projectile type** picker applies a whole design in one go, scaled to the bore: FMJ (spitzer, round
+and flat nose), TMJ, LRN, LFN/hard cast, LSWC, wadcutter, polymer-coated lead, JHP, lead HP, JSP, OTM,
+polymer tip, bonded, monolithic copper, brass solid, frangible, ball tracer, steel-penetrator ball
+(M855), AP (hardened steel, tungsten carbide), API, API-T, incendiary, Raufoss multipurpose, SLAP;
+HE, HE-FRAG, HEI-T, programmable airburst HE, SAPHEI, HESH, HEAT, HEAT-FS, white phosphorus, TP-T;
+AP shot, APC, APBC, APCBC, APHE, APCR/HVAP, APDS, APFSDS (tungsten, depleted uranium). A bullet keeps
+its length so it fits the case; the case's overall length moves so the base stays where it was seated;
+the mass is what the parts weigh.
+
+The fills, each its own field: a **penetrator insert** (hardened steel, tungsten carbide, tungsten
+alloy, titanium, depleted uranium); a **filler** and a **tip filler** (TNT, Comp B, Comp A-4, PETN,
+octol, LX-14, PE4, A-IX-1/2, tetryl, amatol, explosive D; IM-11, zirconium, magnesium, thermite,
+white phosphorus, a flash charge; inert, lead, a polymer tip); a **tracer** (red, green, white,
+orange, dim); a **shaped-charge liner** (copper, molybdenum, tantalum, steel, aluminium; cone angle,
+wall); **caps** (penetrating, ballistic, both); a **fuze** (impact, delay, base, pyrotechnic, time)
+with its delay, burst or self-destruct time and arming distance. `projectiles.layout` places them
+along the projectile, and the 3D cutaway draws them in the colours of the usual section drawings.
+
+What they do:
+
+- **In flight** a tracer burns down its length (about 4.5 mm/s), the projectile losing its mass
+  and some of its drag as it goes (its gas fills the wake); the range table gives where it burns
+  out, and a time fuze's airburst or self-destruct range. The 3D range draws its flame and light.
+- **On a plate** the penetrator is the insert, else the core, else (a shell whose fill took the
+  core's place) its body. A brittle core shatters above a speed that falls with the plate's
+  hardness; a penetrating cap raises it and helps on sloped plate. Depleted uranium keeps its nose
+  sharp (deeper) and burns behind the plate. A frangible bullet turns to dust. Once armed, the
+  fuze fires on the face, or (delay, base, pyrotechnic) behind a plate the round got through. A
+  shaped charge's jet reaches about 5.6 cone diameters into RHA, whatever the speed, scaled by the
+  liner's density, the explosive, the standoff, the cone angle and spin. HESH scabs plate up to
+  about 0.09 m kg^-1/3 times the cube root of its TNT equivalent; an HE burst on the face breaches
+  thin plate. The blast's overpressure follows Kinney and Graham; the body breaks up by Mott's
+  law and its fragments fly at the Gurney velocity, lethal (80 J) as far as the air lets the
+  heaviest carry it. Incendiaries flash on a hard impact.
+- **In ballistic gelatin** (10 %) the projectile is slowed by its drag and the gel's strength: an
+  expanding bullet opens with its impact speed and sheds weight, a slender ball bullet yaws after
+  about 20 calibres and tumbles, and above its construction's speed it fragments. The tab gives
+  the depth against the FBI's 12–18 in, the expansion, the weight kept, and the temporary cavity.
+
 ### External ballistics (`gun_sim/exterior.py`)
 
 After muzzle exit the projectile is a point mass (3 degrees of freedom) under
@@ -1275,7 +1319,9 @@ gun_sim/
   propellants.py propellant compositions and grain shapes -> form function
   exterior.py    point-mass trajectory solver: G1/G7 drag, atmosphere, zeroing, range tables
   rifling.py     engraving resistance vs travel, spin-up, moment of inertia, stability, spin drift
-  terminal.py    terminal ballistics: penetration into AR500 and RHA (rigid, eroding, cratering), RHAe
+  projectiles.py what a projectile is made of: metals, jackets, fills, tracers, liners, fuzes, caps; the layout; designs
+  terminal.py    terminal ballistics: plates (rigid, eroding, cratering, shatter), RHAe, HEAT, HESH, HE blast and
+                 fragments, incendiaries, fuzes; ballistic gelatin
   cartridges.py  library of cartridges (metric and imperial names), their dimensions and loads
   designer.py    easy mode: builds and tunes a whole gun from a cartridge, a load and a kind of gun
   results.py     ShotResult (and MuzzleFlow) containers

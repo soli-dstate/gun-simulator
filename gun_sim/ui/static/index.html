@@ -255,7 +255,9 @@
   .verdict .big { font-size: 22px; font-weight: 800; letter-spacing: 0.04em; }
   .verdict .why { color: var(--muted); }
   .verdict.stopped .big { color: var(--good); } .verdict.cratered .big { color: var(--warn); }
-  .verdict.perforated .big, .verdict.ricochet .big { color: var(--error); }
+  .verdict.perforated .big, .verdict.ricochet .big, .verdict.breached .big, .verdict.scabbed .big,
+  .verdict.detonated .big, .verdict.through .big { color: var(--error); }
+  .verdict.dusted .big { color: var(--good); } .verdict.airburst .big, .verdict.self-destructed .big { color: var(--warn); }
   #t-section { width: 100%; height: 260px; display: block; }
   #c-pen { width: 100%; height: 280px; display: block; }
   .safety { font-size: 12.5px; color: var(--muted); }
@@ -457,17 +459,17 @@
 <!-- ======== target ======== -->
 <main id="target-tab" role="tabpanel" hidden>
   <aside class="panel" id="target-setup">
-    <h2 class="title" style="margin-bottom:6px">Steel target</h2>
-    <p class="muted" style="margin:0 0 8px;font-size:12.5px">A plate downrange, hit with the last shot's muzzle velocity flown out to it. Penetration is also given in RHAe: the rolled homogeneous armour it equals.</p>
-    <div class="row"><label for="t-material">Plate</label><div class="ctl"><select id="t-material" style="flex:1"></select></div></div>
-    <div class="row"><label>Thickness</label>
+    <h2 class="title" style="margin-bottom:6px">Target</h2>
+    <p class="muted" style="margin:0 0 8px;font-size:12.5px">A plate (or a block of ballistic gelatin) downrange, hit with the last shot's muzzle velocity flown out to it. Penetration is also given in RHAe: the rolled homogeneous armour it equals. What the round carries (explosive, a shaped charge, incendiary, a tracer) acts too, once its fuze is armed.</p>
+    <div class="row"><label for="t-material">Target</label><div class="ctl"><select id="t-material" style="flex:1"></select></div></div>
+    <div class="row" id="t-thick-row"><label>Thickness</label>
       <div class="ctl" style="flex-direction:column;align-items:stretch">
         <div class="plate-picks" id="t-plates"></div>
         <div style="display:flex;gap:8px;align-items:center"><input type="number" id="t-thick" step="any" min="0.1" style="width:90px"><span class="muted" data-unit="length_mm"></span></div>
       </div></div>
     <div class="row"><label for="t-dist">Distance</label>
       <div class="ctl"><input type="range" id="t-dist-slider" min="0" max="1" step="0.001" aria-label="Distance"><input type="number" id="t-dist" step="any" min="0" style="width:80px"><span class="muted" data-unit="length_m"></span></div></div>
-    <div class="row"><label for="t-angle">Angle</label>
+    <div class="row" id="t-angle-row"><label for="t-angle">Angle</label>
       <div class="ctl"><input type="range" id="t-angle" min="0" max="80" step="1" value="0"><span id="t-angle-label" class="num" style="width:36px">0°</span></div>
       <div class="hint">Off square. Hanging plates are often angled 15–20° down to throw splash at the ground.</div></div>
     <div class="actions"><button class="primary" id="t-fire">Shoot the plate</button><span id="t-status" class="muted" style="font-size:12px"></span></div>
@@ -475,8 +477,10 @@
   <section id="target-out">
     <div class="verdict" id="t-verdict"><div><div class="big">—</div><div class="why">Choose a plate and shoot it.</div></div></div>
     <div class="panel card-pad"><h3>The hit</h3><div class="tiles-stat" id="t-stats"></div></div>
-    <div class="panel card-pad"><h3>Cross-section through the plate</h3><canvas id="t-section"></canvas></div>
-    <div class="panel card-pad"><h3>Penetration against range</h3><canvas id="c-pen"></canvas>
+    <div class="panel card-pad" id="t-payload-panel" hidden><h3>What it carries</h3><div class="tiles-stat" id="t-payload"></div>
+      <table class="data" id="t-parts" style="margin-top:10px"></table></div>
+    <div class="panel card-pad"><h3 id="t-section-title">Cross-section through the plate</h3><canvas id="t-section"></canvas></div>
+    <div class="panel card-pad"><h3 id="t-chart-title">Penetration against range</h3><canvas id="c-pen"></canvas>
       <ul class="notes" id="t-notes" style="margin-top:10px"></ul></div>
     <div class="panel card-pad safety">
       <h3>Shooting steel safely</h3>

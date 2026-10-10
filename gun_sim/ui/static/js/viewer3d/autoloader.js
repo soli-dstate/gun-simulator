@@ -80,8 +80,8 @@ export function buildAutoloader(gun, ctx) {
   const gunElev = f.gun_elevation ?? 0;
   const W = ctx.wedge ?? { ringRear: -Math.max(1.8 * rimR, 20) - 0.3 * rimR, ringHalf: 2.2 * rimR };
   const pl = cart.projectileLength, cl = d.length, seat = cart.seat;
-  // An APFSDS rod's tail lies behind its origin (the sabot's rear face), so less of it is ahead of that.
-  const ahead = pl - (cart.apfsds ? -(cart.fins?.x0 ?? 0) : 0);
+  // A sabot round's rod (a finned round's boom) reaches behind its origin, so less of it is ahead of that.
+  const ahead = pl - (cart.subCalibre || cart.finned ? Math.max(-(cart.fins?.x0 ?? 0), pl - (oal - seat)) : 0);
   const stroke = ctx.mountStroke ?? 0;
   const P = PITCH * D, lift = LIFT * D, tier = TIER * D, drop = DROP * D;
   const bore = gun.barrel.bore_diameter * MM;

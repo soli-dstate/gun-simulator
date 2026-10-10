@@ -25,7 +25,7 @@ import re
 import time
 from dataclasses import MISSING, asdict, fields
 
-from . import rotary
+from . import projectiles, rotary
 from .config import (ACTION_TYPES, CASE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES, FIRE_MODES, LOCKINGS,
                      PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Action, Appearance, Barrel, Case, Feed, Gun,
                      Ignition, Mount, MuzzleDevice, Projectile, Propellant, Shooter, SolverSettings, Trigger)
@@ -44,6 +44,13 @@ CHOICES = {
     ("barrel", "chamber_shape"): ("cylinder", "case"), ("action", "hammer"): (True, False),
     ("case", "combustible"): (True, False),
     ("action", "rotary_layout"): rotary.LAYOUTS, ("action", "rotary_drive"): rotary.DRIVES,
+    ("projectile", "cap"): projectiles.CAPS, ("projectile", "fuze"): tuple(projectiles.FUZES),
+    ("projectile", "jacket_material"): tuple(projectiles.JACKETS),
+    ("projectile", "sabot_material"): ("aluminium", "steel", "polymer"),
+    ("projectile", "construction"): ("", *projectiles.CONSTRUCTIONS),
+    ("projectile", "filler"): ("", *projectiles.FILLS), ("projectile", "tip_filler"): ("", *projectiles.FILLS),
+    ("projectile", "tracer"): ("", *projectiles.TRACERS), ("projectile", "liner_material"): ("", *projectiles.LINERS),
+    ("projectile", "insert_material"): ("", *projectiles.CORE_MATERIALS),
 }
 
 # Words in a message that point at a section, beyond the section's own name.
@@ -55,6 +62,8 @@ SECTION_WORDS = {
     "flash suppressant": ["propellant"], "form function": ["propellant"], "charge": ["propellant", "barrel"],
     "the gun must be heavier": ["action"], "core_material": ["projectile"], "ogive_radius_ratio": ["projectile"],
     "rotary": ["action", "feed", "trigger"], "linkless": ["feed", "action"],
+    "shaped charge": ["projectile"], "time fuze": ["projectile"], "sub-calibre": ["projectile"],
+    "finned": ["projectile"],
 }
 
 # Fields a message points at without naming them.

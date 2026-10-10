@@ -39,7 +39,7 @@
 // ejection port are.
 
 import { buildAutoloader } from "./autoloader.js";
-import { buildCartridge, roundMeshes } from "./cartridge.js";
+import { buildCartridge, roundLayout, roundMeshes } from "./cartridge.js";
 import { buildFeed, feedGeometry } from "./feed.js";
 import { HANDGUN_STYLES, buildHandgunFrame, buildPistolParts, buildRevolverParts, cylinderDims, gripRake,
          handgunReceiver, revolverBarrel } from "./handgun.js";
@@ -972,8 +972,7 @@ export function buildRifle(gun) {
       bore: 2 * rb, boreR, muzzleX, rearX, breechR, muzzleR, recR, boltR,
       buttX, pivot: [pivotX ?? buttX, pivotYAt], cgX, style, mech, ...extra, hand: handLayout,
       mounted, mountStroke, chain: chainLayout, wedge: wedgeLayout,
-      round: { apfsds: cart.apfsds, petals: cart.sabot?.petals ?? 0, solidMetal: cart.solidMetal, caseMetal: cart.caseMetal,
-               combustible: cart.combustible, rodRadius: cart.rodRadius, sabotLength: cart.sabot?.length ?? 0 },
+      round: roundLayout(cart),
       device, deviceLength: device ? device.L : 0, flashX: muzzleX + (device ? device.L : 0),
       boltRear: boltRear - 24, portFront, portRear: portRearL, bridgeRear, oal,
       stroke, pinTravel,

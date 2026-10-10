@@ -40,6 +40,7 @@ uniform vec3 u_sectionColor;
 uniform vec3 u_pointPos;   // point light (muzzle flash): radiance u_pointColor, halved at u_pointRange
 uniform vec3 u_pointColor;
 uniform float u_pointRange;
+uniform vec3 u_emissive;   // light the surface gives off itself (a tracer's flame), linear
 out vec4 outColor;
 
 const float PI = 3.14159265;
@@ -114,6 +115,7 @@ void main() {
   vec3 Fr = F0 + (max(vec3(1.0 - u_roughness), F0) - F0) * pow(1.0 - NdV, 5.0);
   color += diffuse * environment(N, 1.0) * 0.6;
   color += Fr * environment(reflect(-V, N), u_roughness);
+  color += u_emissive;
 
   color = color * (2.51 * color + 0.03) / (color * (2.43 * color + 0.59) + 0.14);  // ACES fit
   outColor = vec4(pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
@@ -166,15 +168,90 @@ export function link(gl, vs, fs) {
 
 export const srgbToLinear = (rgb) => rgb.map((c) => Math.pow(c, 2.2));
 
-// Core under a projectile's jacket, indexed like the config's core_material: lead, steel, copper.
+const NO_GLOW = [0, 0, 0];
+
+// Core under a projectile's jacket (or a solid projectile's metal), indexed like the config's core_material.
 export const CORE_MATERIALS = [
-  { color: srgbToLinear([0.62, 0.63, 0.67]), metallic: 0.9, roughness: 0.5, section: srgbToLinear([0.5, 0.51, 0.55]) },
-  { color: srgbToLinear([0.33, 0.35, 0.4]), metallic: 1, roughness: 0.34, section: srgbToLinear([0.22, 0.24, 0.28]) },
-  { color: srgbToLinear([0.9, 0.52, 0.38]), metallic: 1, roughness: 0.3, section: srgbToLinear([0.7, 0.36, 0.24]) },
-  { color: srgbToLinear([0.42, 0.43, 0.45]), metallic: 1, roughness: 0.42, section: srgbToLinear([0.55, 0.56, 0.58]) },   // tungsten
-  { color: srgbToLinear([0.2, 0.21, 0.25]), metallic: 1, roughness: 0.28, section: srgbToLinear([0.36, 0.37, 0.42]) },    // hardened steel
-  { color: srgbToLinear([0.3, 0.3, 0.32]), metallic: 0.8, roughness: 0.55, section: srgbToLinear([0.44, 0.44, 0.47]) },   // tungsten carbide
+  { color: srgbToLinear([0.62, 0.63, 0.67]), metallic: 0.9, roughness: 0.5, section: srgbToLinear([0.5, 0.51, 0.55]) },     // lead
+  { color: srgbToLinear([0.33, 0.35, 0.4]), metallic: 1, roughness: 0.34, section: srgbToLinear([0.22, 0.24, 0.28]) },      // steel
+  { color: srgbToLinear([0.9, 0.52, 0.38]), metallic: 1, roughness: 0.3, section: srgbToLinear([0.7, 0.36, 0.24]) },        // copper
+  { color: srgbToLinear([0.42, 0.43, 0.45]), metallic: 1, roughness: 0.42, section: srgbToLinear([0.55, 0.56, 0.58]) },     // tungsten
+  { color: srgbToLinear([0.2, 0.21, 0.25]), metallic: 1, roughness: 0.28, section: srgbToLinear([0.36, 0.37, 0.42]) },      // hardened steel
+  { color: srgbToLinear([0.3, 0.3, 0.32]), metallic: 0.8, roughness: 0.55, section: srgbToLinear([0.44, 0.5, 0.49]) },      // tungsten carbide
+  { color: srgbToLinear([0.55, 0.55, 0.58]), metallic: 1, roughness: 0.38, section: srgbToLinear([0.62, 0.62, 0.66]) },     // titanium
+  { color: srgbToLinear([0.26, 0.27, 0.25]), metallic: 0.9, roughness: 0.5, section: srgbToLinear([0.34, 0.36, 0.3]) },     // depleted uranium
+  { color: srgbToLinear([0.78, 0.79, 0.81]), metallic: 1, roughness: 0.3, section: srgbToLinear([0.7, 0.71, 0.74]) },       // aluminium
+  { color: srgbToLinear([0.86, 0.66, 0.34]), metallic: 1, roughness: 0.3, section: srgbToLinear([0.62, 0.45, 0.2]) },       // brass
+  { color: srgbToLinear([0.72, 0.5, 0.4]), metallic: 0.5, roughness: 0.8, section: srgbToLinear([0.6, 0.42, 0.34]) },       // sintered copper
 ];
+const CORE_INDEX = ["lead", "steel", "copper", "tungsten", "hardened_steel", "tungsten_carbide", "titanium", "depleted_uranium",
+  "aluminium", "brass", "sintered_copper"];
+
+const flat = (rgb, metallic = 0, roughness = 0.7) =>
+  ({ color: srgbToLinear(rgb), metallic, roughness, section: srgbToLinear(rgb.map((c) => c * 0.85)) });
+
+// Fills, in the colours of the usual cutaway drawings: explosives purple to buff, incendiaries red.
+const FILL_MATERIALS = {
+  tnt: flat([0.82, 0.7, 0.38]), comp_b: flat([0.66, 0.55, 0.66]), comp_a4: flat([0.55, 0.52, 0.72]),
+  petn: flat([0.52, 0.5, 0.74]), octol: flat([0.6, 0.45, 0.7]), lx14: flat([0.5, 0.55, 0.75]), pe4: flat([0.9, 0.88, 0.8]),
+  a_ix_1: flat([0.75, 0.72, 0.65]), a_ix_2: flat([0.58, 0.58, 0.64], 0.3, 0.6), tetryl: flat([0.85, 0.8, 0.4]),
+  amatol: flat([0.8, 0.75, 0.6]), explosive_d: flat([0.9, 0.65, 0.3]),
+  im11: flat([0.82, 0.33, 0.33]), zirconium: flat([0.8, 0.83, 0.81], 0.3, 0.8), magnesium: flat([0.75, 0.75, 0.78], 0.6, 0.5),
+  thermite: flat([0.55, 0.28, 0.18]), white_phosphorus: flat([0.92, 0.9, 0.7], 0, 0.4), flash: flat([0.85, 0.85, 0.85]),
+  polymer: flat([0.85, 0.12, 0.1], 0, 0.35), inert: flat([0.6, 0.58, 0.55]),
+  fuze: { color: srgbToLinear([0.74, 0.75, 0.78]), metallic: 1, roughness: 0.42, section: srgbToLinear([0.62, 0.63, 0.66]) },
+  cap: { color: srgbToLinear([0.38, 0.39, 0.43]), metallic: 1, roughness: 0.45, section: srgbToLinear([0.48, 0.49, 0.53]) },
+  windshield: { color: srgbToLinear([0.32, 0.36, 0.22]), metallic: 0.3, roughness: 0.6, section: srgbToLinear([0.55, 0.56, 0.58]) },
+};
+const TRACER_COMPOSITION = { red: [0.6, 0.36, 0.32], green: [0.42, 0.55, 0.36], white: [0.68, 0.66, 0.6],
+  orange: [0.66, 0.48, 0.3], dim: [0.42, 0.36, 0.34] };
+export const TRACER_GLOW = { red: [1.0, 0.24, 0.12], green: [0.4, 1.0, 0.32], white: [1.0, 0.95, 0.85],
+  orange: [1.0, 0.55, 0.15], dim: [0.7, 0.18, 0.1] };
+const TRACER_BRIGHTNESS = { dim: 0.12, white: 1.3 };
+const LINER_MATERIALS = { copper: CORE_MATERIALS[2], aluminium: CORE_MATERIALS[8], steel: CORE_MATERIALS[1],
+  molybdenum: { color: srgbToLinear([0.6, 0.6, 0.63]), metallic: 1, roughness: 0.3, section: srgbToLinear([0.66, 0.66, 0.7]) },
+  tantalum: { color: srgbToLinear([0.5, 0.52, 0.6]), metallic: 1, roughness: 0.32, section: srgbToLinear([0.56, 0.58, 0.66]) } };
+
+/** What a projectile's part (cartridge.js fills: a metal, a fill, tracer:<colour>, liner:<metal>, ...) is drawn in. */
+export function partMaterial(name) {
+  const k = CORE_INDEX.indexOf(name);
+  if (k >= 0) return CORE_MATERIALS[k];
+  if (name.startsWith("tracer:")) return flat(TRACER_COMPOSITION[name.slice(7)] ?? TRACER_COMPOSITION.red, 0, 0.9);
+  if (name.startsWith("liner:")) return LINER_MATERIALS[name.slice(6)] ?? LINER_MATERIALS.copper;
+  return FILL_MATERIALS[name] ?? FILL_MATERIALS.inert;
+}
+
+/** A tracer's flame: it lights itself (emissive), in its composition's colour. */
+export function tracerGlow(colour) {
+  const rgb = srgbToLinear(TRACER_GLOW[colour] ?? TRACER_GLOW.red), k = 6 * (TRACER_BRIGHTNESS[colour] ?? 1);
+  return { color: [0, 0, 0], metallic: 0, roughness: 1, section: rgb, emissive: rgb.map((c) => c * k) };
+}
+
+// Jackets (and a shell's painted body) by projectiles.JACKETS name; gilding metal is the viewer's own projectile colour.
+const JACKET_MATERIALS = {
+  copper: CORE_MATERIALS[2],
+  clad_steel: { color: srgbToLinear([0.74, 0.5, 0.36]), metallic: 1, roughness: 0.38, section: srgbToLinear([0.42, 0.42, 0.45]) },
+  steel: { color: srgbToLinear([0.33, 0.36, 0.22]), metallic: 0.25, roughness: 0.6, section: srgbToLinear([0.45, 0.46, 0.5]) },
+  brass: CORE_MATERIALS[9],
+  aluminium: CORE_MATERIALS[8],
+  polymer: flat([0.3, 0.22, 0.5], 0, 0.4),
+};
+
+/** The jacket's material, or `fallback` (the gilding-metal colour) for gilding metal. */
+export function jacketMaterial(name, fallback) {
+  return JACKET_MATERIALS[name] ?? fallback;
+}
+
+/** The projectile's outside: its jacket (gilding metal = `fallback`), or a solid projectile's own metal. */
+export function projectileMaterial(round, fallback) {
+  if (round.jacketMaterial) return jacketMaterial(round.jacketMaterial, fallback);
+  return round.solidMetal !== null && round.solidMetal !== undefined ? CORE_MATERIALS[round.solidMetal] : fallback;
+}
+
+/** A sabot's material by name: aluminium (the default look), steel or polymer. */
+export function sabotMaterial(name, fallback) {
+  return name === "polymer" ? flat([0.13, 0.13, 0.14], 0, 0.5) : name === "steel" ? CORE_MATERIALS[1] : fallback;
+}
 
 /** Materials of a round's parts that aren't brass, copper or a core (cartridge.js roundParts names them). */
 export const ROUND_MATERIALS = {
@@ -196,7 +273,7 @@ export class Renderer {
     this.program = link(gl, VERTEX_SHADER, FRAGMENT_SHADER);
     this.uniforms = {};
     for (const name of ["u_model", "u_viewProj", "u_eye", "u_color", "u_metallic", "u_roughness",
-                        "u_clipPlane", "u_sectionColor", "u_pointPos", "u_pointColor", "u_pointRange"]) {
+                        "u_clipPlane", "u_sectionColor", "u_pointPos", "u_pointColor", "u_pointRange", "u_emissive"]) {
       this.uniforms[name] = gl.getUniformLocation(this.program, name);
     }
     if (opaque) {
@@ -283,6 +360,7 @@ export class Renderer {
       gl.uniform1f(u.u_metallic, material.metallic);
       gl.uniform1f(u.u_roughness, material.roughness);
       gl.uniform3fv(u.u_sectionColor, material.section);
+      gl.uniform3fv(u.u_emissive, material.emissive ?? NO_GLOW);
       gl.bindVertexArray(mesh.vao);
       gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
     }

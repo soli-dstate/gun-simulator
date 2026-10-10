@@ -12,8 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import (action, autoloader, designer, devices, doctor, evacuator, exterior, fluid, lumped, parallel, plume, rifling,
-                rotary, sound, terminal)
+from .. import (action, autoloader, designer, devices, doctor, evacuator, exterior, fluid, lumped, parallel, plume,
+                projectiles, rifling, rotary, sound, terminal)
 from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES,
                       FIRE_MODES, LOCKINGS, PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Gun)
 from ..designer import CONFIG_DIR
@@ -71,7 +71,8 @@ FIELDS = {
     ],
     "projectile": [
         ("type", "Projectile", "choice", list(PROJECTILE_TYPES)),
-        ("mass", "Mass (an APFSDS's rod and sabot)", "g", 1e-3),
+        ("construction", "Construction (blank = from the shape)", "choice", ["", *projectiles.CONSTRUCTIONS]),
+        ("mass", "Mass (a sabot round's rod and sabot)", "g", 1e-3),
         ("shot_start_pressure", "Shot-start pressure", "MPa", 1e6),
         ("bore_resistance", "Bore resistance", "MPa", 1e6),
         ("engraving_pressure", "Peak engraving resistance", "MPa", 1e6),
@@ -88,15 +89,37 @@ FIELDS = {
         ("cannelure_position", "Cannelure position", "mm", 1e-3),
         ("cannelure_width", "Cannelure width", "mm", 1e-3),
         ("cannelure_depth", "Cannelure depth", "mm", 1e-3),
-        ("jacket_thickness", "Jacket thickness", "mm", 1e-3),
+        ("jacket_thickness", "Jacket thickness (a shell's wall)", "mm", 1e-3),
+        ("jacket_material", "Jacket (or body) metal", "choice", list(projectiles.JACKETS)),
         ("core_material", "Core material", "choice", list(CORE_MATERIALS)),
         ("exposed_core_length", "Exposed core length", "mm", 1e-3),
-        ("penetrator_mass", "APFSDS: rod mass (blank = 60 %)", "g", 1e-3),
-        ("penetrator_diameter", "APFSDS: rod diameter (blank = a fifth of the bore)", "mm", 1e-3),
-        ("fin_span", "APFSDS: fin span", "mm", 1e-3),
-        ("fin_length", "APFSDS: fin length", "mm", 1e-3),
-        ("sabot_length", "APFSDS: sabot length", "mm", 1e-3),
-        ("sabot_offset", "APFSDS: rod tail to the sabot's rear", "mm", 1e-3),
+        ("insert_material", "Penetrator insert", "choice", ["", *CORE_MATERIALS]),
+        ("insert_length", "Penetrator length (0 = 60 % of the room)", "mm", 1e-3),
+        ("insert_diameter", "Penetrator diameter (0 = 72 % of the cavity)", "mm", 1e-3),
+        ("insert_position", "Penetrator rear from the cavity floor (0 = up front)", "mm", 1e-3),
+        ("filler", "Filler", "choice", ["", *projectiles.FILLS]),
+        ("filler_length", "Filler length (0 = all the room left)", "mm", 1e-3),
+        ("filler_position", "Filler rear from the cavity floor (0 = up front)", "mm", 1e-3),
+        ("tip_filler", "Tip filler (polymer = a polymer tip)", "choice", ["", *projectiles.FILLS]),
+        ("tip_filler_length", "Tip filler length (0 = 0.6 bores)", "mm", 1e-3),
+        ("tracer", "Tracer", "choice", ["", *projectiles.TRACERS]),
+        ("tracer_length", "Tracer length (0 = 1.5 bores)", "mm", 1e-3),
+        ("liner_material", "Shaped-charge liner (HEAT)", "choice", ["", *projectiles.LINERS]),
+        ("liner_angle", "Liner cone half-angle", "°", 1),
+        ("liner_thickness", "Liner thickness (0 = 2.5 % of its diameter)", "mm", 1e-3),
+        ("cap", "Caps (APC / APBC / APCBC)", "choice", list(projectiles.CAPS)),
+        ("fuze", "Fuze", "choice", list(projectiles.FUZES)),
+        ("fuze_delay", "Fuze delay after impact", "ms", 1e-3),
+        ("fuze_time", "Fuze time: airburst, or self-destruct (0 = none)", "s", 1),
+        ("arming_distance", "Fuze arming distance", "m", 1),
+        ("penetrator_mass", "Sabot round: rod mass (blank = 60 %)", "g", 1e-3),
+        ("penetrator_diameter", "Sabot round: rod diameter (blank = a fifth of the bore; APDS 0.45)", "mm", 1e-3),
+        ("sabot_material", "Sabot round: sabot material", "choice", ["aluminium", "steel", "polymer"]),
+        ("fin_span", "APFSDS / finned: fin span", "mm", 1e-3),
+        ("fin_length", "APFSDS / finned: fin length", "mm", 1e-3),
+        ("sabot_length", "Sabot round: sabot length", "mm", 1e-3),
+        ("sabot_offset", "Sabot round: rod tail to the sabot's rear", "mm", 1e-3),
+        ("boom_length", "Finned: tail boom length", "mm", 1e-3),
     ],
     "propellant": [
         ("charge_mass", "Charge mass", "g", 1e-3),
@@ -407,13 +430,16 @@ def list_presets() -> dict[str, dict]:
 
 def schema() -> dict:
     return {"fields": FIELDS, "presets": list_presets(), "models": list(MODELS), "sound": sound_schema(),
-            "compositions": COMPOSITIONS, "grains": GRAINS, "easy": designer.schema(), "targets": target_schema()}
+            "compositions": COMPOSITIONS, "grains": GRAINS, "easy": designer.schema(), "targets": target_schema(),
+            "projectiles": {"designs": projectiles.designs_schema(), **projectiles.catalogue()}}
 
 
 def target_schema() -> dict:
+    materials = {k: {"label": a.label, "hardness": a.hardness} for k, a in terminal.ARMOURS.items()
+                 if k in terminal.TARGETS}
+    materials[terminal.GELATIN] = {"label": "10 % ballistic gelatin", "hardness": None}
     return {
-        "materials": {k: {"label": terminal.ARMOURS[k].label, "hardness": terminal.ARMOURS[k].hardness}
-                      for k in terminal.TARGETS},
+        "materials": materials,
         "reference": {"label": terminal.ARMOURS["rha"].label, "hardness": terminal.ARMOURS["rha"].hardness},
         "cores": {k: v.label for k, v in terminal.PENETRATORS.items()},
     }
@@ -422,6 +448,20 @@ def target_schema() -> dict:
 def design(payload: dict) -> dict:
     """Easy mode: a whole gun from a cartridge, a load, a kind of gun and a barrel length (see designer.py)."""
     return designer.design(payload)
+
+
+def projectile_design(payload: dict) -> dict:
+    """A projectile design (projectiles.DESIGNS) put on the gun in payload["gun"]: the gun comes back with its
+    new projectile and the case's overall length moved so the projectile's base stays where it was seated."""
+    gun = Gun.from_dict(payload["gun"])
+    data = asdict(gun)
+    p = data["projectile"] = projectiles.fit_design(payload["design"], gun)
+    if p["type"] in ("apfsds", "apds"):
+        offset = p["sabot_offset"] or 0.0
+    else:
+        offset = p["boom_length"] if p["type"] == "finned" else 0.0
+    data["case"]["overall_length"] = gun.seat + p["length"] - offset
+    return {"gun": asdict(Gun.from_dict(data)), "label": projectiles.DESIGNS[payload["design"]].label}
 
 
 def target(payload: dict) -> dict:
@@ -449,28 +489,49 @@ def target(payload: dict) -> dict:
     if distance > flown + 1e-6:
         raise ValueError(f"the projectile comes down {flown:.0f} m out ({traj.stop_reason}), short of the target")
     at = traj.at(distance) if distance > 0 else {"velocity": v0, "time": 0.0, "drop": 0.0}
-    hit = terminal.impact(gun, at["velocity"], thickness, angle, material)
-    hit.update(distance=distance, time=at["time"], drop=at["drop"], muzzle_velocity=v0)
+    hit = terminal.impact(gun, at["velocity"], thickness, angle, material, distance=distance, time=at["time"],
+                          muzzle_velocity=v0)
+    hit.update(distance=distance, time=at["time"], drop=at["drop"], muzzle_velocity=v0, flown=flown,
+               tracer_burnout=traj.range_at_time(traj.tracer_burnout),
+               fuze_burst=traj.range_at_time(traj.fuze_time))
+    hit["parts"] = _parts_json(gun)
+    if material == terminal.GELATIN:
+        return hit
     # The same plate at every range out to the end of the flight.
     los = thickness / math.cos(math.radians(angle))
     armour, rha = terminal.ARMOURS[material], terminal.ARMOURS["rha"]
     core = terminal.core_of(gun)
+    jet = terminal.shaped_charge(gun, projectiles.parts(gun), v0)
     ranges = np.linspace(0.0, flown, 41)
     speeds = np.interp(ranges, traj.x, traj.velocity)
     depth, depth_rha, limit = [], [], []
-    for v in speeds:
-        h, hr = terminal.penetrate(core, armour, float(v)), terminal.penetrate(core, rha, float(v))
-        depth.append(h.depth)
-        depth_rha.append(hr.depth)
-        limit.append(h.limit_thickness)
+    for r, v in zip(ranges, speeds):
+        d, lim = terminal.plate_at(gun, core, armour, float(v), float(r), jet)
+        depth.append(d)
+        limit.append(lim)
+        depth_rha.append(terminal.plate_at(gun, core, rha, float(v), float(r), jet)[0])
     through = [float(r) for r, lim in zip(ranges, limit) if lim >= los]
     dented = [float(r) for r, d in zip(ranges, depth) if d >= terminal.CRATER]
     hit["series"] = {"range": ranges.tolist(), "velocity": speeds.tolist(), "depth": depth,
                      "rha_depth": depth_rha, "limit_thickness": limit}
     hit["perforates_to"] = max(through) if through else None
     hit["craters_to"] = max(dented) if dented else None
-    hit["flown"] = flown
     return hit
+
+
+def _parts_json(gun: Gun) -> list[dict]:
+    """What the projectile is made of, heaviest first: [{material, label, role, mass}] (the jacket included)."""
+    parts = projectiles.parts(gun)
+    out: dict[tuple[str, str], float] = {}
+    for pc in parts.pieces:
+        if pc.mass > 0:
+            out[(pc.material, pc.role)] = out.get((pc.material, pc.role), 0.0) + pc.mass
+    rows = [{"material": m, "role": r, "label": projectiles.material_label(m), "mass": v} for (m, r), v in out.items()]
+    if parts.jacket > 0:
+        p = gun.projectile
+        rows.append({"material": p.jacket_material, "role": "jacket", "mass": parts.jacket,
+                     "label": projectiles.JACKETS[p.jacket_material][0]})
+    return sorted(rows, key=lambda r: -r["mass"])
 
 
 def _downsample(*arrays: np.ndarray) -> list[list[float]]:
@@ -713,6 +774,10 @@ def trajectory(payload: dict) -> dict:
         "stop_reason": traj.stop_reason,
         "max_range": float(traj.x[-1]),
         "stability": float(traj.stability),
+        "tracer_burnout": None if traj.tracer_burnout is None else
+        {"time": traj.tracer_burnout, "range": traj.range_at_time(traj.tracer_burnout)},
+        "fuze": None if traj.fuze_time is None else
+        {"type": gun.projectile.fuze, "time": traj.fuze_time, "range": traj.range_at_time(traj.fuze_time)},
         "table": traj.table(exterior.nice_step(max_range)),
     }
 

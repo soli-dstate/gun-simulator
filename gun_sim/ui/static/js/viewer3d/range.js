@@ -67,7 +67,8 @@ import { buildRifle } from "./gun.js";
 import { chain, invert, lookAt, perspective, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { feedCheck } from "./feed.js";
 import { rotaryBarrel, rotaryCamera, rotaryDraw, rotaryParts, rotaryPhase, rotaryRows, startRotary, stepRotary } from "./rotary.js";
-import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
+import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, TRACER_GLOW, partMaterial, projectileMaterial, sabotMaterial, srgbToLinear,
+         tracerGlow } from "./renderer.js";
 import { MAX_SHOCK, VolumeEffects } from "./volume.js";
 
 const MATERIALS = {
@@ -1721,6 +1722,16 @@ export class FiringRange {
         }
       }
     }
+    // A tracer lights the air round it once it is out of the muzzle: unless the flash is brighter, it is the light.
+    const tracer = L.round.tracer;
+    if (s && tracer) {
+      const p = this._projectiles().filter((q) => !q.inBore).at(-1);
+      const g = tracer.colour === "dim" ? 0.4 : 3;
+      if (p && (!light || light.color[0] < 14 * 0.1)) {
+        const rgb = srgbToLinear(TRACER_GLOW[tracer.colour] ?? TRACER_GLOW.red);
+        light = { position: [p.x + tracer.x, p.y ?? 0, p.z ?? 0], color: rgb.map((c) => c * g), range: 12 * bore };
+      }
+    }
     return { state, light };
   }
 
@@ -1903,12 +1914,18 @@ export class FiringRange {
       }
     }
     const R = L.round;
-    const projMaterial = R.solidMetal !== null && R.solidMetal !== undefined ? CORE_MATERIALS[R.solidMetal] : MATERIALS.projectile;
-    const addProjectile = (model, clip, sabot = true) => {
+    const projMaterial = projectileMaterial(R, MATERIALS.projectile);
+    const sabotMat = sabotMaterial(R.sabotMaterial, MATERIALS.sabot);
+    const fillMats = (R.fills ?? []).map((f) => [f.mesh, partMaterial(f.material)]);
+    const glow = R.tracer && m.tracerGlow ? tracerGlow(R.tracer.colour) : null;
+    // lit: a fired projectile, its tracer (if any) burning.
+    const addProjectile = (model, clip, sabot = true, lit = false) => {
       items.push({ mesh: m.projectile, model, material: projMaterial, clip });
       if (m.core) items.push({ mesh: m.core, model, material: CORE_MATERIALS[L.coreMaterial], clip });
+      for (const [mesh, material] of fillMats) if (m[mesh]) items.push({ mesh: m[mesh], model, material, clip });
       if (m.fins) items.push({ mesh: m.fins, model, material: MATERIALS.fins, clip });
-      if (sabot) for (let k = 0; k < R.petals; k++) items.push({ mesh: m[`sabot${k}`], model, material: MATERIALS.sabot, clip });
+      if (sabot) for (let k = 0; k < R.petals; k++) items.push({ mesh: m[`sabot${k}`], model, material: sabotMat, clip });
+      if (lit && glow) items.push({ mesh: m.tracerGlow, model, material: glow, clip: false });
     };
     const steelCase = R.caseMetal === "steel";
     const addRound = (kind, model) => {
@@ -2003,11 +2020,12 @@ export class FiringRange {
     // An APFSDS's sabot is stripped off at the muzzle: its petals fly apart and fall behind the rod.
     if (this.shot) {
       for (const p of this._projectiles()) {
-        addProjectile(p.inBore ? chain(gunAt, translation(p.x, p.y ?? 0, p.z ?? 0)) : translation(p.x, p.y ?? 0, p.z ?? 0), false, p.inBore);
+        addProjectile(p.inBore ? chain(gunAt, translation(p.x, p.y ?? 0, p.z ?? 0)) : translation(p.x, p.y ?? 0, p.z ?? 0), false,
+                      p.inBore, !p.inBore);
       }
-      if (R.apfsds) {
+      if (R.subCalibre) {
         for (const model of this._petals()) {
-          for (let k = 0; k < R.petals; k++) items.push({ mesh: m[`sabot${k}`], model: model[k], material: MATERIALS.sabot, clip: false });
+          for (let k = 0; k < R.petals; k++) items.push({ mesh: m[`sabot${k}`], model: model[k], material: sabotMat, clip: false });
         }
       }
     }

@@ -145,7 +145,9 @@ export class EasyMode {
   renderLoads() {
     const c = this.cartridge;
     const kinds = { fmj: "FMJ", ap: "AP", sp: "Soft point", hp: "Hollow point", match: "Match", lead: "Lead",
-                    apfsds: "APFSDS", service: "Service" };
+                    apfsds: "APFSDS", service: "Service", tracer: "Tracer", api: "API", apit: "API-T", mp: "Multipurpose",
+                    frangible: "Frangible", monolithic: "Copper", tip: "Polymer tip", he: "HE", hei: "HEI-T", heat: "HEAT",
+                    hesh: "HESH", apds: "APDS", tp: "Practice", saphei: "SAPHEI", apcbc: "APCBC" };
     $("e-loads").innerHTML = c.loads.map((l) => {
       const ref = l.velocity ? `${fmt(l.velocity, "velocity")} from ${fmt(l.barrel, "length_mm", imperial() ? 1 : 0)}` : "";
       const core = l.core && l.core !== "lead" ? ` · ${l.core.replace("_", " ")} core` : "";

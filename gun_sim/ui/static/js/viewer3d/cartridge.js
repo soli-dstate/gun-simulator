@@ -14,7 +14,13 @@ import { prism } from "./shapes.js";
 
 const MM = 1e3;
 const DEG = Math.PI / 180;
-const CORE_NAMES = ["lead", "steel", "copper", "tungsten", "hardened_steel", "tungsten_carbide"];   // config.CORE_MATERIALS, in index order
+// projectiles.CORE_MATERIALS, in index order.
+export const CORE_NAMES = ["lead", "steel", "copper", "tungsten", "hardened_steel", "tungsten_carbide", "titanium",
+  "depleted_uranium", "aluminium", "brass", "sintered_copper"];
+const EXPLOSIVES = new Set(["tnt", "comp_b", "comp_a4", "petn", "octol", "lx14", "pe4", "a_ix_1", "a_ix_2", "tetryl",
+  "amatol", "explosive_d"]);
+const SHELL_BORE = 15;      // mm: from this bore up a fuze body and a base fuze are drawn (projectiles.SHELL_BORE)
+const BOOM_RADIUS = 0.17;   // a finned round's tail boom, in bores (projectiles.BOOM_RADIUS)
 export const FINS = 6;
 export const PETALS = 3;
 const PETAL_GAP = 0.04;   // rad between the sabot's petals
@@ -241,7 +247,7 @@ function insetPolyline(pts, d) {
  *                shows a jacket ring around the core. The core is inset by the jacket thickness.
  * Returns {parts, core (or null), outline, body, warnings}.
  */
-export function projectileProfile(p, bore) {
+export function projectileProfile(p, bore, { gunBore = bore, coreName = "lead" } = {}) {
   const warnings = [];
   const R = bore / 2;
   const len = Math.max(p.length, 1);
@@ -303,7 +309,8 @@ export function projectileProfile(p, bore) {
   const body = [baseDisc, ...outer, ...front(hpR, xb)];
   const flat = [baseDisc, ...outer, ...(rm > 0 ? [[[rm, len], [0, len]]] : [])].flat();
   const outline = flat.filter((pt, i, all) => i === 0 || pt[1] >= all[i - 1][1]);
-  if (t === 0) return { parts: body, core: null, outline, body, warnings };
+  const ctx = { p, R, len, t, ogive, baseDisc, outer, flat, outline, bore: gunBore, coreName };
+  if (t === 0) return withFills({ parts: body, core: null, outline, body, warnings }, ctx);
 
   // Jacketed. The envelope is the outside of the projectile; the core sits inside it.
   const eps = 0.01;                                // keeps the core's surfaces off the envelope's
@@ -339,7 +346,237 @@ export function projectileProfile(p, bore) {
     const xe = len - t - eps;                      // jacket closes over the nose
     core.push(upTo(xe), [[rAt(xe), xe], [0, xe]]);
   }
-  return { parts: shell, core, outline, body, warnings };
+  return withFills({ parts: shell, core, outline, body, warnings }, { ...ctx, ring, rAt, xBase });
+}
+
+// ---------- fills: the parts inside the projectile (projectiles.layout, drawn) ----------
+
+const lineAt = (line, x, dflt) => (line ? line[0] + line[1] * x : dflt);
+
+/** The pieces inside the projectile, as projectiles.layout lays them out (mm): see there. */
+function fillLayout(c) {
+  const { p, len: L, t, R } = c, d = 2 * R, big = c.bore >= SHELL_BORE;
+  const pieces = [], explicit = [], regions = [];
+  const xLo = t;
+  let top = t > 0 ? L - t : L;
+  if (t > 0 && p.exposed_core_length > 0) top = L;
+  if (p.hollow_point_diameter > 0 && p.hollow_point_depth > 0) top = Math.min(top, L - p.hollow_point_depth);
+  const explosive = EXPLOSIVES.has(p.filler);
+  const capB = p.cap === "ballistic" || p.cap === "both";
+  let cut = L;
+  const ogive = c.ogive > 0.05 * d ? c.ogive : 0.5 * d;
+  if (capB) {
+    const xw = L - 0.55 * ogive;
+    pieces.push({ material: "windshield", role: "windshield", x0: xw, x1: L, outside: true });
+    cut = xw;
+  }
+  if (["impact", "delay", "time"].includes(p.fuze) && (explosive || p.liner_material || p.filler === "white_phosphorus") && big && !capB) {
+    const fl = Math.min(0.8 * d, 0.7 * ogive, 0.3 * L);
+    pieces.push({ material: "fuze", role: "fuze", x0: cut - fl, x1: cut, outside: true });
+    cut -= fl;
+  }
+  if (p.tip_filler === "polymer") {
+    const tl = p.tip_filler_length || Math.min(0.35 * d, 0.4 * ogive);
+    pieces.push({ material: "polymer", role: "tip", x0: cut - tl, x1: cut, outside: true });
+    cut -= tl;
+  }
+  if (p.cap === "penetrating" || p.cap === "both") {
+    pieces.push({ material: "cap", role: "cap", x0: cut - 0.5 * d, x1: cut, outside: true });
+    cut -= 0.5 * d;
+  }
+  top = Math.max(Math.min(top, cut), xLo + 1e-3);
+  const wall = (x) => (t > 0 ? c.rIn(x) : c.rOut(x));
+  let lo = xLo;
+  const hi = top;
+  if (p.fuze === "base" && big && (explosive || p.filler === "white_phosphorus")) {
+    const bl = Math.min(0.35 * d, 0.25 * (hi - lo));
+    regions.push(["fuze", "fuze", lo, lo + bl]);
+    lo += bl;
+  }
+  let tracer = null;
+  if (p.tracer) {
+    const trl = Math.min(p.tracer_length || 1.5 * d, 0.6 * (top - xLo));
+    const rt = 0.55 * Math.max(wall(xLo + 1e-3), 1e-3);
+    tracer = { r: rt, x1: xLo + trl };
+    explicit.push({ material: `tracer:${p.tracer}`, role: "tracer", x0: xLo, x1: xLo + trl, lo: null, hi: [rt, 0] });
+  }
+  if (p.liner_material) {
+    const span = hi - lo;
+    let xl = Math.min(lo + (p.filler_length || 0.5 * span), hi - 0.05 * d);
+    xl = Math.max(xl, lo + 0.1 * span);
+    const rl = 0.97 * wall(xl);
+    const half = clamp(p.liner_angle ?? 30, 10, 70) * DEG;
+    const h = Math.min(rl / Math.tan(half), 0.85 * (xl - lo));
+    const slope = rl / Math.max(h, 1e-9), xa = xl - h;
+    const th = (p.liner_thickness || 0.025 * 2 * rl) / Math.max(Math.cos(Math.atan(slope)), 0.2);
+    const cone = [-slope * xa, slope];
+    explicit.push({ material: "air", role: "air", x0: xa, x1: xl, lo: null, hi: cone });
+    explicit.push({ material: `liner:${p.liner_material}`, role: "liner", x0: xa, x1: xl, lo: cone, hi: [cone[0] + th, slope] });
+    explicit.push({ material: "air", role: "air", x0: xl, x1: hi, lo: null, hi: null });
+    regions.push([p.filler || "comp_b", "fill", lo, xl]);
+  } else {
+    let cur = hi;
+    if (p.tip_filler && p.tip_filler !== "polymer") {
+      const tl = Math.min(p.tip_filler_length || 0.6 * d, cur - lo);
+      regions.push([p.tip_filler, "tip", cur - tl, cur]);
+      cur -= tl;
+    }
+    if (p.filler) {
+      let x0, x1;
+      if (p.filler_position > 0) {
+        x0 = Math.min(lo + p.filler_position, cur);
+        x1 = Math.min(x0 + (p.filler_length || cur - x0), cur);
+      } else if (p.filler_length > 0) {
+        x1 = cur; x0 = Math.max(cur - p.filler_length, lo); cur = x0;
+      } else {
+        x0 = lo; x1 = cur;
+      }
+      regions.push([p.filler, "fill", x0, x1]);
+      if (!p.filler_length && !p.filler_position) cur = lo;
+    }
+    if (p.insert_material) {
+      const roomy = cur - lo > 0.2 * d;
+      const room = roomy ? cur - lo : hi - lo;
+      const il = Math.min(p.insert_length || 0.6 * room, hi - lo);
+      const x0 = p.insert_position > 0 ? Math.min(lo + p.insert_position, hi - il) : Math.max((roomy ? cur : hi) - il, lo);
+      const x1 = x0 + il;
+      const w = wall(x0);
+      const ri = Math.min(p.insert_diameter ? p.insert_diameter / 2 : 0.72 * w, 0.95 * w);
+      const nose = Math.min(2.4 * ri, 0.45 * il);
+      const slope = (-0.95 * ri) / nose;
+      explicit.push({ material: p.insert_material, role: "insert", x0, x1: x1 - nose, lo: null, hi: [ri, 0] });
+      explicit.push({ material: p.insert_material, role: "insert", x0: x1 - nose, x1, lo: null, hi: [ri - slope * (x1 - nose), slope] });
+    }
+  }
+  pieces.push(...partition(explicit, regions, xLo, top, c.coreName));
+  return { pieces, cut, hollow: !!p.liner_material, tracer };
+}
+
+/** projectiles._partition: the explicit pieces, and the rest of the cavity in its region's fill or the core. */
+function partition(explicit, regions, xLo, xHi, core) {
+  const xs = new Set([xLo, xHi]);
+  for (const e of explicit) { xs.add(e.x0); xs.add(e.x1); }
+  for (const [, , a, b] of regions) { xs.add(a); xs.add(b); }
+  const sorted = [...xs].filter((x) => x >= xLo - 1e-9 && x <= xHi + 1e-9).sort((a, b) => a - b);
+  const out = [...explicit];
+  for (let i = 0; i + 1 < sorted.length; i++) {
+    const xa = sorted[i], xb = sorted[i + 1];
+    if (xb - xa < 1e-6) continue;
+    const xm = (xa + xb) / 2;
+    const reg = regions.find(([, , a, b]) => a - 1e-9 <= xm && xm <= b + 1e-9);
+    const [material, role] = reg ? [reg[0], reg[1]] : [core, "core"];
+    const active = explicit.filter((e) => e.x0 - 1e-9 <= xm && xm <= e.x1 + 1e-9)
+      .sort((a, b) => lineAt(a.lo, xm, 0) - lineAt(b.lo, xm, 0));
+    let lo = null, wall = false;
+    for (const e of active) {
+      if (lineAt(e.lo, xm, 0) > lineAt(lo, xm, 0) + 1e-6) out.push({ material, role, x0: xa, x1: xb, lo, hi: e.lo });
+      if (!e.hi) { wall = true; break; }
+      if (!lo || lineAt(e.hi, xm, 0) > lineAt(lo, xm, 0)) lo = e.hi;
+    }
+    if (!wall) out.push({ material, role, x0: xa, x1: xb, lo, hi: null });
+  }
+  return out;
+}
+
+/** Sutherland-Hodgman: the part of a closed [r, x] polygon where f([r, x]) >= 0 (f linear). */
+function clipHalf(poly, f) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const fa = f(a), fb = f(b);
+    if (fa >= 0) out.push(a);
+    if ((fa >= 0) !== (fb >= 0)) {
+      const s = fa / (fa - fb);
+      out.push([a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s]);
+    }
+  }
+  return out;
+}
+
+/** A closed polygon as lathe parts: split at its corners so they shade with hard edges. */
+function polygonParts(poly) {
+  const pts = poly.filter((q, i) => i === 0 || Math.hypot(q[0] - poly[i - 1][0], q[1] - poly[i - 1][1]) > 1e-6);
+  if (pts.length > 1 && Math.hypot(pts[0][0] - pts.at(-1)[0], pts[0][1] - pts.at(-1)[1]) <= 1e-6) pts.pop();
+  const n = pts.length;
+  if (n < 3) return [];
+  const corner = (i) => {
+    const a = pts[(i - 1 + n) % n], b = pts[i], c = pts[(i + 1) % n];
+    const u = [b[0] - a[0], b[1] - a[1]], v = [c[0] - b[0], c[1] - b[1]];
+    return (u[0] * v[0] + u[1] * v[1]) / ((Math.hypot(...u) * Math.hypot(...v)) || 1) < Math.cos(25 * DEG);
+  };
+  let s = pts.findIndex((_, i) => corner(i));
+  if (s < 0) s = 0;
+  const parts = [];
+  let cur = [pts[s]];
+  for (let k = 1; k <= n; k++) {
+    const i = (s + k) % n;
+    cur.push(pts[i]);
+    if (corner(i) || k === n) { parts.push(cur); cur = [pts[i]]; }
+  }
+  return parts;
+}
+
+/** Profile parts up to x = cut, closed by a flat face across to the axis there. */
+function cutParts(parts, cut) {
+  const kept = clipParts(parts, cut);
+  const last = kept.at(-1), end = last.at(-1);
+  if (end[0] > 1e-6) kept.push([end, [0, end[1]]]);
+  return kept;
+}
+
+/**
+ * The projectile's fills drawn into its profile: `fills` is [{material, role, parts}] for each piece, and the
+ * envelope is cut short under any piece that sits on its outside (a fuze, a polymer tip, caps). A shaped charge's
+ * body is drawn as a real shell, hollow in front of its liner.
+ */
+function withFills(res, c) {
+  const p = c.p;
+  const has = p.insert_material || p.filler || p.tip_filler || p.tracer || p.liner_material || (p.cap && p.cap !== "none")
+    || (p.fuze && p.fuze !== "none");
+  if (!has) return { ...res, fills: [], tracer: null };
+  const rOut = (x) => radiusAt(res.outline, x);
+  const rIn = c.ring ? (x) => c.rAt(x) : rOut;
+  const lay = fillLayout({ ...c, rOut, rIn, bore: c.bore ?? 2 * c.R, coreName: c.coreName ?? "lead" });
+  const meaningful = lay.pieces.some((pc) => pc.role !== "core");
+  if (!meaningful) return { ...res, fills: [], tracer: null };
+  const L = c.len, eps = 0.02;
+  let parts = res.parts;
+  if (lay.hollow && c.ring) {
+    // The body as a real shell: the outside up to the cut, then the inside of the jacket back down.
+    const down = c.ring.filter(([, x]) => x < lay.cut && x > c.xBase).reverse();
+    parts = [c.baseDisc, ...clipParts(c.outer, lay.cut), [[rOut(lay.cut), lay.cut], [rIn(lay.cut), lay.cut]],
+      [[rIn(lay.cut), lay.cut], ...down, [rIn(c.xBase), c.xBase]], [[rIn(c.xBase), c.xBase], [0, c.xBase]]];
+  } else if (lay.cut < L - 1e-6) {
+    parts = cutParts(parts, lay.cut);
+  }
+  // The polygons the pieces are cut from: the cavity inside the jacket (or just inside a solid), the outside.
+  const cavity = res.core ? res.core.flat() : [[0, eps], ...res.outline.slice(1).map(([r, x]) => [Math.max(r - eps, 0), clamp(x, eps, L - eps)]), [0, L - eps]];
+  const outside = c.flat.map(([r, x]) => [r > 0 ? r + 0.01 : 0, x]);
+  let windshield = null;
+  const ws = lay.pieces.find((pc) => pc.role === "windshield");
+  if (ws) {
+    const tw = Math.max(0.04 * 2 * c.R, 0.1);
+    const top = [[rOut(ws.x0) + 0.01, ws.x0], ...res.outline.filter(([, x]) => x > ws.x0).map(([r, x]) => [r + 0.01, x])];
+    const inner = insetPolyline(top, tw).filter(([, x]) => x >= ws.x0 && x <= L - tw);
+    windshield = [...top, [0, L], [0, L - tw], ...inner.reverse(), [Math.max(rOut(ws.x0) - tw, 0), ws.x0]];
+  }
+  const fills = [];
+  for (const pc of lay.pieces) {
+    if (pc.role === "air" || (pc.role === "core" && !res.core)) continue;
+    let poly;
+    if (pc.role === "tracer") {
+      poly = [[0, -eps], [pc.hi[0], -eps], [pc.hi[0], pc.x1], [0, pc.x1]];   // open at the base, where the gas lights it
+    } else {
+      poly = pc.outside ? (pc.role === "windshield" ? windshield : outside) : cavity;
+      poly = clipHalf(poly, ([, x]) => x - pc.x0);
+      poly = clipHalf(poly, ([, x]) => pc.x1 - x);
+      if (pc.lo) poly = clipHalf(poly, ([r, x]) => r - lineAt(pc.lo, x, 0));
+      if (pc.hi) poly = clipHalf(poly, ([r, x]) => lineAt(pc.hi, x, 0) - r);
+    }
+    const pp = polygonParts(poly);
+    if (pp.length) fills.push({ material: pc.material, role: pc.role, parts: pp });
+  }
+  return { ...res, parts, core: null, fills, tracer: lay.tracer };
 }
 
 /** Parts shifted by dx along the axis. */
@@ -368,52 +605,74 @@ export function buildCartridge(gun) {
   const toMM = (obj, keep) => Object.fromEntries(
     Object.entries(obj).map(([k, v]) => [k, keep.includes(k) || typeof v !== "number" ? v : v * MM]));
   const c = toMM(gun.case, ["shoulder_angle"]);
-  const p = toMM(gun.projectile, ["boat_tail_angle", "mass", "shot_start_pressure", "bore_resistance", "ogive_radius_ratio", "core_material", "penetrator_mass", "engraving_pressure", "ballistic_coefficient"]);
-  const apfsds = p.type === "apfsds";
+  const p = toMM(gun.projectile, ["boat_tail_angle", "mass", "shot_start_pressure", "bore_resistance", "ogive_radius_ratio",
+    "core_material", "penetrator_mass", "engraving_pressure", "ballistic_coefficient", "liner_angle", "fuze_delay", "fuze_time",
+    "arming_distance"]);
+  const apfsds = p.type === "apfsds", subCalibre = apfsds || p.type === "apds", finned = p.type === "finned";
 
   const kase = caseProfile(c, bore);
   const warnings = [...kase.warnings];
-  // An APFSDS's rod is drawn with its own nose, with its tail sabot_offset behind the sabot's rear face.
-  const rodD = apfsds ? Math.min(p.penetrator_diameter ?? 0.2 * bore, 0.9 * bore) : bore;
-  const offset = apfsds ? (p.sabot_offset ?? 0) : 0;
-  const proj = projectileProfile(apfsds ? { ...p, boat_tail_length: 0, jacket_thickness: 0, hollow_point_diameter: 0, cannelure_depth: 0 } : p, rodD);
+  // A sabot round's rod is drawn with its own nose, with its tail sabot_offset behind the sabot's rear face; a finned
+  // round's body sits on its tail boom, which reaches back boom_length behind where the gas pushes.
+  const rodD = subCalibre ? Math.min(p.penetrator_diameter ?? (apfsds ? 0.2 : 0.45) * bore, 0.9 * bore) : bore;
+  const boom = finned ? Math.min(p.boom_length || 0, 0.8 * p.length) : 0;
+  const offset = subCalibre ? (p.sabot_offset ?? 0) : boom;
+  const coreMaterial = Math.max(0, typeof p.core_material === "string"
+    ? CORE_NAMES.indexOf(p.core_material.toLowerCase()) : Math.round(p.core_material || 0));
+  const shape = subCalibre ? { ...p, boat_tail_length: 0, jacket_thickness: 0, hollow_point_diameter: 0, cannelure_depth: 0 }
+    : finned ? { ...p, length: p.length - boom } : p;
+  const proj = projectileProfile(shape, rodD, { gunBore: bore, coreName: CORE_NAMES[coreMaterial] });
   warnings.push(...proj.warnings);
-  const seat = c.overall_length - p.length + offset;   // x of the projectile base (an APFSDS's sabot)
+  const seat = c.overall_length - p.length + offset;   // x of where the gas pushes: the base, a sabot's rear, a finned body's rear
   if (seat < c.head_thickness) warnings.push("projectile base is below the top of the web (overall length too short)");
   if (seat > c.length) warnings.push("projectile is not in the case (overall length too long)");
 
-  // Volumes in mm³. Behind an APFSDS's sabot is the case up to it, less the rod's tail.
+  // Volumes in mm³. Behind a sabot (or a finned body) is the case up to it, less the rod's tail (or the boom).
   const capacity = radiusVolume(kase.cavity, kase.cavity[0][1], c.length);
-  const intrusion = apfsds
-    ? capacity - radiusVolume(kase.cavity, kase.cavity[0][1], Math.min(seat, c.length)) + Math.PI * (rodD / 2) ** 2 * offset
+  const tailR = subCalibre ? rodD / 2 : BOOM_RADIUS * bore;
+  const intrusion = subCalibre || finned
+    ? capacity - radiusVolume(kase.cavity, kase.cavity[0][1], Math.min(seat, c.length)) + Math.PI * tailR ** 2 * offset
+      + (finned ? radiusVolume(proj.outline, 0, Math.max(0, c.length - seat)) : 0)
     : radiusVolume(proj.outline, 0, Math.max(0, c.length - seat));
   const projVolume = profileVolume(proj.body);
-  const coreMaterial = Math.max(0, typeof p.core_material === "string"
-    ? CORE_NAMES.indexOf(p.core_material.toLowerCase()) : Math.round(p.core_material || 0));
   // A combustible case: the metal stub base and the felt body above it.
   const stub = c.combustible ? clamp(c.stub_length ?? c.head_thickness + 0.2 * c.base_diameter, kase.dims.head + 0.1, c.length - 1) : null;
   const split = stub !== null ? splitParts(kase.parts, stub) : null;
+  const shiftBy = subCalibre ? -offset : 0;
   const parts = {
     case: split ? split.below : kase.parts, primer: primerProfile(kase.pocket),
-    projectile: shiftParts(proj.parts, -offset), ...(proj.core ? { core: proj.core } : {}),
+    projectile: shiftParts(proj.parts, shiftBy), ...(proj.core ? { core: shiftParts(proj.core, shiftBy) } : {}),
     ...(split ? { caseBody: split.above } : {}),
   };
+  proj.fills.forEach((f, k) => { parts[`fill${k}`] = shiftParts(f.parts, shiftBy); });
   let sabot = null, fins = null;
-  if (apfsds) {
+  if (subCalibre) {
     const R = bore / 2 - 0.05, rr = rodD / 2 + 0.05;
-    const length = Math.min(p.sabot_length ?? 1.2 * bore, p.length - offset);
+    const length = Math.min(p.sabot_length ?? (apfsds ? 1.2 * bore : 0.85 * p.length), p.length - offset);
     sabot = { profile: sabotProfile(R, rr, length), petals: PETALS, length };
+  }
+  if (apfsds) {
     const span = Math.min(p.fin_span ?? 3.5 * rodD, 0.95 * bore) / 2, fl = p.fin_length ?? 6 * rodD;
     fins = { x0: -offset, length: fl, root: rodD / 2 * 0.9, tip: span, thickness: Math.max(0.6, 0.06 * rodD), count: FINS };
+  } else if (finned) {
+    const rb = BOOM_RADIUS * bore, span = Math.min(p.fin_span ?? 0.95 * bore, 0.98 * bore) / 2;
+    const fl = Math.min(p.fin_length ?? 0.6 * bore, boom);
+    fins = { x0: -boom, length: fl, root: rb * 0.9, tip: span, thickness: Math.max(0.6, 0.03 * bore), count: FINS,
+             boom: { x0: -boom, x1: 0, r: rb } };
   }
+  // What each part is drawn in: the jacket's metal over a core, or a solid projectile's own metal.
+  const jacketed = (shape.jacket_thickness ?? 0) > 0;
   return {
     parts,
     coreMaterial,
-    // A solid projectile of steel or tungsten is drawn in that metal (a solid lead or copper one in copper).
-    solidMetal: !proj.core && (coreMaterial === 1 || coreMaterial === 3) ? coreMaterial : null,
+    solidMetal: jacketed ? null : coreMaterial,
+    jacketMaterial: jacketed ? (p.jacket_material || "gilding_metal") : null,
+    fills: proj.fills.map((f, k) => ({ mesh: `fill${k}`, material: f.material, role: f.role })),
+    tracer: proj.tracer && p.tracer ? { colour: p.tracer, r: proj.tracer.r, x: shiftBy } : null,
+    sabotMaterial: p.sabot_material || "aluminium",
     caseMetal: gun.case.material === "steel" ? "steel" : "brass",
     combustible: stub !== null,
-    sabot, fins, apfsds,
+    sabot, fins, apfsds, subCalibre, finned,
     dims: kase.dims,
     projectileLength: p.length,
     rodRadius: rodD / 2,
@@ -424,8 +683,8 @@ export function buildCartridge(gun) {
       capacity: capacity / 1e3,                          // cm³
       powderSpace: Math.max(capacity - intrusion, 0) / 1e3, // cm³
       projVolume: projVolume / 1e3,                      // cm³
-      // An APFSDS's rod: its own mass over its volume.
-      density: (apfsds ? (gun.projectile.penetrator_mass ?? 0.6 * gun.projectile.mass) : gun.projectile.mass) * 1e3 / (projVolume / 1e3), // g/cm³
+      // A sabot round's rod: its own mass over its volume.
+      density: (subCalibre ? (gun.projectile.penetrator_mass ?? 0.6 * gun.projectile.mass) : gun.projectile.mass) * 1e3 / (projVolume / 1e3), // g/cm³
     },
     warnings,
   };
@@ -461,8 +720,9 @@ function turned(mesh, a) {
 
 /**
  * The round's meshes: case (the metal case, or a combustible case's stub), caseBody (the felt body),
- * primer, projectile, core, fins and sabot0.. (the sabot's petals, one each so they can fly apart).
- * The projectile's parts are at the projectile's origin (its base, or an APFSDS's sabot rear face).
+ * primer, projectile, core, fill0.. (what is inside it), fins (with a finned round's boom), sabot0.. (the
+ * sabot's petals, one each so they can fly apart) and tracerGlow (a tracer's flame behind the base).
+ * The projectile's parts are at the projectile's origin (its base, or a sabot's rear face).
  */
 export function roundMeshes(cart) {
   const out = {};
@@ -470,7 +730,18 @@ export function roundMeshes(cart) {
   if (cart.fins) {
     const f = cart.fins;
     const fin = prism([[f.x0, f.root], [f.x0 + f.length, f.root], [f.x0 + 0.45 * f.length, f.tip], [f.x0, f.tip]], f.thickness);
-    out.fins = mergeMeshes(Array.from({ length: f.count }, (_, k) => turned(fin, (k * 2 * Math.PI) / f.count)));
+    const meshes = Array.from({ length: f.count }, (_, k) => turned(fin, (k * 2 * Math.PI) / f.count));
+    if (f.boom) {
+      const { x0, x1, r } = f.boom;
+      meshes.push(lathe([[[0, x0], [r, x0]], [[r, x0], [r, x1]], [[r, x1], [0, x1]]], 32));
+    }
+    out.fins = mergeMeshes(meshes);
+  }
+  if (cart.tracer) {
+    // The flame: a teardrop trailing back from the base, as wide as the tracer's cavity at the base.
+    const r = cart.tracer.r * 1.3, L = Math.max(14 * cart.tracer.r, 6);
+    const x = cart.fins ? Math.min(cart.fins.x0, cart.tracer.x) : cart.tracer.x;   // behind the fins, if any
+    out.tracerGlow = lathe([[[0, x - L], [0.35 * r, x - 0.75 * L], [0.8 * r, x - 0.35 * L], [r, x - 0.08 * L], [0.6 * r, x + 0.02], [0, x + 0.04]]], 24);
   }
   if (cart.sabot) {
     const n = cart.sabot.petals;
@@ -480,6 +751,15 @@ export function roundMeshes(cart) {
     }
   }
   return out;
+}
+
+/** What the firing range needs to draw the round (the layout's `round`). */
+export function roundLayout(cart) {
+  return {
+    apfsds: cart.apfsds, subCalibre: cart.subCalibre, petals: cart.sabot?.petals ?? 0, solidMetal: cart.solidMetal,
+    jacketMaterial: cart.jacketMaterial, fills: cart.fills, tracer: cart.tracer, sabotMaterial: cart.sabotMaterial,
+    caseMetal: cart.caseMetal, combustible: cart.combustible, rodRadius: cart.rodRadius, sabotLength: cart.sabot?.length ?? 0,
+  };
 }
 
 /** The direction (unit [y, z]) a sabot petal flies off in: out from the middle of its sector. */

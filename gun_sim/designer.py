@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import action, lumped, rifling
+from . import action, lumped, projectiles, rifling
 from .cartridges import CARTRIDGES, GRAIN, KINDS, MM, POWDERS, Cartridge, Load
 from .config import Gun
 from .exterior import LB_IN2
@@ -147,13 +147,19 @@ def schema() -> dict:
     for c in CARTRIDGES.values():
         loads = []
         for ld in c.loads:
-            if c.template:
+            if c.template and ld.design:
+                g = _template_load(c.template, ld.design)
+                loads.append({"id": ld.id, "name": ld.name, "kind": ld.kind, "mass": g.projectile.mass,
+                              "velocity": None, "barrel": None, "core": g.projectile.insert_material or
+                              _core_name(g.projectile.core_material)})
+            elif c.template:
                 p = _template(c.template).projectile
                 loads.append({"id": ld.id, "name": _template(c.template).name, "kind": ld.kind, "mass": p.mass,
                               "velocity": None, "barrel": None, "core": _core_name(p.core_material)})
             else:
                 loads.append({"id": ld.id, "name": ld.name, "kind": ld.kind, "mass": ld.mass,
-                              "velocity": ld.velocity, "barrel": ld.barrel_mm * MM, "core": ld.core})
+                              "velocity": ld.velocity, "barrel": ld.barrel_mm * MM,
+                              "core": ld.fills.get("insert_material") or ld.core})
         out.append({
             "id": c.id, "metric": c.metric, "imperial": c.imperial, "label": c.label, "aliases": list(c.aliases),
             "kind": c.kind, "kind_label": KINDS[c.kind], "bore": c.bore * MM, "max_pressure": c.max_pressure or None,
@@ -171,6 +177,20 @@ def schema() -> dict:
 def _core_name(index) -> str:
     from .config import CORE_MATERIALS
     return CORE_MATERIALS[int(index)]
+
+
+@lru_cache(maxsize=None)
+def _template_load(name: str, design_key: str) -> Gun:
+    """A preset gun firing one of the projectile designs instead of its own round, seated where its own was."""
+    g = copy.deepcopy(_template(name))
+    data = asdict(g)
+    p = data["projectile"] = projectiles.fit_design(design_key, g)
+    if p["type"] in ("apfsds", "apds"):
+        offset = p["sabot_offset"] or 0.0
+    else:
+        offset = p["boom_length"] if p["type"] == "finned" else 0.0
+    data["case"]["overall_length"] = g.seat + p["length"] - offset
+    return Gun.from_dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -198,12 +218,15 @@ def _projectile(c: Cartridge, ld: Load, template: Gun) -> dict:
         "hollow_point_diameter": ld.hollow_point[0] * MM, "hollow_point_depth": ld.hollow_point[1] * MM,
         "drag_model": ld.drag, "ballistic_coefficient": bc,
     }
+    # What is inside it: lengths are given in mm.
+    for k, v in ld.fills.items():
+        p[k] = v * MM if k in projectiles._LENGTHS and isinstance(v, (int, float)) else v
     # A crimp groove at the case mouth on rifle and revolver bullets.
     # It has to sit on the bearing surface, between the boat tail and the ogive.
     mouth = ld.length - ((ld.oal or c.case["overall_length"]) - c.case["length"])
     lo, hi = ld.boat_tail + 0.8, ld.length - ld.ogive - 0.8
     groove = min(max(mouth - 0.6, lo), hi)
-    if c.kind not in ("pistol",) and ld.kind in ("fmj", "ap", "sp", "lead") and lo < hi:
+    if c.kind not in ("pistol",) and ld.kind in ("fmj", "ap", "sp", "lead", "tracer", "api", "apit", "mp") and lo < hi:
         p.update(cannelure_position=groove * MM, cannelure_width=1.0 * MM,
                  cannelure_depth=(0.25 if ld.jacket == 0 else 0.1) * MM)
     return p
@@ -406,7 +429,7 @@ def design(payload: dict) -> dict:
     notes: list[dict] = []
 
     if c.template:
-        gun = _from_template(c, plat, barrel, device, notes)
+        gun = _from_template(c, ld, plat, barrel, device, notes)
     else:
         gun = _build(c, ld, plat, barrel, device, payload, notes)
     if payload.get("name"):
@@ -419,8 +442,11 @@ def _note(notes: list, title: str, text: str, kind: str = "info"):
     notes.append({"title": title, "text": text, "kind": kind})
 
 
-def _from_template(c: Cartridge, plat: Platform, barrel: float, device: str, notes: list) -> Gun:
-    gun = copy.deepcopy(_template(plat.template))
+def _from_template(c: Cartridge, ld: Load, plat: Platform, barrel: float, device: str, notes: list) -> Gun:
+    gun = copy.deepcopy(_template_load(plat.template, ld.design) if ld.design else _template(plat.template))
+    if ld.design:
+        _note(notes, "Projectile", f"{ld.name}: {projectiles.DESIGNS[ld.design].blurb} Its mass is what its parts "
+              f"weigh ({gun.projectile.mass:.3g} kg), seated where the preset's own round is; the charge is the preset's.")
     old = gun.barrel.travel
     gun.barrel.travel = barrel - gun.seat
     if gun.barrel.evacuator_position:

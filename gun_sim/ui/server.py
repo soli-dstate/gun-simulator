@@ -67,6 +67,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, api.design(json.loads(body)))
             elif self.path == "/api/target":
                 self._json(200, api.target(json.loads(body)))
+            elif self.path == "/api/projectile":
+                self._json(200, api.projectile_design(json.loads(body)))
             elif self.path == "/api/check":
                 self._json(200, api.check(json.loads(body)))
             elif self.path == "/api/parse":

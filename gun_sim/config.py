@@ -16,6 +16,7 @@ import numpy as np
 
 from .autoloader import AMMUNITION, DRIVES
 from .feed import AUTOLOADERS, FEED_TYPES
+from .projectiles import CAPS, CONSTRUCTIONS, CORE_MATERIALS, FILLS, FUZES, JACKETS, LINERS, METALS, TRACERS
 from .propellants import COMPOSITIONS, form_coefficients, grain_geometry, is_multi_perf, sliver_phase, suppressant
 
 
@@ -93,8 +94,12 @@ _REF_GEOMETRY = {
 
 
 # "steel" is a soft (mild) steel core; "hardened_steel" an armour-piercing one; "tungsten" a heavy alloy.
-CORE_MATERIALS = ("lead", "steel", "copper", "tungsten", "hardened_steel", "tungsten_carbide")
-PROJECTILE_TYPES = ("bullet", "apfsds")
+# The full list (and every fill, jacket, tracer and liner) is in projectiles.py.
+# "bullet": full calibre, spun by the rifling (a shell too); "apfsds": a fin-stabilised long rod in a
+# discarding sabot; "apds": a spin-stabilised core in a discarding sabot; "finned": full calibre on a tail
+# boom with fins (HEAT-FS).
+PROJECTILE_TYPES = ("bullet", "apfsds", "apds", "finned")
+SUB_CALIBRE = ("apfsds", "apds")
 
 
 @dataclass
@@ -127,13 +132,42 @@ class Projectile:
     # `length` the rod from its tail to its tip, and the gas pushes on the sabot's rear face,
     # `sabot_offset` ahead of the rod's tail (the fins reach back into the propellant). The
     # trajectory flies the rod alone. The shape fields above describe the rod's nose.
-    type: str = "bullet"                   # "bullet" (full calibre) or "apfsds"
+    # "apds" is the same with a spin-stabilised core and no fins; "finned" is full calibre on a tail boom
+    # `boom_length` long with fins at its end (HEAT-FS), the gas pushing on the body's rear face.
+    type: str = "bullet"                   # PROJECTILE_TYPES
     penetrator_mass: float | None = None   # kg, the rod and fins that fly on; None = 60 % of mass
-    penetrator_diameter: float | None = None  # m; None = a fifth of the bore
-    fin_span: float | None = None          # m, across the fins; None = 3.5 rod diameters
-    fin_length: float | None = None        # m, along the rod; None = 6 rod diameters
-    sabot_length: float | None = None      # m, along the rod; None = 1.2 bores
-    sabot_offset: float | None = None      # m, rod tail to the sabot's rear face; None = 1.5 fin lengths
+    penetrator_diameter: float | None = None  # m; None = a fifth of the bore (APDS: 0.45)
+    fin_span: float | None = None          # m, across the fins; None = 3.5 rod diameters (finned: 0.95 bores)
+    fin_length: float | None = None        # m, along the rod; None = 6 rod diameters (finned: 0.6 bores)
+    sabot_length: float | None = None      # m, along the rod; None = 1.2 bores (APDS: 85 % of the core)
+    sabot_offset: float | None = None      # m, rod tail to the sabot's rear face; None = 1.5 fin lengths (APDS: 0)
+    sabot_material: str = "aluminium"      # a JACKETS name: aluminium, steel or polymer
+    boom_length: float = 0.0               # m, finned: the tail boom behind the body
+    # What it is made of and what is in it (gun_sim/projectiles.py). Every length 0 = the default, a "" name = none.
+    construction: str = ""                 # CONSTRUCTIONS: how it behaves in a target; "" = from its shape
+    jacket_material: str = "gilding_metal"  # JACKETS
+    insert_material: str = ""              # a penetrator inside the core: a CORE_MATERIALS name
+    insert_length: float = 0.0             # m; 0 = 60 % of the room
+    insert_diameter: float = 0.0           # m; 0 = 72 % of the cavity
+    insert_position: float = 0.0           # m from the cavity's floor to its rear; 0 = up behind the fills
+    filler: str = ""                       # FILLS (or a core material): explosive, incendiary, smoke, inert
+    filler_length: float = 0.0             # m; 0 = all the room left (a shaped charge: half the cavity)
+    filler_position: float = 0.0           # m from the cavity's floor to its rear; 0 = up front
+    tip_filler: str = ""                   # FILLS in the nose ("polymer" = a polymer tip)
+    tip_filler_length: float = 0.0         # m; 0 = 0.6 bores
+    tracer: str = ""                       # TRACERS, in a cavity in the base
+    tracer_length: float = 0.0             # m of composition; 0 = 1.5 bores (it burns down it)
+    liner_material: str = ""               # LINERS: a shaped-charge cone in front of the filler (HEAT)
+    liner_angle: float = 30.0              # degrees, the cone's half-angle
+    liner_thickness: float = 0.0           # m; 0 = 2.5 % of its diameter
+    cap: str = "none"                      # "none", "penetrating", "ballistic" or "both" (APCBC)
+    fuze: str = "none"                     # FUZES
+    fuze_delay: float = 0.0                # s after impact (delay, base, pyrotechnic)
+    fuze_time: float = 0.0                 # s of flight: a time fuze's burst, any other's self-destruct (0 = none)
+    arming_distance: float = 0.0           # m from the muzzle before the fuze is armed
+
+    # Names that may be given as "" (none); the UI sends None for them.
+    _NAMES = ("construction", "insert_material", "filler", "tip_filler", "tracer", "liner_material")
 
     def __post_init__(self):
         if isinstance(self.core_material, str):
@@ -143,28 +177,85 @@ class Projectile:
                 raise ValueError(
                     f"core_material must be one of {', '.join(CORE_MATERIALS)} (or 0..{len(CORE_MATERIALS) - 1})"
                 ) from None
+        for name in self._NAMES:
+            if getattr(self, name) is None:
+                setattr(self, name, "")
+        if self.jacket_material is None:
+            self.jacket_material = "gilding_metal"
+        if self.sabot_material is None:
+            self.sabot_material = "aluminium"
+        if self.cap is None:
+            self.cap = "none"
+        if self.fuze is None:
+            self.fuze = "none"
+
+    @property
+    def core_name(self) -> str:
+        return CORE_MATERIALS[int(self.core_material)]
 
     def validate_shape(self) -> None:
         if self.type not in PROJECTILE_TYPES:
             raise ValueError(f"projectile.type must be one of {', '.join(PROJECTILE_TYPES)}, not {self.type!r}")
-        if self.type == "apfsds":
+        if self.type in SUB_CALIBRE:
             if not 0 < self.penetrator_mass < self.mass:
                 raise ValueError("projectile.penetrator_mass must be positive and less than the launch mass (rod and sabot)")
-            for name in ("penetrator_diameter", "fin_span", "fin_length", "sabot_length"):
+            for name in ("penetrator_diameter", "sabot_length") + (("fin_span", "fin_length") if self.type == "apfsds" else ()):
                 if getattr(self, name) <= 0:
                     raise ValueError(f"projectile.{name} must be positive")
             if self.sabot_offset < 0 or self.sabot_offset + self.sabot_length > self.length:
                 raise ValueError("projectile: the sabot (sabot_offset + sabot_length) must sit on the rod")
-            if self.fin_span < self.penetrator_diameter:
+            if self.type == "apfsds" and self.fin_span < self.penetrator_diameter:
                 raise ValueError("projectile.fin_span must be at least the rod's diameter")
+        if self.sabot_material not in ("aluminium", "steel", "polymer"):
+            raise ValueError("projectile.sabot_material must be aluminium, steel or polymer")
+        if self.type == "finned":
+            if not 0 < self.boom_length < 0.8 * self.length:
+                raise ValueError("projectile.boom_length (finned) must be positive and shorter than 80 % of the length")
+            if self.fin_length <= 0 or self.fin_span <= 0:
+                raise ValueError("projectile.fin_span and fin_length must be positive")
+        elif self.boom_length:
+            raise ValueError("projectile.boom_length is a finned round's tail boom: set projectile.type = \"finned\"")
         if not 1.0 <= self.ogive_radius_ratio <= 10.0:
             raise ValueError("ogive_radius_ratio must be between 1 (tangent) and 10")
         if float(self.core_material) not in range(len(CORE_MATERIALS)):
             raise ValueError(f"core_material must be one of {', '.join(CORE_MATERIALS)} (0..{len(CORE_MATERIALS) - 1})")
         for name in ("hollow_point_diameter", "hollow_point_depth", "cannelure_position",
-                     "cannelure_width", "cannelure_depth", "jacket_thickness", "exposed_core_length"):
+                     "cannelure_width", "cannelure_depth", "jacket_thickness", "exposed_core_length",
+                     "insert_length", "insert_diameter", "insert_position", "filler_length", "filler_position",
+                     "tip_filler_length", "tracer_length", "liner_thickness", "fuze_delay", "fuze_time",
+                     "arming_distance"):
             if getattr(self, name) < 0:
-                raise ValueError(f"{name} cannot be negative")
+                raise ValueError(f"projectile.{name} cannot be negative")
+        self._validate_fills()
+
+    def _validate_fills(self) -> None:
+        def one_of(name, options, blank=True):
+            v = getattr(self, name)
+            if (v or blank is False) and v not in options:
+                raise ValueError(f"projectile.{name} must be one of {', '.join(options)}{' (or none)' if blank else ''}, "
+                                 f"not {v!r}")
+        one_of("construction", CONSTRUCTIONS)
+        one_of("jacket_material", JACKETS, blank=False)
+        one_of("insert_material", METALS)
+        one_of("filler", (*FILLS, *(m for m in METALS if m not in FILLS)))
+        one_of("tip_filler", (*FILLS, *(m for m in METALS if m not in FILLS)))
+        one_of("tracer", TRACERS)
+        one_of("liner_material", LINERS)
+        one_of("cap", CAPS, blank=False)
+        one_of("fuze", FUZES, blank=False)
+        if self.liner_material:
+            if FILLS.get(self.filler or "comp_b", FILLS["inert"]).kind != "explosive":
+                raise ValueError("a shaped-charge liner needs an explosive filler behind it (projectile.filler)")
+            if not 10 <= self.liner_angle <= 70:
+                raise ValueError("projectile.liner_angle must be between 10 and 70 degrees (the cone's half-angle)")
+            if self.insert_material:
+                raise ValueError("a shaped charge has no room for a penetrator insert")
+        if self.fuze == "time" and self.fuze_time <= 0:
+            raise ValueError("a time fuze needs its burst time (projectile.fuze_time)")
+        if self.fuze_delay > 0.05:
+            raise ValueError("projectile.fuze_delay must be at most 50 ms")
+        if self.type in SUB_CALIBRE and (self.liner_material or self.filler in FILLS and FILLS[self.filler].kind == "explosive"):
+            raise ValueError("a sub-calibre rod carries no explosive: use a full-calibre type for HE or HEAT")
     # External ballistics (gun_sim/exterior.py). The coefficient is in kg/m^2 (mass over
     # i * d^2; 1 lb/in^2 = 703.07 kg/m^2) for the chosen standard drag function. None =
     # estimated from mass, bore diameter and the shape fields above.
@@ -740,26 +831,48 @@ class Gun:
                 p.sabot_length = 1.2 * bore
             if p.sabot_offset is None:
                 p.sabot_offset = 1.5 * p.fin_length
+        elif p.type == "apds":
+            if p.penetrator_mass is None:
+                p.penetrator_mass = 0.6 * p.mass
+            if p.penetrator_diameter is None:
+                p.penetrator_diameter = 0.45 * bore
+            if p.sabot_length is None:
+                p.sabot_length = 0.85 * p.length
+            if p.sabot_offset is None:
+                p.sabot_offset = 0.0
+        elif p.type == "finned":
+            if p.fin_span is None:
+                p.fin_span = 0.95 * bore
+            if p.fin_length is None:
+                p.fin_length = 0.6 * bore
         c = self.case
         if c.stub_length is None:
             c.stub_length = c.head_thickness + 0.2 * c.base_diameter
 
     @property
     def seat(self) -> float:
-        """Where the gas pushes the seated projectile, m from the case head: its base, or an APFSDS's sabot."""
+        """Where the gas pushes the seated projectile, m from the case head: its base, a sabot's rear face, or a
+        finned round's body (its boom and fins reach back into the propellant)."""
         p = self.projectile
-        return self.case.overall_length - p.length + (p.sabot_offset if p.type == "apfsds" else 0.0)
+        return self.case.overall_length - p.length + self.seat_offset
+
+    @property
+    def seat_offset(self) -> float:
+        p = self.projectile
+        if p.type in SUB_CALIBRE:
+            return p.sabot_offset
+        return p.boom_length if p.type == "finned" else 0.0
 
     @property
     def flight_mass(self) -> float:
-        """What flies on from the muzzle (kg): the projectile, or an APFSDS's rod once the sabot has gone."""
+        """What flies on from the muzzle (kg): the projectile, or a sabot round's rod once the sabot has gone."""
         p = self.projectile
-        return p.penetrator_mass if p.type == "apfsds" else p.mass
+        return p.penetrator_mass if p.type in SUB_CALIBRE else p.mass
 
     @property
     def flight_diameter(self) -> float:
         p = self.projectile
-        return p.penetrator_diameter if p.type == "apfsds" else self.barrel.bore_diameter
+        return p.penetrator_diameter if p.type in SUB_CALIBRE else self.barrel.bore_diameter
 
     @property
     def chamber_length(self) -> float:

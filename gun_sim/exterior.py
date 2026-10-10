@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import rifling
-from .config import Gun, Projectile
+from .config import SUB_CALIBRE, Gun, Projectile
 
 G = 9.80665             # m/s^2
 LB_IN2 = 703.0696       # kg/m^2 per lb/in^2 (ballistic coefficient / sectional density unit)
@@ -213,7 +213,7 @@ def ballistic_coefficient(gun: Gun) -> float:
     p = gun.projectile
     if p.ballistic_coefficient:
         return p.ballistic_coefficient
-    if p.type == "apfsds":
+    if p.type in SUB_CALIBRE:
         density = gun.flight_mass / gun.flight_diameter**2
         if p.drag_model.upper() == "LR":
             return density
@@ -221,7 +221,28 @@ def ballistic_coefficient(gun: Gun) -> float:
         return density / i7 * (G1_PER_G7 if p.drag_model.upper() == "G1" else 1.0)
     if p.drag_model.upper() == "LR":
         return p.mass / gun.barrel.bore_diameter**2
-    return estimate_bc(p, gun.barrel.bore_diameter)
+    bc = estimate_bc(p, gun.barrel.bore_diameter)
+    if p.cap in ("ballistic", "both"):
+        bc *= 1.08   # the windshield's sharp nose over a blunt shot
+    if p.type == "finned":
+        bc /= FIN_DRAG   # the boom and fins add drag a spun shell doesn't have
+    return bc
+
+
+FIN_DRAG = 1.35          # a finned round's drag over a spun shell's of the same nose
+TRACER_BASE_DRAG = 0.05  # share of the drag a burning tracer takes off (its gas fills the wake behind the base)
+
+
+def tracer_burn(gun: Gun) -> tuple[float, float] | None:
+    """(burn time s, mass of composition kg) of the projectile's tracer, or None."""
+    from . import projectiles
+
+    p = gun.projectile
+    if not p.tracer:
+        return None
+    length = p.tracer_length or 1.5 * gun.flight_diameter
+    mass = sum(pc.mass for pc in projectiles.parts(gun).pieces if pc.role == "tracer")
+    return length / projectiles.TRACERS[p.tracer].rate, mass
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +265,14 @@ class Trajectory:
     stop_reason: str = "max range"
     spin_drift: np.ndarray | None = None  # m, the part of z that is spin drift
     stability: float = 0.0                # Miller Sg at the muzzle (0 = not rifled)
+    tracer_burnout: float | None = None   # s after the muzzle the tracer burns out
+    fuze_time: float | None = None        # s: a time fuze's burst, or a self-destruct
+
+    def range_at_time(self, t: float | None) -> float | None:
+        """Downrange distance (m) at flight time t, or None if the flight ended first."""
+        if t is None or t > self.time[-1]:
+            return None
+        return float(np.interp(t, self.time, self.x))
 
     def at(self, rng: float) -> dict[str, float]:
         """Interpolated state at downrange distance `rng` (clamped to the flown range)."""
@@ -276,19 +305,33 @@ def _angle(offset: float, rng: float) -> float:
     return math.atan2(offset, rng) if rng > 0 else 0.0
 
 
+def _mass_share(t: float, tracer: tuple[float, float] | None) -> float:
+    """What is left of the launch mass at time t: a tracer burns its composition away over its burn time."""
+    if not tracer:
+        return 1.0
+    burn, lost = tracer
+    return 1.0 - lost * min(t / burn, 1.0)
+
+
 def _integrate(v0: float, bc: float, model: str, atm: Atmosphere, angle: float,
                wind: tuple[float, float, float], max_range: float, min_velocity: float,
-               max_time: float, dt: float):
-    """RK4 flight from the muzzle. Returns lists t, x, y(abs), z, vx, vy, vz and the stop reason."""
+               max_time: float, dt: float, tracer: tuple[float, float] | None = None):
+    """RK4 flight from the muzzle. Returns lists t, x, y(abs), z, vx, vy, vz and the stop reason.
+
+    tracer: (burn time s, share of the mass it burns away). While it burns the projectile gets lighter (its
+    BC falls with its mass) and its drag is TRACER_BASE_DRAG lower."""
     ms, cs = DRAG_TABLES[model]
     rho, c = atm.density, atm.speed_of_sound
     k = math.pi / 8 * rho / bc
     wx, wy, wz = wind
 
-    def accel(vx, vy, vz):
+    def accel(t, vx, vy, vz):
         rx, ry, rz = vx - wx, vy - wy, vz - wz
         s = math.sqrt(rx * rx + ry * ry + rz * rz)
-        kd = k * drag_coefficient(s / c, model) * s
+        kt = k
+        if tracer:
+            kt = k / _mass_share(t, tracer) * ((1 - TRACER_BASE_DRAG) if t < tracer[0] else 1.0)
+        kd = kt * drag_coefficient(s / c, model) * s
         return -kd * rx, -G - kd * ry, -kd * rz
 
     t = x = y = z = 0.0
@@ -296,11 +339,11 @@ def _integrate(v0: float, bc: float, model: str, atm: Atmosphere, angle: float,
     out = ([t], [x], [y], [z], [vx], [vy], [vz])
     reason = "max time"
     while t < max_time:
-        # State s = (x, y, z, vx, vy, vz); derivative = (v, a(v)).
-        a1 = accel(vx, vy, vz)
-        a2 = accel(vx + 0.5 * dt * a1[0], vy + 0.5 * dt * a1[1], vz + 0.5 * dt * a1[2])
-        a3 = accel(vx + 0.5 * dt * a2[0], vy + 0.5 * dt * a2[1], vz + 0.5 * dt * a2[2])
-        a4 = accel(vx + dt * a3[0], vy + dt * a3[1], vz + dt * a3[2])
+        # State s = (x, y, z, vx, vy, vz); derivative = (v, a(t, v)).
+        a1 = accel(t, vx, vy, vz)
+        a2 = accel(t + 0.5 * dt, vx + 0.5 * dt * a1[0], vy + 0.5 * dt * a1[1], vz + 0.5 * dt * a1[2])
+        a3 = accel(t + 0.5 * dt, vx + 0.5 * dt * a2[0], vy + 0.5 * dt * a2[1], vz + 0.5 * dt * a2[2])
+        a4 = accel(t + dt, vx + dt * a3[0], vy + dt * a3[1], vz + dt * a3[2])
         nvx = vx + dt / 6 * (a1[0] + 2 * a2[0] + 2 * a3[0] + a4[0])
         nvy = vy + dt / 6 * (a1[1] + 2 * a2[1] + 2 * a3[1] + a4[1])
         nvz = vz + dt / 6 * (a1[2] + 2 * a2[2] + 2 * a3[2] + a4[2])
@@ -322,10 +365,10 @@ def _integrate(v0: float, bc: float, model: str, atm: Atmosphere, angle: float,
     return (*out, reason)
 
 
-def _height_at(v0, bc, model, atm, angle, rng, min_velocity, dt):
+def _height_at(v0, bc, model, atm, angle, rng, min_velocity, dt, tracer=None):
     """Bore-relative height of the path at downrange `rng`, or None if it never gets there."""
     t, x, y, z, vx, vy, vz, reason = _integrate(v0, bc, model, atm, angle, (0.0, 0.0, 0.0), rng,
-                                               min_velocity, 60.0, dt)
+                                               min_velocity, 60.0, dt, tracer)
     if x[-1] < rng:
         return None
     return float(np.interp(rng, x, y))
@@ -333,7 +376,7 @@ def _height_at(v0, bc, model, atm, angle, rng, min_velocity, dt):
 
 def zero_angle(v0: float, bc: float, zero_range: float, sight_height: float = 0.04, *,
                drag_model: str = "G7", atmosphere: Atmosphere | None = None,
-               min_velocity: float = 50.0, dt: float = 1e-3) -> float:
+               min_velocity: float = 50.0, dt: float = 1e-3, tracer: tuple[float, float] | None = None) -> float:
     """Bore elevation (rad above the line of sight) at which the path crosses the LOS
     at `zero_range` m. Solved with the secant method on the height error."""
     if zero_range <= 0:
@@ -341,7 +384,7 @@ def zero_angle(v0: float, bc: float, zero_range: float, sight_height: float = 0.
     atm = atmosphere or Atmosphere()
 
     def error(angle: float) -> float:
-        h = _height_at(v0, bc, drag_model, atm, angle, zero_range, min_velocity, dt)
+        h = _height_at(v0, bc, drag_model, atm, angle, zero_range, min_velocity, dt, tracer)
         if h is None:
             raise ValueError(f"the projectile slows below {min_velocity:.0f} m/s before {zero_range:.0f} m; "
                              "cannot zero at that range")
@@ -362,15 +405,16 @@ def fly(v0: float, bc: float, mass: float, *, drag_model: str = "G7",
         atmosphere: Atmosphere | None = None, zero_range: float | None = 100.0,
         launch_angle: float | None = None, sight_height: float = 0.04,
         headwind: float = 0.0, crosswind: float = 0.0, max_range: float = 1000.0,
-        min_velocity: float = 50.0, max_time: float = 60.0, dt: float = 1e-3) -> Trajectory:
+        min_velocity: float = 50.0, max_time: float = 60.0, dt: float = 1e-3,
+        tracer: tuple[float, float] | None = None) -> Trajectory:
     """Fly a projectile of muzzle velocity `v0` (m/s), mass (kg) and ballistic coefficient
-    `bc` (kg/m^2, for `drag_model`).
+    `bc` (kg/m^2, for `drag_model`, at the launch mass).
 
     The bore elevation is `launch_angle` (rad above the line of sight) if given; otherwise
     the gun is zeroed (in still air) at `zero_range` m. Wind (m/s): `headwind` positive
     blows towards the shooter, `crosswind` positive blows from the left to the right (so
     drift is positive). The flight stops at `max_range`, below `min_velocity`, or after
-    `max_time`.
+    `max_time`. `tracer` is (burn time s, share of the mass it burns away).
     """
     model = drag_model.upper()
     if model not in DRAG_TABLES:
@@ -380,17 +424,21 @@ def fly(v0: float, bc: float, mass: float, *, drag_model: str = "G7",
     atm = atmosphere or Atmosphere()
     if launch_angle is None:
         launch_angle = zero_angle(v0, bc, zero_range, sight_height, drag_model=model, atmosphere=atm,
-                                  min_velocity=min_velocity, dt=dt) if zero_range else 0.0
+                                  min_velocity=min_velocity, dt=dt, tracer=tracer) if zero_range else 0.0
     t, x, y, z, vx, vy, vz, reason = _integrate(
-        v0, bc, model, atm, launch_angle, (-headwind, 0.0, crosswind), max_range, min_velocity, max_time, dt)
+        v0, bc, model, atm, launch_angle, (-headwind, 0.0, crosswind), max_range, min_velocity, max_time, dt, tracer)
     t, x, y, z = (np.array(a) for a in (t, x, y, z))
     vx, vy, vz = (np.array(a) for a in (vx, vy, vz))
     speed = np.sqrt(vx**2 + vy**2 + vz**2)
     rel = np.sqrt((vx + headwind) ** 2 + vy**2 + (vz - crosswind) ** 2)
-    return Trajectory(
+    masses = mass * np.array([_mass_share(float(ti), tracer) for ti in t]) if tracer else mass
+    traj = Trajectory(
         time=t, x=x, y=y - sight_height, z=z, velocity=speed, mach=rel / atm.speed_of_sound,
-        energy=0.5 * mass * speed**2, launch_angle=launch_angle, ballistic_coefficient=bc,
+        energy=0.5 * masses * speed**2, launch_angle=launch_angle, ballistic_coefficient=bc,
         drag_model=model, sight_height=sight_height, stop_reason=reason)
+    if tracer:
+        traj.tracer_burnout = tracer[0]
+    return traj
 
 
 def trajectory(gun: Gun, v0: float, *, atmosphere: Atmosphere | None = None, spin: bool = True,
@@ -401,7 +449,11 @@ def trajectory(gun: Gun, v0: float, *, atmosphere: Atmosphere | None = None, spi
     its rod flies on alone (gun.flight_mass). Other keywords are those of `fly`."""
     p = gun.projectile
     model = p.drag_model.upper()
-    traj = fly(v0, ballistic_coefficient(gun), gun.flight_mass, drag_model=model, atmosphere=atmosphere, **kwargs)
+    burn = tracer_burn(gun)
+    tracer = (burn[0], burn[1] / gun.flight_mass) if burn else None
+    traj = fly(v0, ballistic_coefficient(gun), gun.flight_mass, drag_model=model, atmosphere=atmosphere,
+               tracer=tracer, **kwargs)
+    traj.fuze_time = p.fuze_time or None
     if spin and gun.barrel.twist:
         atm = atmosphere or Atmosphere()
         traj.stability = rifling.stability(gun, v0, atm.temperature, atm.pressure)

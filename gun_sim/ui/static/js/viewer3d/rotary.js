@@ -28,7 +28,7 @@
 // Rounds queue up the feed path, advancing a pitch for every station that passes the feeder.
 
 import { lathe } from "./lathe.js";
-import { roundMeshes } from "./cartridge.js";
+import { roundLayout, roundMeshes } from "./cartridge.js";
 import { chain, rotationX, translation } from "./mat4.js";
 import { merge } from "./meshops.js";
 import { barrelMesh, boltMesh, camAngles, camTravel, pathLength, pathPoint, rotaryGeo, stationYZ, tubeX, TAU } from "./rotary_kit.js";
@@ -131,8 +131,7 @@ export function buildRotary(gun, cart, warnings = []) {
       muzzleR: geo.muzzleR, recR, boltR: geo.boltR, buttX, pivot: sl.pivot ?? [geo.rotorRear / 2, geo.axisY - 60],
       cgX: sl.cgX ?? geo.rotorRear / 2, style: geo.style, mech: { kind: "rotary", ratio: 1, unlock: 0 },
       mounted, mountStroke: (gun.mount?.stroke ?? 0.03) * MM, chain: null, wedge: null, hand: null,
-      round: { apfsds: cart.apfsds, petals: cart.sabot?.petals ?? 0, solidMetal: cart.solidMetal, caseMetal: cart.caseMetal,
-               combustible: cart.combustible, rodRadius: cart.rodRadius, sabotLength: cart.sabot?.length ?? 0 },
+      round: roundLayout(cart),
       device: null, deviceLength: 0, flashX: geo.muzzleX,
       boltRear: sl.boltRear ?? geo.rotorRear, portFront: 0, portRear: geo.rotorRear, bridgeRear: geo.rotorRear, oal: geo.oal,
       stroke: geo.stroke, pinTravel: 0,

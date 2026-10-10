@@ -54,6 +54,9 @@ class Bridge:
     def target(self, payload):
         return self._call(api.target, payload)
 
+    def projectile(self, payload):
+        return self._call(api.projectile_design, payload)
+
     def check(self, payload):
         return self._call(api.check, payload)
 

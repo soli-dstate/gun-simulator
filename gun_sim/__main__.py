@@ -8,7 +8,7 @@ import sys
 import time
 
 from . import action, evacuator, fluid, lumped, rifling, sound
-from .config import Gun
+from .config import SUB_CALIBRE, Gun
 
 MODELS = {"fluid": fluid.simulate, "lumped": lumped.simulate}
 RECOIL_BLOWDOWN = 0.025  # s of bore blowdown after exit (as the sound's), so the recoil includes the gas jet
@@ -21,9 +21,13 @@ def print_range_table(gun: Gun, result, args) -> None:
     traj = exterior.trajectory(gun, result.muzzle_velocity, zero_range=args.zero,
                                sight_height=args.sight_height, crosswind=args.wind, max_range=args.range)
     step = exterior.nice_step(args.range)
-    if gun.projectile.type == "apfsds":
+    if gun.projectile.type in SUB_CALIBRE:
         print(f"[exterior] the sabot falls away at the muzzle: the {gun.flight_mass:.2f} kg, "
               f"{gun.flight_diameter * 1e3:.0f} mm rod flies on")
+    if traj.tracer_burnout is not None:
+        burnout = traj.range_at_time(traj.tracer_burnout)
+        print(f"[exterior] the tracer burns {traj.tracer_burnout:.1f} s"
+              + (f", out at {burnout:.0f} m" if burnout is not None else ", past the end of the table"))
     print(f"[exterior] {gun.projectile.drag_model} BC {traj.ballistic_coefficient / exterior.LB_IN2:.3f} lb/in^2 "
           f"({traj.ballistic_coefficient:.1f} kg/m^2), v0 {result.muzzle_velocity:.1f} m/s ({result.model} model), "
           f"zero {args.zero:.0f} m, sight {args.sight_height * 1e3:.0f} mm, crosswind {args.wind:g} m/s")
