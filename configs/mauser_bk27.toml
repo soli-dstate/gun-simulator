@@ -1,0 +1,125 @@
+# Mauser BK-27: a 27x145 mm revolver cannon (Tornado, Gripen, Typhoon): one barrel
+# fed from a five-chamber drum that its own gas drives, fired electrically, started
+# by a pyrotechnic cocking charge.
+# Published figures where there are any (calibre, chambers, barrel length, rates,
+# weight, the 260 g shell's velocity); the burn law is tuned to them, and the gas
+# drive, drum and mount are illustrative. All units are SI.
+
+name = "Mauser BK-27 (27x145 mm HE)"
+
+[barrel]
+bore_diameter   = 27.0e-3   # m
+travel          = 1.62      # m, seated base to muzzle (a 1.73 m barrel)
+chamber_volume  = 0.10e-3   # m^3 (used only with chamber_shape = "cylinder")
+chamber_shape   = "case"
+breech_diameter = 75.0e-3   # m
+muzzle_diameter = 48.0e-3   # m
+twist           = 0.75      # m per turn, right-hand
+groove_depth    = 0.45e-3   # m
+freebore        = 2.0e-3    # m
+leade_angle     = 3.0       # degrees
+
+[projectile]
+# High explosive, self-destructing: a steel body, a copper band, a point fuze.
+mass                = 0.260   # kg
+shot_start_pressure = 40e6    # Pa
+bore_resistance     = 8e6     # Pa
+engraving_pressure  = 50e6    # Pa
+length           = 112.0e-3   # m
+ogive_length     = 55.0e-3    # m
+meplat_diameter  = 4.0e-3     # m
+boat_tail_length = 6.0e-3     # m
+boat_tail_angle  = 7.0        # degrees
+cannelure_position = 18.0e-3  # m
+cannelure_width    = 3.5e-3   # m
+cannelure_depth    = 0.5e-3   # m
+core_material    = "steel"
+drag_model            = "G1"
+ballistic_coefficient = 190.0  # kg/m^2
+
+[case]
+# 27x145 mm, steel, rimless, with an electric primer.
+length            = 145.0e-3  # m
+overall_length    = 231.0e-3  # m
+rim_diameter      = 40.0e-3   # m
+rim_thickness     = 2.8e-3    # m
+groove_diameter   = 35.0e-3   # m
+groove_width      = 4.5e-3    # m
+base_diameter     = 40.0e-3   # m
+shoulder_diameter = 36.5e-3   # m
+shoulder_position = 110.0e-3  # m
+shoulder_angle    = 25.0      # degrees
+neck_wall         = 1.3e-3    # m
+body_wall         = 1.4e-3    # m
+head_thickness    = 11.0e-3   # m
+primer_diameter   = 9.0e-3    # m
+primer_depth      = 7.0e-3    # m
+material          = "steel"
+
+[propellant]
+composition     = "double_base"
+charge_mass     = 0.090     # kg
+grain           = "7-perf"
+web             = 0.70e-3   # m
+grain_length    = 5.0e-3    # m
+perforation_diameter = 0.3e-3   # m
+burn_rate_coeff = 1.46e-8   # (m/s)/Pa^n, tuned to 1,025 m/s at about 400 MPa
+
+[ignition]
+pressure = 8e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Five chambers in a drum behind the barrel. Gas from a port drives the slide, whose
+# cam turns the drum and works the rammers: each round is rammed into its chamber as
+# the drum brings it up, fired at the top, and its case drawn out after. A cocking
+# charge turns the drum up to the first shot.
+type              = "rotary"
+rotary_layout     = "revolver"
+rotary_drive      = "gas"
+chambers          = 5
+rotary_rate       = 1700.0    # rounds/min, its natural rate (1,000 selectable)
+starter_energy    = 500.0     # J, the cocking charge's work
+barrel_mass       = 28.0      # kg
+gun_mass          = 100.0     # kg
+bolt_mass         = 0.6       # kg, each chamber's rammer
+dwell_angle       = 40.0      # degrees
+gas_port_position = 1.2       # m of projectile travel from the seat
+gas_port_diameter = 6.0e-3    # m
+piston_diameter   = 40.0e-3   # m
+gas_volume        = 20.0e-6   # m^3
+gas_stroke        = 0.015     # m the piston drives the slide before its cylinder vents
+cam_lever         = 0.100     # m of slide travel per radian of the drum
+drive_mass        = 20.0      # kg, the gas slide felt at the chambers
+friction          = 300.0     # N on the drum at the chambers
+rotor_damping     = 2.5       # N m s/rad: the slide's buffer, which sets its natural rate
+feed_force        = 60.0      # N
+bore_height        = 0.06     # m
+cg_distance        = 0.60     # m
+radius_of_gyration = 0.80     # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+stroke              = 0.030     # m
+spring_rate         = 2.0e6     # N/m
+spring_preload      = 5.0e3     # N
+damping             = 2.5e4     # N s/m
+friction            = 500.0     # N
+stop_restitution    = 0.3
+elevation_stiffness = 1.0e7     # N m/rad
+elevation_damping   = 1.0e5     # N m s/rad
+
+[feed]
+type      = "belt"
+capacity  = 180
+link_mass = 0.060     # kg per link
+belt_hang = 0.6       # m
+
+[appearance]
+style = "bk27"

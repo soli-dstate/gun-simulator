@@ -82,6 +82,10 @@ Actions. Which body the bore forces push depends on the action:
   part shut. With an autoloader, its cycle then rams the next round
   (gun_sim/autoloader.py, ActionResult.autoloader).
 
+* rotary: a Gatling's barrel cluster or a revolver cannon's drum, turned by a motor, its
+  own gas or its barrels' recoil, every station firing as it passes the top: its own
+  model, gun_sim/rotary.py, which returns the same ActionResult.
+
 * revolver: nothing moves under the shot (it pushes the whole gun). Between
   shots the hammer is cocked, by the trigger (double action) or the
   shooter's thumb (single action), over trigger.pull_time; the hand turns the
@@ -196,6 +200,7 @@ import numpy as np
 from . import autoloader as autoloading
 from . import feed as feeding
 from . import revolver as cylinder
+from . import rotary as rotating
 
 if TYPE_CHECKING:
     from .config import Gun
@@ -442,6 +447,10 @@ def strokes(gun: Gun) -> dict:
     a, c = gun.action, gun.case
     eject = c.length + 3e-3          # the case is clear of the chamber and hits the ejector
     feed = c.overall_length + 3e-3   # the bolt face is behind the next round
+    if a.type == "rotary":
+        stroke = a.bolt_travel if a.bolt_travel is not None else feed + 8e-3
+        return {"eject": eject, "feed": feed, "stroke": stroke, "unlock": 0.0,
+                "rotary": rotating.geometry(gun, stroke, eject)}
     if a.type == "sliding_wedge":
         # The block drops far enough to clear the rim, with a little to spare.
         stroke = a.bolt_travel if a.bolt_travel is not None else 1.05 * c.rim_diameter + 5e-3
@@ -567,6 +576,7 @@ class ActionResult:
     strike_energy: float = 0.15           # J the primer needs
     semi: bool = False                    # each shot has a pull of its own (trigger.mode "semi", or a revolver)
     autoloader: dict | None = None        # a tank gun's autoloader's cycle after the shot (gun_sim/autoloader.py)
+    rotary: dict | None = None            # a rotary gun's rotor over the burst (gun_sim/rotary.py)
 
     @property
     def shots(self) -> int:
@@ -606,6 +616,9 @@ class ActionResult:
             lines.append(line)
             if self.autoloader is not None:
                 lines.append(autoloading.summary(self.autoloader))
+        elif self.kind == "rotary":
+            lines.append(rotating.summary(self.rotary) + f"; {self.status}")
+            lines.append(f"  feed                 {self.rounds[0]:9d} of {self.capacity} rounds in, {self.rounds_left} left")
         elif self.kind == "revolver":
             line = f"  revolver             {self.status}, {self.shots} shot{'s' if self.shots > 1 else ''}"
             if self.cyclic_rate and self.shots > 1:
@@ -692,6 +705,8 @@ def simulate(gun: Gun, shot: ShotResult, shots: int = 1, rounds: int | None = No
     rounds: in the magazine (or belt) besides the chambered one; None = full.
     """
     from . import devices
+    if gun.action.type == "rotary":
+        return rotating.simulate(gun, shot, shots, rounds)
     loads = shot.loads
     if loads is None or len(loads.t) < 2:
         raise ValueError("this shot has no recorded loads on the gun")

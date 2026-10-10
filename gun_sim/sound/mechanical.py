@@ -17,7 +17,11 @@ brass) at the place it happens:
   sags as the bolt loads the motor and surges as it lets go;
 * a tank gun's autoloader (autoloader()): its drives over each move of its
   cycle (servos, a geared motor and chains, or a hydraulic pump and valves),
-  its clutches, latches and stops, the rounds seating and the block shutting.
+  its clutches, latches and stops, the rounds seating and the block shutting;
+* a rotary gun (rotary()): its electric or hydraulic drive, or its starter
+  cartridge, and the rotor, its bolts' rollers and the feeder, over the whole
+  burst from the spin-up to the spin-down; each shot adds its bolt locking and
+  its case landing (and with a recoil drive, the barrels on their stops).
 
 A bigger part rings lower and longer: a steel part of more than a kilogram
 has its modes divided by (mass / 1 kg)^(1/3), as its size, and its decay
@@ -47,7 +51,7 @@ LOCK_TIME = 0.003  # s, hammer fall to ignition
 SMALL_PART = 1.0   # kg: parts up to this ring with the modes above as they are
 CASE_FALL = 1.45   # m from the port to the ground
 STUB_FALL = 0.6    # m from a cannon's breech into its deflector bag
-ELECTRIC = ("chain", "sliding_wedge")   # fired by an electric primer: no hammer or striker
+ELECTRIC = ("chain", "sliding_wedge", "rotary")   # fired by an electric primer (or a cam): no hammer or striker
 
 
 def steel(mass: float):
@@ -269,6 +273,110 @@ def autoloader(fs: float, al: dict, seed: int = 47) -> tuple[float, np.ndarray] 
     return t0, wave
 
 
+HYDRAULIC_PISTONS = 9       # a hydraulic drive motor's pistons
+ROTOR_SHARES = {"motor": 0.45, "mesh": 0.15, "hiss": 0.1, "rotor": 0.2, "rollers": 0.1}
+ROTOR_LOSS = 0.15           # a self-driven rotor's noise power, as a share of J w_rated^2 (W) at its rated speed
+
+
+def rotary(fs: float, rot: dict, events: list, gun, seed: int = 53) -> tuple[float, np.ndarray] | None:
+    """Pressure (Pa) at 1 m of a rotary gun's drive and rotor over the whole burst (gun_sim/rotary.py):
+    (start, s from the first ignition, and the wave). It is one sound, played once, not a shot's.
+    events: the action's, for when the feeder starts and stops.
+
+    The rotor's speed comes from the simulation, so everything rises with the spin-up, holds through
+    the burst and falls away in the spin-down:
+    * electric: the motor's whine (its armature slots), its pinion's mesh and its brushes' hiss, the
+      motor at action.motor_rpm when the rotor runs at its rated speed;
+    * hydraulic: the drive motor's pistons, the oil hissing through the valve with the flow, and the
+      supply's pump running while the valve is open;
+    * gas or recoil: the starter cartridge's bang as the trigger is pulled;
+    * all: the rotor itself, the barrels (or chambers) sweeping round at stations x turns a second, the
+      bolts' rollers rumbling round the cam, and the belt's links (or the chute's rounds) clattering into
+      the feeder, one a station.
+    Loudness: DRIVE_RADIATION of the drive's power (a self-driven rotor: of ROTOR_LOSS J w_rated^2 at
+    its rated speed, rising as w^2).
+    """
+    if rot is None or len(rot["time"]) < 2:
+        return None
+    rng = np.random.default_rng(seed)
+    t = np.asarray(rot["time"], float)
+    t0, t1 = float(t[0]), float(t[-1]) + 0.05
+    n = int(math.ceil((t1 - t0) * fs))
+    tt = t0 + np.arange(n) / fs
+    w = np.maximum(np.interp(tt, t, rot["speed"]), 0.0)
+    k = max(1, int(1e-3 * fs))
+    w = np.convolve(w, np.ones(k) / k, mode="same")
+    power = np.interp(tt, t, rot["power"])
+    w_rated = rot["rated_speed"]
+    share = np.clip(w / w_rated, 0.0, 1.5)
+    nyq = 0.45 * fs
+    drive = rot["drive"]
+    turns = np.cumsum(w) / fs / (2 * math.pi)         # rotor turns
+    a = gun.action
+
+    def tones(rate: np.ndarray, harmonics) -> np.ndarray:
+        """Harmonics of a frequency that follows the rotor (rate: Hz over time)."""
+        phase = 2 * math.pi * np.cumsum(rate) / fs
+        out = np.zeros(n)
+        for h, amp in harmonics:
+            if h * rate.max() < nyq:
+                out += amp * np.sin(h * phase + rng.uniform(0, 2 * math.pi))
+        return out
+
+    def ticks(count: np.ndarray, weight: np.ndarray, decay: float = 0.15) -> np.ndarray:
+        """A ringing tick each time count passes a whole number."""
+        x = np.zeros(n)
+        at = np.nonzero(np.diff(np.floor(count)) > 0)[0] + 1
+        x[at] = weight[at]
+        ring_t = np.arange(int(4e-3 * fs)) / fs
+        kernel = sum(amp * np.sin(2 * math.pi * f * ring_t) * np.exp(-ring_t / (tau * decay))
+                     for f, tau, amp in STEEL if f < nyq)
+        return np.convolve(x, kernel)[:n]
+
+    parts = {}
+    motor_hz = share * a.motor_rpm / 60
+    if drive == "electric":
+        parts["motor"] = tones(motor_hz, [(MOTOR_SLOTS, 1.0), (2 * MOTOR_SLOTS, 0.35), (1, 0.3), (2, 0.2)])
+        parts["mesh"] = tones(motor_hz, [(a.pinion_teeth, 1.0), (2 * a.pinion_teeth, 0.4)])
+        parts["hiss"] = _band_noise(n, fs, 4000.0, 0.5, rng) * np.sqrt(share)
+    elif drive == "hydraulic":
+        parts["motor"] = tones(motor_hz, [(HYDRAULIC_PISTONS, 1.0), (2 * HYDRAULIC_PISTONS, 0.5), (1, 0.2)])
+        valve = (power > 0) | (w > 0.02 * w_rated)
+        pump = tones(np.where(valve, PUMP_RPM / 60, 0.0), [(PUMP_PISTONS, 1.0), (2 * PUMP_PISTONS, 0.4)])
+        parts["mesh"] = pump
+        parts["hiss"] = _band_noise(n, fs, 2500.0, 0.7, rng) * np.clip(share, 0.0, 1.0)
+    # The rotor: its stations sweeping round, and the bolts' rollers in the cam.
+    stations = rot["stations"]
+    parts["rotor"] = tones(w / (2 * math.pi), [(stations, 1.0), (2 * stations, 0.3)]) * np.sqrt(share) \
+        + 0.6 * _band_noise(n, fs, 600.0, 0.8, rng) * share
+    parts["rollers"] = ticks(turns * stations, np.sqrt(np.clip(share, 0, 1)), decay=0.08)
+    # The feeder taking a round from the belt (or the chute) for every station, while it feeds.
+    fed = [e for e in events if e["name"] in ("first round fed", "trigger released", "belt runs out")]
+    if fed:
+        start = fed[0]["time"]
+        stop = next((e["time"] for e in fed[1:]), t1)
+        feeding = (tt >= start) & (tt <= stop)
+        parts["rollers"] = parts["rollers"] + 0.8 * ticks(turns * stations + 0.5, feeding * np.sqrt(np.clip(share, 0, 1)))
+
+    wave = np.zeros(n)
+    on = share > 0.05
+    for name, x in parts.items():
+        rms = math.sqrt(np.mean(x[on] ** 2)) if on.any() else 0.0
+        if rms > 0:
+            wave += x / rms * math.sqrt(ROTOR_SHARES[name])
+    if drive in ("electric", "hydraulic"):
+        noise_power = np.abs(power) + NO_LOAD_LOSS * rot["motor_power"] * share
+    else:
+        noise_power = ROTOR_LOSS * rot["inertia"] * w_rated**2 * share**2 + np.abs(power)
+    edge = np.minimum(1.0, np.minimum(np.arange(n), np.arange(n)[::-1]) / (5e-3 * fs))
+    wave *= np.sqrt(RHO_C * DRIVE_RADIATION * noise_power / (4 * math.pi)) * edge
+    if drive in ("gas", "recoil") and rot.get("starter_energy"):
+        # The starter cartridge firing as the trigger is pulled: a sharp crack, and the housing ringing.
+        bang = ring(fs, 0.05 * rot["starter_energy"], steel(5.0), seed=seed + 1, click=3.0)[:n]
+        wave[: len(bang)] += bang
+    return t0, wave
+
+
 def impacts(action_result, gun) -> list[dict]:
     """The sounds of one shot's cycle: {time (s from ignition), name, energy (J), where, modes}."""
     from .. import revolver
@@ -324,6 +432,13 @@ def impacts(action_result, gun) -> list[dict]:
             # The sear snapping over the hammer's notch: a small click.
             out.append({"time": e["time"], "name": "hammer cocked", "where": "receiver",
                         "energy": 0.002, "modes": STEEL})
+        elif e["name"] == "bolt locks" and speed:
+            # A rotary gun's bolt roller turning into the locking cam at the end of its ram.
+            out.append({"time": e["time"], "name": "bolt locks", "where": "receiver",
+                        "energy": 0.1 * 0.5 * bolt * speed**2, "modes": steel(bolt)})
+        elif e["name"] in ("barrels hit their rear stop", "barrels run out into battery") and e.get("energy"):
+            out.append({"time": e["time"], "name": e["name"], "where": "receiver", "energy": e["energy"],
+                        "modes": steel(e.get("mass", 10.0))})
         elif e["name"] in ("bolt unlocks", "barrel stops and unlocks"):
             out.append({"time": e["time"], "name": "bolt unlocks", "where": "receiver",
                         "energy": 0.02 * 0.5 * bolt * 25.0, "modes": STEEL})

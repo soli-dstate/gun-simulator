@@ -25,6 +25,7 @@ import re
 import time
 from dataclasses import MISSING, asdict, fields
 
+from . import rotary
 from .config import (ACTION_TYPES, CASE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES, FIRE_MODES, LOCKINGS,
                      PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Action, Appearance, Barrel, Case, Feed, Gun,
                      Ignition, Mount, MuzzleDevice, Projectile, Propellant, Shooter, SolverSettings, Trigger)
@@ -42,6 +43,7 @@ CHOICES = {
     ("action", "locking"): LOCKINGS, ("appearance", "style"): STYLES, ("case", "material"): CASE_MATERIALS,
     ("barrel", "chamber_shape"): ("cylinder", "case"), ("action", "hammer"): (True, False),
     ("case", "combustible"): (True, False),
+    ("action", "rotary_layout"): rotary.LAYOUTS, ("action", "rotary_drive"): rotary.DRIVES,
 }
 
 # Words in a message that point at a section, beyond the section's own name.
@@ -52,6 +54,7 @@ SECTION_WORDS = {
     "bore evacuator": ["barrel"], "sabot": ["projectile"], "recuperator": ["mount"], "buffer": ["mount"],
     "flash suppressant": ["propellant"], "form function": ["propellant"], "charge": ["propellant", "barrel"],
     "the gun must be heavier": ["action"], "core_material": ["projectile"], "ogive_radius_ratio": ["projectile"],
+    "rotary": ["action", "feed", "trigger"], "linkless": ["feed", "action"],
 }
 
 # Fields a message points at without naming them.
@@ -67,6 +70,10 @@ HINTS = {
     "freebore, groove depth": [("barrel", "freebore"), ("barrel", "groove_depth"), ("projectile", "engraving_pressure")],
     "the pulls and their travels": [("trigger", "pull"), ("trigger", "travel"), ("trigger", "da_pull"),
                                     ("trigger", "da_travel")],
+    "needs a starter": [("action", "starter_energy")],
+    "drive needs its motor": [("action", "motor_power")],
+    "a gas-driven rotary gun needs": [("action", "gas_port_diameter"), ("action", "piston_diameter"),
+                                      ("action", "gas_volume"), ("action", "gas_stroke")],
 }
 
 UNITS = {"mm": 1e-3, "ms": 1e-3, "µs": 1e-6, "us": 1e-6, "kw": 1e3, "w": 1.0, "s": 1.0, "j": 1.0, "k": 1.0,

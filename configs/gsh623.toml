@@ -1,0 +1,124 @@
+# GSh-6-23: a six-barrel 23x115 mm Gatling cannon that drives itself on its own
+# gas, started by a pyrotechnic cartridge (MiG-31, Su-24).
+# Published figures where there are any (calibre, barrels, rate, weight, the
+# shell's mass and velocity); the burn law is tuned to them, and the gas engine,
+# starter, rotor and mount are illustrative. All units are SI.
+
+name = "GSh-6-23 (23x115 mm HEI)"
+
+[barrel]
+bore_diameter   = 23.0e-3   # m
+travel          = 0.90      # m, seated base to muzzle
+chamber_volume  = 40.0e-6   # m^3 (used only with chamber_shape = "cylinder")
+chamber_shape   = "case"
+breech_diameter = 50.0e-3   # m
+muzzle_diameter = 34.0e-3   # m
+twist           = 0.69      # m per turn, right-hand
+groove_depth    = 0.4e-3    # m
+freebore        = 1.0e-3    # m
+leade_angle     = 3.0       # degrees
+
+[projectile]
+# High-explosive incendiary: a steel body, a copper band, a point fuze.
+mass                = 0.175   # kg
+shot_start_pressure = 30e6    # Pa
+bore_resistance     = 6e6     # Pa
+engraving_pressure  = 40e6    # Pa
+length           = 95.0e-3    # m
+ogive_length     = 45.0e-3    # m
+meplat_diameter  = 4.0e-3     # m
+boat_tail_length = 5.0e-3     # m
+boat_tail_angle  = 7.0        # degrees
+cannelure_position = 15.0e-3  # m
+cannelure_width    = 3.0e-3   # m
+cannelure_depth    = 0.5e-3   # m
+core_material    = "steel"
+drag_model            = "G1"
+ballistic_coefficient = 150.0  # kg/m^2
+
+[case]
+# 23x115 mm, steel, rimless, with an electric primer.
+length            = 115.0e-3  # m
+overall_length    = 197.0e-3  # m
+rim_diameter      = 35.6e-3   # m
+rim_thickness     = 2.5e-3    # m
+groove_diameter   = 31.0e-3   # m
+groove_width      = 4.0e-3    # m
+base_diameter     = 35.0e-3   # m
+shoulder_diameter = 31.5e-3   # m
+shoulder_position = 82.0e-3   # m
+shoulder_angle    = 25.0      # degrees
+neck_wall         = 1.1e-3    # m
+body_wall         = 1.2e-3    # m
+head_thickness    = 9.0e-3    # m
+primer_diameter   = 8.0e-3    # m
+primer_depth      = 6.0e-3    # m
+material          = "steel"
+
+[propellant]
+composition     = "single_base"
+charge_mass     = 0.034     # kg
+grain           = "7-perf"
+web             = 0.60e-3   # m
+grain_length    = 4.0e-3    # m
+perforation_diameter = 0.25e-3  # m
+burn_rate_coeff = 8.92e-9   # (m/s)/Pa^n, tuned to 715 m/s at about 260 MPa
+
+[ignition]
+pressure = 8e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Each barrel has its own gas port and cylinder. Gas from the barrel that has just
+# fired drives its piston, which drives the rotor through a helical cam until it
+# vents. A pyrotechnic starter cartridge turns the rotor up to the first shot.
+type              = "rotary"
+rotary_layout     = "gatling"
+rotary_drive      = "gas"
+barrels           = 6
+rotary_rate       = 9000.0    # rounds/min it is rated at
+starter_energy    = 400.0     # J, the starter cartridge's work on the rotor
+cluster_radius    = 48.0e-3   # m
+barrel_mass       = 5.0       # kg, each
+gun_mass          = 73.0      # kg
+bolt_mass         = 0.35      # kg, each bolt
+dwell_angle       = 55.0      # degrees: a long dwell, at 150 turns a second
+gas_port_position = 0.55      # m of projectile travel from the seat
+gas_port_diameter = 4.0e-3    # m
+piston_diameter   = 22.0e-3   # m
+gas_volume        = 4.0e-6    # m^3
+gas_stroke        = 0.030     # m, piston travel before its cylinder vents
+cam_lever         = 0.030     # m of piston travel per radian of the rotor
+drive_mass        = 3.0       # kg, the pistons and cam felt at the bolt circle
+friction          = 20.0      # N on the rotor at the bolt circle
+rotor_damping     = 0.0       # N m s/rad
+feed_force        = 30.0      # N
+bore_height        = 0.05     # m
+cg_distance        = 0.40     # m
+radius_of_gyration = 0.55     # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+stroke              = 0.025     # m
+spring_rate         = 1.2e6     # N/m
+spring_preload      = 2.0e3     # N
+damping             = 1.0e4     # N s/m
+friction            = 300.0     # N
+stop_restitution    = 0.3
+elevation_stiffness = 4.0e6     # N m/rad
+elevation_damping   = 4.0e4     # N m s/rad
+
+[feed]
+type      = "belt"
+capacity  = 260
+link_mass = 0.045     # kg per link
+belt_hang = 0.6       # m
+
+[appearance]
+style = "gsh623"

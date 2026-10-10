@@ -1,0 +1,118 @@
+# M134 Minigun: a six-barrel, electrically driven 7.62x51 mm Gatling gun, fed
+# from a belt through a delinking feeder, on a soft door-gun mount.
+# Published figures where there are any (calibre, barrels, barrel length, rate,
+# weight, M80 ball's mass and velocity); the burn law is tuned to them, and the
+# motor, rotor and mount are illustrative. All units are SI (m, kg, s, Pa, J).
+
+name = "M134 Minigun (7.62x51 mm M80)"
+
+[barrel]
+bore_diameter   = 7.82e-3   # m
+travel          = 0.5165    # m, seated base to muzzle (a 559 mm barrel)
+chamber_volume  = 3.19e-6   # m^3
+breech_diameter = 22.0e-3   # m: the barrels are slim, six of them share the heat
+muzzle_diameter = 15.0e-3   # m
+twist           = 0.3048    # m per turn (1 in 12"), right-hand
+groove_depth    = 0.1e-3    # m
+leade_angle     = 1.5       # degrees
+
+[projectile]
+# M80 ball: 147 gr, a gilding-metal jacket over a lead core, boat-tailed.
+mass                = 9.525e-3  # kg
+shot_start_pressure = 30e6      # Pa
+bore_resistance     = 5e6       # Pa
+length           = 28.6e-3      # m
+ogive_length     = 15.5e-3      # m
+meplat_diameter  = 1.0e-3       # m
+boat_tail_length = 4.0e-3       # m
+boat_tail_angle  = 9.0          # degrees
+cannelure_position = 8.08e-3    # m
+cannelure_width    = 1.0e-3     # m
+cannelure_depth    = 0.1e-3     # m
+jacket_thickness = 0.6e-3       # m
+core_material    = "lead"
+drag_model            = "G7"
+ballistic_coefficient = 140.6   # kg/m^2 (0.200 lb/in^2)
+
+[case]
+# 7.62x51 mm NATO, brass.
+length            = 51.18e-3  # m
+overall_length    = 71.10e-3  # m
+rim_diameter      = 11.94e-3  # m
+rim_thickness     = 1.27e-3   # m
+groove_diameter   = 10.0e-3   # m
+groove_width      = 1.2e-3    # m
+base_diameter     = 11.94e-3  # m
+shoulder_diameter = 11.53e-3  # m
+shoulder_position = 39.6e-3   # m
+shoulder_angle    = 20.0      # degrees
+neck_wall         = 0.38e-3   # m
+body_wall         = 0.45e-3   # m
+head_thickness    = 5.0e-3    # m
+primer_diameter   = 5.33e-3   # m
+primer_depth      = 3.0e-3    # m
+
+[propellant]
+composition     = "single_base"
+charge_mass     = 2.98e-3   # kg (46 gr)
+grain           = "tube"
+web             = 0.30e-3   # m
+grain_length    = 1.6e-3    # m
+burn_rate_coeff = 4.57e-9   # (m/s)/Pa^n, tuned to 838 m/s from 559 mm
+
+[ignition]
+pressure = 5e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Six barrels turn round a rotor; each one's bolt rides the elliptical cam in the
+# housing, locked across the top where it fires, drawn back down one side, open at
+# the bottom where the delinker drops the next round in, and rammed home up the
+# other. A 28 V DC motor turns the whole through a gearbox.
+type            = "rotary"
+rotary_layout   = "gatling"
+rotary_drive    = "electric"
+barrels         = 6
+rotary_rate     = 3100.0    # rounds/min the motor would turn it at with no load (about 3,000 firing)
+motor_power     = 2000.0    # W, the motor's peak
+motor_rpm       = 12000.0   # the motor with no load, geared down to the rotor
+pinion_teeth    = 13
+drive_mass      = 150.0     # kg, the motor's armature and gears felt at the bolt circle
+cluster_radius  = 30.0e-3   # m, rotor axis to each bore
+gun_mass        = 30.0      # kg: gun, motor and delinking feeder
+bolt_mass       = 0.15      # kg, each bolt
+dwell_angle     = 40.0      # degrees locked after the shot
+friction        = 40.0      # N on the rotor at the bolt circle
+rotor_damping   = 0.01      # N m s/rad
+feed_force      = 15.0      # N, the delinker stripping a round from its link
+bore_height        = 0.06   # m, the bore above the pintle
+cg_distance        = 0.25   # m
+radius_of_gyration = 0.35   # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+# A door-gun pintle with a soft (spring and damper) cradle.
+stroke              = 0.02      # m
+spring_rate         = 2.5e5     # N/m
+spring_preload      = 300.0     # N
+damping             = 2.0e3     # N s/m
+friction            = 50.0      # N
+stop_restitution    = 0.3
+elevation_stiffness = 2.0e5     # N m/rad
+elevation_damping   = 2.0e3     # N m s/rad
+
+[feed]
+# A linked belt up a flexible chute from the ammunition box to the delinking feeder.
+type      = "belt"
+capacity  = 1500
+link_mass = 0.0035    # kg per M13 link
+belt_hang = 1.0       # m of chute the feeder pulls the belt up
+
+[appearance]
+style = "m134"

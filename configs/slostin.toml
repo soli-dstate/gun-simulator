@@ -1,0 +1,123 @@
+# Slostin machine gun (1946): an experimental Soviet eight-barrel 7.62x54 mmR
+# rotary machine gun on a tripod, driven by its own gas: each barrel's gas
+# cylinder drives a piston that turns the barrel cluster. It fired at 1,760 to
+# 2,100 rounds/min (the 1939 prototype briefly 3,300) and weighed 28 kg.
+# The load is LPS ball; the gas engine, rotor and mount are illustrative.
+# All units are SI.
+
+name = "Slostin machine gun (7.62x54 mmR LPS)"
+
+[barrel]
+bore_diameter   = 7.92e-3   # m
+travel          = 0.5603    # m, seated base to muzzle (a 605 mm barrel)
+chamber_volume  = 3.42e-6   # m^3
+breech_diameter = 24.0e-3   # m
+muzzle_diameter = 16.0e-3   # m
+twist           = 0.240     # m per turn (1 in 9.45"), right-hand
+groove_depth    = 0.1e-3    # m
+leade_angle     = 1.5       # degrees
+
+[projectile]
+# LPS ball: a mild-steel core under a lead sleeve and a clad-steel jacket.
+mass                = 9.59e-3  # kg
+shot_start_pressure = 30e6     # Pa
+bore_resistance     = 5e6      # Pa
+length           = 32.5e-3     # m
+ogive_length     = 17.0e-3     # m
+meplat_diameter  = 1.2e-3      # m
+boat_tail_length = 4.0e-3      # m
+boat_tail_angle  = 9.0         # degrees
+cannelure_position = 8.46e-3   # m
+cannelure_width    = 1.0e-3    # m
+cannelure_depth    = 0.1e-3    # m
+jacket_thickness = 0.6e-3      # m
+core_material    = "steel"
+drag_model            = "G7"
+ballistic_coefficient = 131.5  # kg/m^2 (0.187 lb/in^2)
+
+[case]
+# 7.62x54 mmR, rimmed, lacquered steel.
+length            = 53.72e-3  # m
+overall_length    = 77.16e-3  # m
+rim_diameter      = 14.48e-3  # m
+rim_thickness     = 1.60e-3   # m
+groove_diameter   = 14.48e-3  # m (rimmed: no groove)
+groove_width      = 1.0e-3    # m
+base_diameter     = 12.37e-3  # m
+shoulder_diameter = 11.61e-3  # m
+shoulder_position = 41.0e-3   # m
+shoulder_angle    = 21.0      # degrees
+neck_wall         = 0.40e-3   # m
+body_wall         = 0.50e-3   # m
+head_thickness    = 5.0e-3    # m
+primer_diameter   = 5.33e-3   # m
+primer_depth      = 3.0e-3    # m
+material          = "steel"
+
+[propellant]
+composition     = "single_base"
+charge_mass     = 3.11e-3   # kg (48 gr)
+grain           = "tube"
+web             = 0.30e-3   # m
+grain_length    = 1.6e-3    # m
+burn_rate_coeff = 4.36e-9   # (m/s)/Pa^n, tuned to 828 m/s from 605 mm
+
+[ignition]
+pressure = 5e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Eight barrels on a rotor behind a stationary breech; each barrel's gas cylinder
+# houses a piston tied to its neighbour, which turns the cluster through the cam.
+# The gunner's charging handle turns it up to the first shot.
+type              = "rotary"
+rotary_layout     = "gatling"
+rotary_drive      = "gas"
+barrels           = 8
+rotary_rate       = 2000.0    # rounds/min (1,760 to 2,100 measured)
+starter_energy    = 15.0      # J, the charging handle's pull
+cluster_radius    = 34.0e-3   # m
+barrel_mass       = 1.0       # kg, each
+gun_mass          = 28.0      # kg, the gun alone
+bolt_mass         = 0.12      # kg, each bolt
+dwell_angle       = 40.0      # degrees
+gas_port_position = 0.40      # m of projectile travel from the seat
+gas_port_diameter = 1.5e-3    # m
+piston_diameter   = 10.0e-3   # m
+gas_volume        = 1.0e-6    # m^3
+gas_stroke        = 0.005     # m, a short kick before the cylinder vents
+cam_lever         = 0.050     # m of piston travel per radian of the rotor
+drive_mass        = 2.0       # kg, the pistons felt at the bolt circle
+friction          = 40.0      # N on the rotor at the bolt circle
+rotor_damping     = 0.07      # N m s/rad: the drag that holds it near 2,000 rounds/min
+feed_force        = 15.0      # N
+bore_height        = 0.06     # m, the bore above the tripod's cradle
+cg_distance        = 0.20     # m
+radius_of_gyration = 0.35     # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+# The infantry tripod's cradle: a buffer spring and a little damping.
+stroke              = 0.02      # m
+spring_rate         = 1.5e5     # N/m
+spring_preload      = 200.0     # N
+damping             = 1.5e3     # N s/m
+friction            = 60.0      # N
+stop_restitution    = 0.3
+elevation_stiffness = 1.0e5     # N m/rad
+elevation_damping   = 1.0e3     # N m s/rad
+
+[feed]
+type      = "belt"
+capacity  = 250
+link_mass = 0.004     # kg per link
+belt_hang = 0.4       # m
+
+[appearance]
+style = "slostin"

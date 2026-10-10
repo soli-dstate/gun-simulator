@@ -46,6 +46,7 @@ import { HANDGUN_STYLES, buildHandgunFrame, buildPistolParts, buildRevolverParts
 import { lathe } from "./lathe.js";
 import { chain, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { bake, boxAt, cutX, gripAt, merge, rodX, rodY, scaled } from "./meshops.js";
+import { buildRotary } from "./rotary.js";
 import { box, prism, rodProfile, sphereProfile, torusProfile, tubeProfile } from "./shapes.js";
 
 const MM = 1e3;
@@ -182,6 +183,8 @@ export function buildRifle(gun) {
   const act = gun.action ?? {};
   const kind = act.type ?? "bolt";
   const style = gun.appearance?.style ?? "rifle";
+  // A rotary gun (rotary.js): a Gatling's barrel cluster or a revolver cannon's drum, with its own styles.
+  if (kind === "rotary") return buildRotary(gun, cart, warnings);
   const ar = style === "ar15", ak = style === "ak", autocannon = style === "autocannon", tank = style === "tank";
   const wedge = kind === "sliding_wedge", chainGun = kind === "chain";
   const mounted = gun.shooter?.stance === "mount";

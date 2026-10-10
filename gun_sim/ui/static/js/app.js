@@ -19,6 +19,7 @@ let soundRequest = 0;    // only the newest synthesis result is used
 let soundForShot = null; // which shot the loaded sound belongs to
 let playOnLoad = null;   // shot on the range whose sound was not ready when it fired
 let rangeClock = null;   // the range's clock {tSim, rate}, while a shot is shown
+let lastBurstKind = null; // the action type the burst box was last set up for
 let shotId = 0;
 let cartViewer = null;
 let rifleView = null;
@@ -376,7 +377,7 @@ async function synthesizeSound(gun, shot) {
   try { settings = getSound(); } catch (e) { status.textContent = e.message; return; }
   status.innerHTML = '<span class="busy">Synthesising…</span>';
   try {
-    const data = await backend.synthesize({ gun, sound: settings });
+    const data = await backend.synthesize({ gun, sound: settings, burst: burstCount() });
     if (id !== soundRequest) return;  // a newer request superseded this one
     lastSound = data;
     soundForShot = shot;
@@ -603,6 +604,11 @@ function updatePreview() {
   $("preview-warnings").textContent = warnings.join(" · ");
   const kind = gun.action?.type ?? "bolt";
   $("burst").disabled = kind === "bolt";
+  // A rotary gun fires long bursts (its drive's sound spans the whole burst).
+  $("burst").max = kind === "rotary" ? 400 : 30;
+  $("cycle").disabled = kind === "rotary";   // its drive turns it; there is no bolt to work by hand
+  if (kind === "rotary" && burstCount() === 1 && lastBurstKind !== "rotary") $("burst").value = 30;
+  lastBurstKind = kind;
   // The hand-cycle button names what it works: a revolver's hammer, a pistol's slide, or a bolt.
   const pistol = ["1911", "beretta", "polymer"].includes(gun.appearance?.style) && kind !== "revolver";
   $("cycle").textContent = kind === "revolver" ? "Cock hammer" : pistol ? "Rack slide" : "Cycle bolt";
@@ -1051,6 +1057,19 @@ function actionRows(a) {
     if (a.hammer_energy !== null) rows += `<span>Hammer</span><span>${(a.lock_time * 1e3).toFixed(1)} ms from the sear to ignition, hits the pin with ${a.hammer_energy.toFixed(2)} J</span>`;
     return rows;
   }
+  if (a.kind === "rotary") {
+    const r = a.rotary, ok = a.status === "fired" || a.status === "empty";
+    const what = r.layout === "revolver" ? `${r.stations}-chamber revolver` : `${r.stations}-barrel Gatling`;
+    rows += `<span>Rotary</span><span class="${ok ? "" : "bad"}">${what}, ${r.drive}: ${a.status}, ${a.shot_times.length} shot${a.shot_times.length > 1 ? "s" : ""}` +
+      (r.steady_rate ? ` at ${r.steady_rate.toFixed(0)} rounds/min` : "") + "</span>";
+    if (r.first_shot !== null) rows += `<span>Trigger to first shot</span><span>${(r.first_shot * 1e3).toFixed(0)} ms` +
+      (r.spin_up !== null ? `; up to speed in ${(r.spin_up * 1e3).toFixed(0)} ms` : "") + "</span>";
+    if (a.shot_times.length > 1) rows += `<span>Burst</span><span>${((a.shot_times.at(-1) - a.shot_times[0]) * 1e3).toFixed(0)} ms, the gun jumps ${(a.max_pitch * 1e3).toFixed(2)} mrad</span>`;
+    if (a.motor_peak_power !== null) rows += `<span>Drive</span><span>peaking at ${(a.motor_peak_power / 1e3).toFixed(1)} kW</span>`;
+    if (a.unlock_pressure !== null) rows += `<span>Chamber pressure at unlock</span><span>${fmt(a.unlock_pressure, "pressure", 1)}</span>`;
+    if (a.gas_peak_pressure !== null) rows += `<span>Peak gas cylinder pressure</span><span>${fmt(a.gas_peak_pressure, "pressure", 1)}</span>`;
+    return rows;
+  }
   if (a.kind === "sliding_wedge") {
     const ok = a.status === "breech opened";
     rows += `<span>Sliding wedge</span><span class="${ok ? "" : "bad"}">${a.status}` +
@@ -1194,7 +1213,7 @@ async function fire(animate = true) {
 /** Shots per trigger pull: only a self-loading action fires more than one. */
 function burstCount() {
   const n = Math.round(Number($("burst").value) || 1);
-  return Math.min(30, Math.max(1, n));
+  return Math.min(Number($("burst").max) || 30, Math.max(1, n));
 }
 
 // ---------- the muzzle device's 2D field ----------
@@ -1370,6 +1389,8 @@ async function init() {
   $("run").onclick = () => fire(true);
   $("play").onclick = play;
   $("sound-on").onchange = (e) => { if (e.target.checked) resynthesize(); };
+  // A rotary gun's drive is heard over the whole burst, so a longer burst needs a new sound.
+  $("burst").addEventListener("change", () => { if (lastGun?.action?.type === "rotary") resynthesize(); });
   $("environment").onchange = (e) => { player.setEnvironment(e.target.value); showMixerParts(); };
   $("protection").onchange = (e) => player.setProtection(e.target.value);
   $("level-mode").onchange = (e) => {

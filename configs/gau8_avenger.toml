@@ -1,0 +1,123 @@
+# GAU-8/A Avenger: the A-10's seven-barrel 30x173 mm Gatling cannon, driven by two
+# hydraulic motors and fed linkless from its drum.
+# Published figures where there are any (calibre, barrels, barrel length, rate,
+# spin-up, weight, PGU-13/B HEI's mass and velocity); the burn law is tuned to
+# them, and the drive, rotor and mount are illustrative. All units are SI.
+
+name = "GAU-8/A Avenger (30x173 mm PGU-13/B HEI)"
+
+[barrel]
+bore_diameter   = 30.0e-3   # m
+travel          = 2.16      # m, seated base to muzzle (a 2.30 m barrel)
+chamber_volume  = 0.165e-3  # m^3 (used only with chamber_shape = "cylinder")
+chamber_shape   = "case"
+breech_diameter = 80.0e-3   # m
+muzzle_diameter = 50.0e-3   # m
+twist           = 0.72      # m per turn, right-hand
+groove_depth    = 0.5e-3    # m
+freebore        = 2.0e-3    # m
+leade_angle     = 3.0       # degrees
+
+[projectile]
+# PGU-13/B high-explosive incendiary: a steel body, a plastic driving band, a point fuze.
+mass                = 0.360   # kg
+shot_start_pressure = 40e6    # Pa
+bore_resistance     = 8e6     # Pa
+engraving_pressure  = 50e6    # Pa
+length           = 147.0e-3   # m
+ogive_length     = 70.0e-3    # m
+meplat_diameter  = 5.0e-3     # m
+boat_tail_length = 8.0e-3     # m
+boat_tail_angle  = 7.0        # degrees
+cannelure_position = 22.0e-3  # m
+cannelure_width    = 4.0e-3   # m
+cannelure_depth    = 0.6e-3   # m
+core_material    = "steel"
+drag_model            = "G1"
+ballistic_coefficient = 211.0  # kg/m^2
+
+[case]
+# 30x173 mm, aluminium-alloy in service; drawn here as steel, with an electric primer.
+length            = 173.0e-3  # m
+overall_length    = 290.0e-3  # m
+rim_diameter      = 44.0e-3   # m
+rim_thickness     = 3.0e-3    # m
+groove_diameter   = 38.0e-3   # m
+groove_width      = 5.0e-3    # m
+base_diameter     = 44.0e-3   # m
+shoulder_diameter = 41.5e-3   # m
+shoulder_position = 128.0e-3  # m
+shoulder_angle    = 25.0      # degrees
+neck_wall         = 1.4e-3    # m
+body_wall         = 1.5e-3    # m
+head_thickness    = 12.0e-3   # m
+primer_diameter   = 10.0e-3   # m
+primer_depth      = 8.0e-3    # m
+material          = "steel"
+
+[propellant]
+composition     = "double_base"
+charge_mass     = 0.150    # kg
+grain           = "7-perf"
+web             = 0.80e-3  # m
+grain_length    = 6.0e-3   # m
+perforation_diameter = 0.3e-3  # m
+burn_rate_coeff = 1.20e-8  # (m/s)/Pa^n, tuned to 1,050 m/s at about 385 MPa
+
+[ignition]
+pressure = 8e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Seven barrels round a rotor, each bolt on the elliptical cam. Two hydraulic motors
+# off the aircraft's two systems drive it; it takes about half a second to come up to
+# rate, firing from the start. The fired cases go back into the drum.
+type            = "rotary"
+rotary_layout   = "gatling"
+rotary_drive    = "hydraulic"
+barrels         = 7
+rotary_rate     = 4000.0    # rounds/min at the supply's flow limit (3,900 firing)
+motor_power     = 60000.0   # W: two motors at their flow limit
+valve_time      = 0.55      # s for the valves to open fully
+motor_rpm       = 6500.0
+pinion_teeth    = 19
+drive_mass      = 40.0      # kg, the motors and gears felt at the bolt circle
+cluster_radius  = 0.105     # m
+barrel_mass     = 18.0      # kg, each
+gun_mass        = 281.0     # kg
+bolt_mass       = 1.6       # kg, each bolt
+dwell_angle     = 40.0      # degrees
+friction        = 600.0     # N on the rotor at the bolt circle
+rotor_damping   = 0.5       # N m s/rad
+feed_force      = 80.0      # N, the conveyor's drag per round
+bore_height        = 0.10   # m
+cg_distance        = 0.80   # m
+radius_of_gyration = 1.10   # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+# The recoil adapters in the A-10's nose: spring packs and dampers.
+stroke              = 0.035     # m
+spring_rate         = 3.0e6     # N/m
+spring_preload      = 8.0e3     # N
+damping             = 4.0e4     # N s/m
+friction            = 1.0e3     # N
+stop_restitution    = 0.3
+elevation_stiffness = 2.0e7     # N m/rad
+elevation_damping   = 2.0e5     # N m s/rad
+
+[feed]
+# Linkless: rounds conveyed from the drum in carriers, the cases returned to it.
+type      = "linkless"
+capacity  = 1174
+link_mass = 0.12      # kg, each conveyor carrier
+belt_hang = 0.6       # m
+
+[appearance]
+style = "gau8"

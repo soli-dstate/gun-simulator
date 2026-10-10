@@ -1,0 +1,123 @@
+# M61A1 Vulcan: a six-barrel, hydraulically driven 20x102 mm Gatling cannon, fed
+# linkless from a drum (as in the F-16), on its aircraft's recoil adapters.
+# Published figures where there are any (calibre, barrels, barrel length, rate,
+# weight, M56 HEI's mass and velocity); the burn law is tuned to them, and the
+# hydraulic drive, rotor and mount are illustrative. All units are SI.
+
+name = "M61A1 Vulcan (20x102 mm M56 HEI)"
+
+[barrel]
+bore_diameter   = 20.0e-3   # m
+travel          = 1.43      # m, seated base to muzzle (a 1.52 m barrel)
+chamber_volume  = 45.0e-6   # m^3 (used only with chamber_shape = "cylinder")
+chamber_shape   = "case"
+breech_diameter = 52.0e-3   # m
+muzzle_diameter = 34.0e-3   # m
+twist           = 0.635     # m per turn (1 in 25"), right-hand
+groove_depth    = 0.35e-3   # m
+freebore        = 1.0e-3    # m
+leade_angle     = 3.0       # degrees
+
+[projectile]
+# M56A3 high-explosive incendiary: a steel body, a copper driving band and a point fuze.
+mass                = 0.100   # kg
+shot_start_pressure = 35e6    # Pa
+bore_resistance     = 7e6     # Pa
+engraving_pressure  = 50e6    # Pa, the band cut by the rifling
+length           = 76.0e-3    # m
+ogive_length     = 36.0e-3    # m
+meplat_diameter  = 3.0e-3     # m, the fuze's tip
+boat_tail_length = 4.0e-3     # m
+boat_tail_angle  = 7.0        # degrees
+cannelure_position = 12.0e-3  # m: the crimp groove above the driving band
+cannelure_width    = 3.0e-3   # m
+cannelure_depth    = 0.4e-3   # m
+core_material    = "steel"
+drag_model            = "G1"
+ballistic_coefficient = 155.0  # kg/m^2
+
+[case]
+# 20x102 mm, brass, rimless, with an electric primer.
+length            = 102.0e-3  # m
+overall_length    = 166.0e-3  # m
+rim_diameter      = 29.95e-3  # m
+rim_thickness     = 2.3e-3    # m
+groove_diameter   = 25.5e-3   # m
+groove_width      = 3.5e-3    # m
+base_diameter     = 29.6e-3   # m
+shoulder_diameter = 27.2e-3   # m
+shoulder_position = 76.0e-3   # m
+shoulder_angle    = 25.0      # degrees
+neck_wall         = 1.0e-3    # m
+body_wall         = 1.1e-3    # m
+head_thickness    = 8.0e-3    # m
+primer_diameter   = 8.0e-3    # m
+primer_depth      = 6.0e-3    # m
+
+[propellant]
+composition     = "double_base"
+charge_mass     = 0.0400    # kg
+grain           = "7-perf"
+web             = 0.55e-3   # m
+grain_length    = 4.0e-3    # m
+perforation_diameter = 0.25e-3  # m
+burn_rate_coeff = 1.31e-8   # (m/s)/Pa^n, tuned to 1,030 m/s at about 380 MPa
+
+[ignition]
+pressure = 8e6  # Pa
+
+[solver]
+cells        = 100
+cfl          = 0.5
+record_every = 5
+
+[action]
+# Six barrels and their bolts on a rotor, the bolts riding the cam in the housing.
+# A hydraulic motor on the aircraft's supply turns it through a gearbox; the drive
+# valve opens on the trigger, the flow limits it at its rate, and closing the valve
+# brakes the gun once its last cases are out. The rounds come linkless from a drum.
+type            = "rotary"
+rotary_layout   = "gatling"
+rotary_drive    = "hydraulic"
+barrels         = 6
+rotary_rate     = 6100.0    # rounds/min at the supply's flow limit
+motor_power     = 30000.0   # W at the flow limit
+valve_time      = 0.20      # s for the valve to open fully
+motor_rpm       = 9000.0    # the hydraulic motor at full flow
+pinion_teeth    = 17
+drive_mass      = 15.0      # kg, the hydraulic motor and gears felt at the bolt circle
+cluster_radius  = 52.0e-3   # m
+barrel_mass     = 7.5       # kg, each
+gun_mass        = 112.0     # kg
+bolt_mass       = 0.45      # kg, each bolt
+dwell_angle     = 40.0      # degrees
+friction        = 200.0     # N on the rotor at the bolt circle
+rotor_damping   = 0.05      # N m s/rad
+feed_force      = 30.0      # N, the conveyor's drag per round
+bore_height        = 0.05   # m, the bore above the recoil adapters
+cg_distance        = 0.40   # m
+radius_of_gyration = 0.60   # m
+
+[shooter]
+stance = "mount"
+
+[mount]
+# The aircraft's recoil adapters: spring packs and dampers, a few centimetres of travel.
+stroke              = 0.025     # m
+spring_rate         = 1.5e6     # N/m
+spring_preload      = 2.0e3     # N
+damping             = 1.2e4     # N s/m
+friction            = 300.0     # N
+stop_restitution    = 0.3
+elevation_stiffness = 4.0e6     # N m/rad
+elevation_damping   = 4.0e4     # N m s/rad
+
+[feed]
+# Linkless: a conveyor of round carriers from the drum to the gun's feeder.
+type      = "linkless"
+capacity  = 511
+link_mass = 0.050     # kg, each conveyor element
+belt_hang = 0.5       # m the conveyor climbs to the gun
+
+[appearance]
+style = "m61"

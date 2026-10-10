@@ -415,7 +415,7 @@ class MuzzleDevice:
 
 
 ACTION_TYPES = ("bolt", "gas", "direct_impingement", "blowback", "short_recoil", "roller_delayed", "lever_delayed",
-                "gas_delayed", "chain", "sliding_wedge", "revolver")
+                "gas_delayed", "chain", "sliding_wedge", "revolver", "rotary")
 STANCES = ("shoulder", "hands", "free", "mount")
 LOCKINGS = ("block", "tilt")
 TRIGGER_TYPES = ("single_action", "double_action", "double_action_only", "striker")
@@ -452,6 +452,14 @@ class Action:
     by the thumb) and the cylinder stop locks in line with the bore. Nothing
     moves under the shot; the gas escapes through the gap between the cylinder
     and the barrel (barrel.cylinder_gap). bolt_mass is unused.
+
+    "rotary": a rotary gun (gun_sim/rotary.py): a Gatling's cluster of barrels, each with its
+    own bolt on a cam, or a revolver cannon's drum of chambers behind one barrel, turned by an
+    electric or hydraulic motor, by the gun's own gas or by its barrels' recoil. bolt_mass is
+    each bolt (or rammer), bolt_travel its stroke, barrel_mass each barrel, friction the drag
+    on the rotor at its bolt circle, drive_mass the motor and gears felt there; motor_power,
+    motor_rpm and pinion_teeth are the motor's; a gas drive uses the gas system's fields, and a
+    recoil drive spring_rate and spring_preload for the barrels' return spring.
     """
     type: str = "bolt"
     gun_mass: float = 4.0               # kg, the whole gun unloaded, bolt included
@@ -521,6 +529,21 @@ class Action:
     motor_rpm: float = 6000.0
     pinion_teeth: int = 14
     drive_chain_pitch: float = 12.7e-3  # m (a 1/2" roller chain)
+    # Rotary gun (gun_sim/rotary.py).
+    rotary_layout: str = "gatling"      # "gatling" (a cluster of barrels) or "revolver" (a drum of chambers, one barrel)
+    rotary_drive: str = "electric"      # "electric", "hydraulic", "gas" or "recoil"
+    barrels: int = 6                    # gatling
+    chambers: int = 5                   # revolver: the drum's chambers
+    rotary_rate: float = 4000.0         # rounds/min: an electric motor's free speed, a hydraulic one's flow limit,
+                                        # a self-driven gun's rated rate
+    rotor_inertia: float | None = None  # kg m^2, the barrel cluster or drum, empty; None = from the barrels' steel
+    cluster_radius: float | None = None  # m, rotor axis to each bore (chamber); None = the barrels side by side
+    dwell_angle: float = 40.0           # degrees the bolt stays locked after the shot
+    cam_lever: float = 0.02             # m of gas piston (recoil: barrel) travel per radian of the rotor
+    recoil_stroke: float = 0.02         # m the barrels recoil in the receiver (recoil drive)
+    starter_energy: float = 0.0         # J, gas and recoil drives: the starter cartridge's work on the rotor
+    rotor_damping: float = 0.0          # N m s/rad, drag on the rotor growing with its speed (air, oil)
+    valve_time: float = 0.05            # s, hydraulic drive: its valve opening
     # Sliding wedge: the opening cam turns the crank over the last cam_travel of the run-out.
     cam_travel: float = 0.12            # m of counter-recoil before battery
     extractor_ratio: float = 2.5        # case speed out of the breech over the block's speed when it strikes the extractors
@@ -543,7 +566,9 @@ class Feed:
     breech, from a ready rack of `capacity` rounds; "cylinder" is a revolver's,
     `capacity` chambers, reloaded by swinging it out (all the cases ejected at
     once, a speedloader putting the rounds in) or one at a time through a
-    loading `gate`. A tank gun's autoloaders: "az" the T-72's electromechanical
+    loading `gate`. "linkless": a rotary gun's chute (or conveyor) of
+    unlinked rounds from its drum or box, `link_mass` each element and
+    `belt_hang` of it hanging. A tank gun's autoloaders: "az" the T-72's electromechanical
     carousel, "mz" the T-64's and T-80's hydraulic one, "bustle" a conveyor in
     the turret bustle (the Leclerc's electric, the Type 90's electromechanical
     drive), "oscillating" the drums of an oscillating turret (AMX-13). None =
@@ -649,7 +674,9 @@ class Shooter:
     hold_damping: float = 9.0           # N m s/rad
 
 
-STYLES = ("rifle", "ar15", "ak", "autocannon", "tank", "1911", "beretta", "polymer", "revolver", "single_action")
+STYLES = ("rifle", "ar15", "ak", "autocannon", "tank", "1911", "beretta", "polymer", "revolver", "single_action",
+          "rotary", "m134", "m61", "gau8", "gsh623", "slostin", "bk27")
+ROTARY_STYLES = ("rotary", "m134", "m61", "gau8", "gsh623", "slostin", "bk27")
 HANDGUN_STYLES = ("1911", "beretta", "polymer", "revolver", "single_action")
 
 
@@ -667,7 +694,10 @@ class Appearance:
     polymer frame, striker-fired; "revolver" a double-action revolver's frame,
     swing-out cylinder on its crane, full-lug barrel and ventilated rib;
     "single_action" a single-action army's frame, loading gate, ejector rod and
-    one-piece grip."""
+    one-piece grip. Rotary guns (action.type "rotary"): "rotary" a plain barrel
+    cluster or drum in a receiver, and the models of the presets, "m134" (the
+    Minigun), "m61" (the Vulcan), "gau8" (the Avenger), "gsh623", "slostin" and
+    "bk27"."""
     style: str = "rifle"
 
 
@@ -849,6 +879,8 @@ class Gun:
                                  "drive_chain_pitch 2 to 100 mm")
             if a.sprocket_radius is not None and a.chain_width is not None and 2 * a.sprocket_radius > a.chain_width:
                 raise ValueError("action.sprocket_radius must be at most half the chain_width")
+        if a.type == "rotary":
+            self._validate_rotary()
         if a.type == "sliding_wedge":
             if a.cam_travel <= 0 or a.extractor_ratio <= 0:
                 raise ValueError("sliding wedge: cam_travel and extractor_ratio must be positive")
@@ -869,6 +901,46 @@ class Gun:
             if getattr(s, name) < 0:
                 raise ValueError(f"shooter.{name} cannot be negative")
 
+    def _validate_rotary(self) -> None:
+        from .rotary import DRIVES, FEEDS, LAYOUTS
+        a = self.action
+        if a.rotary_layout not in LAYOUTS:
+            raise ValueError(f"action.rotary_layout must be one of {', '.join(LAYOUTS)}, not {a.rotary_layout!r}")
+        if a.rotary_drive not in DRIVES:
+            raise ValueError(f"action.rotary_drive must be one of {', '.join(DRIVES)}, not {a.rotary_drive!r}")
+        if a.barrels != int(a.barrels) or not 2 <= a.barrels <= 12:
+            raise ValueError("action.barrels must be a whole number from 2 to 12")
+        if a.chambers != int(a.chambers) or not 3 <= a.chambers <= 8:
+            raise ValueError("action.chambers must be a whole number from 3 to 8")
+        a.barrels, a.chambers = int(a.barrels), int(a.chambers)
+        if not 100 <= a.rotary_rate <= 15000:
+            raise ValueError("action.rotary_rate must be between 100 and 15000 rounds/min")
+        for name in ("rotor_inertia", "cluster_radius"):
+            value = getattr(a, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"action.{name} must be positive (or left out)")
+        if not 10 <= a.dwell_angle <= 120:
+            raise ValueError("action.dwell_angle must be between 10 and 120 degrees")
+        if not 1e-3 <= a.cam_lever <= 0.5 or not 1e-3 <= a.recoil_stroke <= 0.3:
+            raise ValueError("action.cam_lever must be between 1 and 500 mm/rad, recoil_stroke between 1 and 300 mm")
+        if a.starter_energy < 0 or a.rotor_damping < 0 or a.valve_time < 0 or a.drive_mass < 0:
+            raise ValueError("action.starter_energy, rotor_damping, valve_time and drive_mass cannot be negative")
+        if a.rotary_drive in ("electric", "hydraulic") and a.motor_power <= 0:
+            raise ValueError(f"a{'n' if a.rotary_drive == 'electric' else ''} {a.rotary_drive} drive needs its "
+                             "motor's power (action.motor_power)")
+        if a.rotary_drive in ("gas", "recoil") and a.starter_energy <= 0:
+            raise ValueError(f"a {a.rotary_drive}-driven rotary gun needs a starter to turn it up to its first shot "
+                             "(action.starter_energy)")
+        if a.rotary_drive == "gas" and (a.gas_volume <= 0 or a.piston_diameter <= 0 or a.gas_port_diameter <= 0
+                                        or a.gas_stroke <= 0):
+            raise ValueError("a gas-driven rotary gun needs a gas port, a piston, a gas cylinder volume and a "
+                             "gas stroke")
+        if self.feed.type not in FEEDS:
+            raise ValueError(f"a rotary gun's feeder takes its rounds from a belt or a linkless chute: feed.type "
+                             f"{', '.join(FEEDS)}")
+        if self.trigger.mode != "auto":
+            raise ValueError("a rotary gun fires bursts: trigger.mode = \"auto\"")
+
     def _validate_trigger(self) -> None:
         t, kind = self.trigger, self.action.type
         if t.type not in TRIGGER_TYPES:
@@ -885,12 +957,13 @@ class Gun:
                                  "or double_action_only")
             if t.split <= t.pull_time:
                 raise ValueError("trigger.split must be longer than pull_time: the hammer is cocked between shots")
-        if t.type in ("double_action", "double_action_only") and kind not in ("revolver", "bolt", "chain", "sliding_wedge"):
+        if t.type in ("double_action", "double_action_only") and kind not in ("revolver", "bolt", "chain", "sliding_wedge",
+                                                                             "rotary"):
             if not self.action.hammer:
                 raise ValueError("a double-action trigger cocks a hammer: set action.hammer = true")
             if t.type == "double_action_only" and t.split <= t.pull_time:
                 raise ValueError("trigger.split must be longer than pull_time: each pull cocks the hammer")
-        if t.type == "striker" and (kind in ("bolt", "chain", "sliding_wedge") or self.action.hammer):
+        if t.type == "striker" and (kind in ("bolt", "chain", "sliding_wedge", "rotary") or self.action.hammer):
             raise ValueError("a striker is cocked by a self-loading action instead of a hammer: "
                              "set action.hammer = false and a self-loading action.type")
 
@@ -919,8 +992,9 @@ class Gun:
         if f.type not in FEED_TYPES:
             raise ValueError(f"feed.type must be one of {', '.join(FEED_TYPES)}, not {f.type!r}")
         if f.capacity is not None:
-            if f.capacity != int(f.capacity) or not 1 <= f.capacity <= 250:
-                raise ValueError("feed.capacity must be a whole number of rounds from 1 to 250")
+            most = 2000 if f.type in ("belt", "dual_belt", "linkless") else 250
+            if f.capacity != int(f.capacity) or not 1 <= f.capacity <= most:
+                raise ValueError(f"feed.capacity must be a whole number of rounds from 1 to {most}")
             f.capacity = int(f.capacity)
         for name in ("spring_empty", "spring_full", "follower_mass"):
             value = getattr(f, name)
@@ -938,6 +1012,8 @@ class Gun:
             raise ValueError("feed.link_mass and belt_hang cannot be negative")
         if f.select not in ("left", "right"):
             raise ValueError("feed.select must be \"left\" or \"right\"")
+        if f.type == "linkless" and self.action.type != "rotary":
+            raise ValueError("a linkless chute feeds a rotary gun: action.type \"rotary\"")
         if self.action.type == "chain" and f.type not in ("belt", "dual_belt"):
             raise ValueError("a chain gun's feeder takes its rounds from a belt: feed.type \"belt\" or \"dual_belt\"")
         if f.type == "hand" and self.action.type not in ("bolt", "sliding_wedge"):

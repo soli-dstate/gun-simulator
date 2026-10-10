@@ -46,6 +46,7 @@ export const SOUND_PARTS = {
   gap: "Cylinder gap",
   device: "Suppressor ring",
   action: "Action",
+  drive: "Drive & rotor",
   echoes: "Echoes & reverb",
   crackEchoes: "Crack echoes",
 };
@@ -382,6 +383,7 @@ export class ShotPlayer {
     if (!this.shot) return [];
     const have = new Set(this.shot.acoustic.map(partOf));
     if (this.shot.actions.length) have.add("action");
+    if (this.shot.drives.length) have.add("drive");
     if (this.environment !== "none") {
       have.add("echoes");
       if (this.shot.crackSource && ENVIRONMENTS[this.environment].surfaces) have.add("crackEchoes");
@@ -491,10 +493,12 @@ export class ShotPlayer {
     // A muzzle device is normalised against the same gun without it, so the
     // suppression stays audible instead of being turned back up to full scale.
     const bare = data.stats?.bare_peak ?? 0;
-    const acoustic = stems.filter((st) => st.kind !== "action");
+    // A rotary gun's drive is one sound for the whole burst; the action's clacks come with every shot.
+    const acoustic = stems.filter((st) => st.kind !== "action" && st.kind !== "drive");
     this.shot = { fs: data.sample_rate, start: data.start_time, left, right, refs: refsOf(data.references, ref),
                   peak: Math.max(peakOf(left, right), bare), stems, stats: data.stats ?? {},
                   acoustic, actions: stems.filter((st) => st.kind === "action"),
+                  drives: stems.filter((st) => st.kind === "drive"),
                   mixTime: Math.min(...acoustic.map((st) => st.time)),
                   crackSource: data.crack_source ?? null, mixes: {}, mixed: {} };
     if (this.ctx) this._mix();
@@ -618,6 +622,7 @@ export class ShotPlayer {
       events.push({ at: shift + s.mixTime, mix: true });
       for (const stem of s.actions) events.push({ at: shift + stem.time, stem });
     }
+    for (const stem of s.drives) events.push({ at: stem.time, stem });   // once, from before the first shot
     events.sort((a, b) => a.at - b.at);
     this.sync = { shot: s, environment: this.environment, events, next: 0, sources: [], rate: 1 };
   }
@@ -648,7 +653,7 @@ export class ShotPlayer {
         if (!m) break;  // still rendering (a few tens of ms): it starts late, part-way through
         sources = this._mixSources(m, play);
       } else {
-        sources = [this._source(this._stemBuffer(ev.stem), play)];
+        sources = [this._source(this._stemBuffer(ev.stem), play, partOf(ev.stem))];
       }
       sync.next++;
       // Late (the sound loaded after the clock passed it): start part-way through.
@@ -681,5 +686,6 @@ export class ShotPlayer {
       for (const src of this._mixSources(mix)) src.start(t0 + at + mix.time - s.start);
       for (const stem of s.actions) this._source(this._stemBuffer(stem)).start(t0 + at + stem.time - s.start);
     }
+    for (const stem of s.drives) this._source(this._stemBuffer(stem), 1, "drive").start(t0 + stem.time - s.start);
   }
 }

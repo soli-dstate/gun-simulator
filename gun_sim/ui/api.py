@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import (action, autoloader, designer, devices, doctor, evacuator, exterior, fluid, lumped, parallel, plume, rifling,
-                sound, terminal)
+                rotary, sound, terminal)
 from ..config import (ACTION_TYPES, CASE_MATERIALS, CORE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES,
                       FIRE_MODES, LOCKINGS, PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Gun)
 from ..designer import CONFIG_DIR
@@ -173,6 +173,19 @@ FIELDS = {
         ("motor_rpm", "Chain gun: motor speed with no load", "rpm", 1),
         ("pinion_teeth", "Chain gun: teeth on the gearbox's first pinion", "", 1),
         ("drive_chain_pitch", "Chain gun: drive chain pitch", "mm", 1e-3),
+        ("rotary_layout", "Rotary: barrel cluster or revolver drum", "choice", list(rotary.LAYOUTS)),
+        ("rotary_drive", "Rotary: what turns it", "choice", list(rotary.DRIVES)),
+        ("barrels", "Rotary: barrels (Gatling)", "", 1),
+        ("chambers", "Rotary: chambers in the drum (revolver)", "", 1),
+        ("rotary_rate", "Rotary: rated rate (motor's free speed, flow limit, or design)", "rounds/min", 1),
+        ("rotor_inertia", "Rotary: rotor inertia, empty (blank = from the barrels)", "kg·m²", 1),
+        ("cluster_radius", "Rotary: rotor axis to each bore (blank = barrels side by side)", "mm", 1e-3),
+        ("dwell_angle", "Rotary: bolt locked after the shot", "°", 1),
+        ("cam_lever", "Rotary: gas piston (or barrel recoil) travel per radian", "mm/rad", 1e-3),
+        ("recoil_stroke", "Rotary: barrels' recoil in the receiver (recoil drive)", "mm", 1e-3),
+        ("starter_energy", "Rotary: starter cartridge's work (gas, recoil)", "J", 1),
+        ("rotor_damping", "Rotary: drag growing with speed", "N·m·s/rad", 1),
+        ("valve_time", "Rotary: hydraulic valve opening", "ms", 1e-3),
         ("cam_travel", "Sliding wedge: run-out over which the cam opens it", "mm", 1e-3),
         ("extractor_ratio", "Sliding wedge: extractor lever ratio", "", 1),
         ("bore_height", "Bore above the shoulder (or trunnions)", "mm", 1e-3),
@@ -345,11 +358,13 @@ def synthesize(payload: dict) -> dict:
         if key in settings_in:
             settings_in[key] = int(settings_in[key])
     s = SoundSettings.from_dict(settings_in)
-    return parallel.run("sound", _sound_json, gun, s, seed=_shot(gun, s.blast_time, s.pressure))
+    # A rotary gun's drive is heard over the whole burst.
+    burst = _burst_rounds(payload, gun)[0] if gun.action.type == "rotary" else 1
+    return parallel.run("sound", _sound_json, gun, s, burst, seed=_shot(gun, s.blast_time, s.pressure))
 
 
-def _sound_json(gun: Gun, s: SoundSettings) -> dict:
-    snd = sound.synthesize(gun, s)
+def _sound_json(gun: Gun, s: SoundSettings, burst: int = 1) -> dict:
+    snd = sound.synthesize(gun, s, burst)
     t = snd.start_time + np.arange(len(snd.pressure)) / snd.sample_rate
     wt, wp = _envelope(t, snd.pressure)
     nf = snd.near_field
@@ -508,6 +523,7 @@ def action_to_json(a: action.ActionResult) -> dict:
                                            for k, v in a.jam.items()},
         "feed_angle": float(a.feed_angle),
         "autoloader": autoloader.to_json(a.autoloader),
+        "rotary": rotary.to_json(a.rotary),
     }
 
 
@@ -564,7 +580,7 @@ def simulate(payload: dict) -> dict:
     # The UI passes the sound's air and blowdown time, so this run is the one the sound uses too.
     blowdown = float(payload.get("blowdown", BLOWDOWN))
     ambient = float(payload.get("ambient_pressure", fluid.ATMOSPHERE))
-    burst, rounds = _burst_rounds(payload)
+    burst, rounds = _burst_rounds(payload, gun)
     for name in models:
         if name not in MODELS:
             raise ValueError(f"unknown model {name!r}")
@@ -582,11 +598,15 @@ def simulate(payload: dict) -> dict:
     return {"results": [jobs[name].result() for name in models], "travel": gun.barrel.travel}
 
 
-def _burst_rounds(payload: dict) -> tuple[int, int | None]:
+def max_burst(gun: Gun) -> int:
+    return rotary.MAX_BURST if gun.action.type == "rotary" else action.MAX_BURST
+
+
+def _burst_rounds(payload: dict, gun: Gun) -> tuple[int, int | None]:
     """Shots per trigger pull, and rounds in the magazine besides the chambered one (None = full)."""
     burst = int(payload.get("burst", 1))
-    if not 1 <= burst <= action.MAX_BURST:
-        raise ValueError(f"burst must be between 1 and {action.MAX_BURST} shots")
+    if not 1 <= burst <= max_burst(gun):
+        raise ValueError(f"burst must be between 1 and {max_burst(gun)} shots")
     rounds = payload.get("rounds")
     if rounds is not None:
         rounds = int(rounds)
@@ -609,7 +629,7 @@ def cycle(payload: dict) -> dict:
         raise ValueError(f"unknown model {name!r}")
     blowdown = float(payload.get("blowdown", BLOWDOWN))
     ambient = float(payload.get("ambient_pressure", fluid.ATMOSPHERE))
-    burst, rounds = _burst_rounds(payload)
+    burst, rounds = _burst_rounds(payload, gun)
     seed = _shot(gun, blowdown, ambient) if name == "fluid" or gun.muzzle_device.type != "none" else None
     return parallel.run(name, _action_json, name, gun, blowdown, ambient, burst, rounds, seed=seed)
 

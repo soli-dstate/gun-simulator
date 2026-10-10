@@ -65,6 +65,7 @@ import { petalDirection } from "./cartridge.js";
 import { buildRifle } from "./gun.js";
 import { chain, invert, lookAt, perspective, rotationX, rotationY, rotationZ, translation } from "./mat4.js";
 import { feedCheck } from "./feed.js";
+import { rotaryBarrel, rotaryCamera, rotaryDraw, rotaryParts, rotaryPhase, rotaryRows, startRotary, stepRotary } from "./rotary.js";
 import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
 import { VolumeEffects } from "./volume.js";
 
@@ -236,6 +237,7 @@ export class FiringRange {
     this.dropped = [];          // old belts falling out of the gun, {nodes, h, age}
     this.beltMoving = false;
     this.chainQ = 0;            // a chain gun's chain, m round its track from the firing point (between shots)
+    this.rotRest = 0;           // a rotary gun's rotor angle (rad) at rest, from the shot before
     // A revolver's cylinder: each chamber "live", "spent" or null; the one under the hammer; how far it has
     // turned (chambers); whether the hammer is cocked. Its hammer starts down: the first pull turns it on.
     const C = this.rifle?.layout.hand?.cyl;
@@ -288,6 +290,8 @@ export class FiringRange {
    */
   roundsAtNextShot() {
     if (!this.rifle) return null;
+    // A rotary gun has no chambered round: the rounds in its belt (or chute), or a fresh one if it has run dry.
+    if (this.layout.rotary) return this.mag > 0 ? this.mag : this.layout.feed.capacity;
     if (this.cyl) {
       // The next pull turns a live round up (or a reload fills the cylinder): the rest of them follow it.
       const live = this._liveCount();
@@ -303,6 +307,11 @@ export class FiringRange {
     this.frozen = false;
     this._alAbort();
     this.shot = null;
+    // A rotary gun feeds as it turns: nothing to chamber first (but a reload in progress finishes).
+    if (this.layout.rotary) {
+      if (this.reload) this.pendingShot = result; else this._startShot(result);
+      return;
+    }
     if (this.chamber !== "live" || this.cycle || this.reload) {
       // Load (and work the bolt) first, or let that finish, then fire.
       this.pendingShot = result;
@@ -322,6 +331,7 @@ export class FiringRange {
   startReload() {
     if (this.reload || this.cycle || !this.rifle) return;
     if (this.cyl) return this._startCylinderReload();
+    if (this.layout.rotary && this.shot) return;   // not while a burst is on
     this.reload = { t: 0, swapped: false };
     this._kick();
     this.onChange?.();
@@ -346,6 +356,11 @@ export class FiringRange {
     this.pendingShot = null;
     // The simulation was fired with the rounds this magazine has (a replay is re-simulated to match).
     this.mag = result.action?.rounds?.[0] ?? this.mag;
+    // A rotary gun's clock starts at the spin-up, before the first ignition (negative times).
+    if (this.layout.rotary) {
+      startRotary(this, result);
+      if (this.shot.rot) this.tSim = this.shot.rot.time[0];
+    }
     const A = this.layout.autoloader, al = result.action?.autoloader;
     if (A) {
       endCycle(A, this.alS, false);
@@ -366,6 +381,7 @@ export class FiringRange {
   /** Work the bolt: eject what's in the chamber (or clear a jam) and load a new round. */
   startCycle() {
     if (this.cycle || this.reload || !this.rifle) return;
+    if (this.layout.rotary) return;           // nothing to work by hand: the rotor feeds and clears itself
     if (this._breech === "wedge") return this.layout.autoloader ? this._startAutoLoad() : this._startLoad();
     if (this.cyl) {
       // Cock the hammer: the hand turns the next chamber up under it.
@@ -599,9 +615,13 @@ export class FiringRange {
       if (this.T < 0.06) this.pin = smooth(this.T / 0.05);
       if (this.T >= PIN_FALL) {
         const slow = this.slowMotion > 0 ? 1e-3 / this.slowMotion : 1;   // sim s per display s in the bore
-        if (this.exitT === null || this.tSim < this.exitT + RAMP_HOLD) this.rate = slow;
+        // A rotary gun's spin-up (before its first ignition) runs in real time; the slow motion starts with the first shot.
+        if (this.exitT === null && s.rot && this.tSim < 0) this.rate = 1;
+        else if (this.exitT === null || this.tSim < this.exitT + RAMP_HOLD) this.rate = slow;
         else this.rate = Math.min(1, this.rate * Math.exp((this._auto ? RAMP_AUTO : RAMP) * dt));
+        const before = this.tSim;
         this.tSim += dt * this.rate;
+        if (s.rot && before < 0) this.tSim = Math.min(this.tSim, 0);     // the spin-up ends exactly at the first ignition
         if (!this.frozen) this.onClock?.(this.tSim, this.rate);
         if (!s.fired) {
           s.fired = true;
@@ -630,7 +650,7 @@ export class FiringRange {
         const al = r.action?.autoloader;
         const alOwns = !!L.autoloader && !!al && al.status !== "breech not open";
         if (this.autoCycle && over && !this.cycle && (!this.stuck || this.stuck.open) && after > CYCLE_DELAY
-            && this.chamber !== "live" && !s.cycled && !this.cyl && !alOwns) {
+            && this.chamber !== "live" && !s.cycled && !this.cyl && !alOwns && !L.rotary) {
           s.cycled = true;
           this.startCycle();
         }
@@ -718,7 +738,8 @@ export class FiringRange {
       if (r.t >= end) {
         this.reload = null;
         this.onChange?.();
-        if (this.chamber !== "live" && this.chamber !== "jammed") this.startCycle();
+        if (L.rotary) { if (this.pendingShot) this._startShot(this.pendingShot); }
+        else if (this.chamber !== "live" && this.chamber !== "jammed") this.startCycle();
         else if (this.pendingShot && this.chamber === "live") this._startShot(this.pendingShot);
       }
     }
@@ -1049,6 +1070,7 @@ export class FiringRange {
   /** Fire, eject and chamber when the action simulation says so, shot by shot. */
   _stepAutoAction() {
     if (this.cyl) return this._stepRevolverAction();
+    if (this.layout.rotary) return stepRotary(this);
     const s = this.shot, a = this._action, t = this.tSim;
     s.done ??= new Set();
     const once = (key, at, fn) => { if (!s.done.has(key) && t >= at) { s.done.add(key); fn(); } };
@@ -1425,7 +1447,7 @@ export class FiringRange {
     const L = this.layout;
     const c = this.cycle;
     // A revolver's rounds are in its cylinder (drawn with it); nothing slides.
-    if (this.cyl) return { travel: 0, round: null, ...this._mechPose(0) };
+    if (this.cyl || L.rotary) return { travel: 0, round: null, ...this._mechPose(0) };
     // Once the bolt has been worked by hand (or a wedge loaded), it is where that left it, not where the shot did.
     if (!c && this._auto && !this.shot?.cycled) return this._autoBoltPose();
     if (!c) {
@@ -1505,22 +1527,27 @@ export class FiringRange {
     const s = this.shot;
     if (!s || this.T < 0) return [];
     const L = this.layout, r = s.result, out = [];
-    for (const t0 of this._shotTimes) {
-      const local = this.tSim - t0;
+    const times = this._shotTimes;
+    for (let j = 0; j < times.length; j++) {
+      const t0 = times[j], local = this.tSim - t0;
       if (local < 0) break;
+      // Long gone (a burst of hundreds has most of its rounds far down range).
+      if (r.left_muzzle && local > r.muzzle_time + Math.max(4000, 60 * L.bore) / (r.muzzle_velocity * 1e3)) continue;
       // Still inside a muzzle device: it moves with the gun, like the gas filling the device.
       const inDevice = r.left_muzzle && local > r.muzzle_time
         ? L.muzzleX + r.muzzle_velocity * (local - r.muzzle_time) * 1e3 : null;
       if (inDevice !== null && inDevice < L.flashX) {
-        out.push({ x: inDevice, inBore: true });
+        out.push({ x: inDevice, inBore: true, j, at: this.tSim });
       } else if (r.left_muzzle && local > r.muzzle_time) {
         const recoil = this._actionAt("recoil", t0 + r.muzzle_time) * 1e3;
         const x = L.muzzleX - recoil + r.muzzle_velocity * (local - r.muzzle_time) * 1e3;
-        if (x < L.muzzleX + Math.max(4000, 60 * L.bore)) out.push({ x, inBore: false });
+        if (x < L.muzzleX + Math.max(4000, 60 * L.bore)) out.push({ x, inBore: false, j, at: t0 + r.muzzle_time });
       } else {
-        out.push({ x: L.seat + interp(r.time, r.travel, local) * 1e3, inBore: true });
+        out.push({ x: L.seat + interp(r.time, r.travel, local) * 1e3, inBore: true, j, at: this.tSim });
       }
     }
+    // A rotary gun's barrels turn as the round goes down them: it is on its own barrel's line.
+    if (L.rotary) for (const p of out) [p.y, p.z] = rotaryBarrel(this, p.j, p.at);
     return out;
   }
 
@@ -1699,6 +1726,7 @@ export class FiringRange {
       const b = A.bounds;
       goals.breech = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, width: Math.max(b.x1 - b.x0, 1.8 * (b.y1 - b.y0)) * 1.1 };
     }
+    if (L.rotary) goals.breech = rotaryCamera(L);
     const projX = this._projectileX();
     goals.follow = projX !== null
       ? { x: Math.min(projX + L.projectileLength / 2, L.flashX + 30 * L.bore), y: 0, width: Math.max(16 * L.bore, 90) }
@@ -1809,7 +1837,7 @@ export class FiringRange {
     const still = translation(0, 0, 0);
     const optional = (mesh, model, material, clip = false) => (mesh ? [{ mesh, model, material, clip }] : []);
     const lv = L.lever, ck = L.crank;
-    const items = [
+    const items = L.rotary ? rotaryParts(this, gunAt, mountAt, MATERIALS) : [
       { mesh: m.steel, model: gunAt, material: MATERIALS.steel },
       { mesh: m.furniture, model: gunAt, material: MATERIALS.black },
       ...optional(m.wood, gunAt, MATERIALS.wood, true),
@@ -1877,6 +1905,7 @@ export class FiringRange {
         addProjectile(chain(model, translation(L.seat, 0, 0)), true);
       }
     };
+    if (L.rotary) rotaryDraw(this, items, addRound, gunAt, MATERIALS);
     if (pose.round) addRound(pose.round.kind, pose.round.world ?? chain(gunAt, translation(pose.round.x, pose.round.y, 0), rotationZ(pose.round.angle ?? 0)));
     if (L.autoloader && this.alS) {
       // A tank gun's autoloader, fixed in the turret, with the rounds it holds (a two-piece round's projectile and charge
@@ -1958,7 +1987,7 @@ export class FiringRange {
     // An APFSDS's sabot is stripped off at the muzzle: its petals fly apart and fall behind the rod.
     if (this.shot) {
       for (const p of this._projectiles()) {
-        addProjectile(p.inBore ? chain(gunAt, translation(p.x, 0, 0)) : translation(p.x, 0, 0), false, p.inBore);
+        addProjectile(p.inBore ? chain(gunAt, translation(p.x, p.y ?? 0, p.z ?? 0)) : translation(p.x, p.y ?? 0, p.z ?? 0), false, p.inBore);
       }
       if (R.apfsds) {
         for (const model of this._petals()) {
@@ -1981,9 +2010,9 @@ export class FiringRange {
     if (!this.hud) return;
     const s = this.shot;
     const F = this.layout.feed;
-    const where = F.rackStatic ? "in the ready rack" : F.sides?.length > 1 ? `in the ${F.feedSide > 0 ? "right" : "left"} belt`
+    const where = this.layout.rotary ? `in the ${F.label}` : F.rackStatic ? "in the ready rack" : F.sides?.length > 1 ? `in the ${F.feedSide > 0 ? "right" : "left"} belt`
       : F.belt ? "in the belt" : this.layout.autoloader ? `in the ${this.layout.autoloader.label}` : "in the magazine";
-    const ammo = this.cyl ? ["rounds", `${this._liveCount()} / ${this.cyl.state.length} live in the cylinder`]
+    const ammo = this.layout.rotary ? ["rounds", `${this.mag} / ${F.capacity} ${where}`] : this.cyl ? ["rounds", `${this._liveCount()} / ${this.cyl.state.length} live in the cylinder`]
       : ["rounds", `${this.chamber === "live" ? 1 : 0} + ${this.mag} / ${F.capacity} ${where}`];
     const c = this.cycle, pistol = !!this.layout.hand && !this.cyl;
     const thumb = this.layout.hand?.trigger.type === "single_action";
@@ -2003,7 +2032,7 @@ export class FiringRange {
                  turn: "Turning the next chamber to the gate",
                  close: this.layout.hand.cyl.loading === "gate" ? "Closing the gate" : "Closing the cylinder" }[st];
       };
-      const what = this.reload ? (this.reload.cylinder ? cylinder() : F.belt ? belt() : F.rackStatic ? "Restocking the ready rack" : this.layout.autoloader ? "Restocking the autoloader" : "Changing the magazine")
+      const what = this.reload ? (this.reload.cylinder ? cylinder() : F.belt ? belt() : F.rackStatic ? "Restocking the ready rack" : this.layout.autoloader ? "Restocking the autoloader" : this.layout.rotary ? "Loading a fresh " + F.label : "Changing the magazine")
         : c ? working
         : this.cyl ? (this.chamber === "live" ? "Cocked: a round under the hammer"
           : this._liveCount() ? "Hammer down: the next pull turns a round up" : "Empty: reload the cylinder")
@@ -2037,6 +2066,7 @@ export class FiringRange {
         : a.status === "cycled" ? "Smoke · reloaded" : a.status === "fired" ? "Smoke" : a.status === "breech opened" ? "Smoke · breech open" : `Smoke · ${a.status}`);
     }
     else phase = this.cycle ? working : "Smoke";
+    if (this.layout.rotary) phase = rotaryPhase(this, phase);
     if (this.rate >= 0.999) slow = "real time";
     else if (this.rate > 0) slow = `${Math.round(1 / this.rate).toLocaleString()}× slower`;
     else slow = "";
@@ -2067,7 +2097,7 @@ export class FiringRange {
       const vel = this._actionAt("recoil_velocity", this.tSim);
       rows.push(["recoil", `${recoil.toFixed(1)} mm at ${vel.toFixed(2)} m/s`],
                 ["muzzle rise", `${(pitch * 180 / Math.PI).toFixed(2)}°`]);
-      if (this._auto && !s.cycled && !this.cyl) {
+      if (this._auto && !s.cycled && !this.cyl && !this.layout.rotary) {
         const bolt = this._actionAt("bolt", this.tSim) * 1e3, bv = this._actionAt("bolt_velocity", this.tSim);
         // A sliding wedge's block drops (and is open, or shut) rather than going back and forward.
         rows.push(this._breech === "wedge" ? ["breech block", `${bolt.toFixed(0)} mm down at ${Math.abs(bv).toFixed(2)} m/s`]
@@ -2075,6 +2105,7 @@ export class FiringRange {
       }
     }
     rows.push(ammo);
+    if (this.layout.rotary) rows.push(...rotaryRows(this));
     if (this._shotTimes.length > 1 && this.T >= PIN_FALL) {
       rows.unshift(["shot", `${this._shotAt(this.tSim)} of ${this._shotTimes.length}`]);
     }

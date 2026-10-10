@@ -58,7 +58,8 @@ with a suppressor, a roller-delayed rifle, a two-phase grain bed, a
 M4A1, AKM and AK-74; two cannon, the Mk44 Bushmaster II 30 mm chain gun and the
 Rheinmetall Rh-120 L/55 120 mm smoothbore tank gun; and five handguns: the Colt
 M1911A1, the Beretta M9, the Glock 17, the Colt Anaconda and the Colt Single
-Action Army).
+Action Army; and six rotary guns: the M134 Minigun, M61A1 Vulcan, GAU-8/A Avenger, GSh-6-23, the
+Slostin machine gun and the Mauser BK-27 revolver cannon).
 
 The bar along the top has four tabs (**Workshop**, **Range**, **Target**,
 **Analysis**), an **Easy / Expert** mode switch and a **Metric / Imperial**
@@ -327,14 +328,14 @@ example.
 | `[projectile]` | mass, shot-start pressure, bore resistance, `engraving_pressure` (peak extra resistance while the rifling is cut, 0 = none); `drag_model` (G1, G7, or LR for a fin-stabilised long rod) and `ballistic_coefficient` (kg/m²; estimated from the shape if missing); shape: length, ogive length and `ogive_radius_ratio` (1 = tangent, >1 = secant), meplat diameter, boat-tail length and angle; optional variants (3D view only): hollow-point diameter/depth, cannelure position/width/depth, `jacket_thickness` with `core_material` (`"lead"`, `"steel"`, `"copper"` or `"tungsten"`; a solid steel or tungsten projectile is drawn in it) and `exposed_core_length` (soft point). `type = "apfsds"`: a long rod (`length` tail to tip) in a discarding sabot; `mass` is the launch package, and `penetrator_mass`, `penetrator_diameter`, `fin_span`, `fin_length`, `sabot_length` and `sabot_offset` (rod tail to the sabot's rear face, where the gas pushes) describe it |
 | `[propellant]` | charge mass, force (impetus), covolume, γ, solid density, web thickness, burn-rate law `r = a·pⁿ`, form function `ψ(z) = χz(1+λz+μz²)`, gas molar mass (sets the gas temperature; used by the sound model). `composition` (`single_base`, `double_base`, `triple_base`) fills in the thermochemistry and burn law; `grain` (`tube`, `sphere`, `flake`, `7-perf`, `19-perf`) with `web`, `grain_length`, `grain_diameter`, `perforation_diameter` sets the form function. Explicit values always win. `flash_suppressant` (`potassium_sulfate`, `potassium_nitrate`, `potassium_cryolite`) with `suppressant_fraction` (share of the charge mass) puts out the secondary flash, at some impetus and more smoke |
 | `[ignition]` | igniter pressure; `strike_energy` (what the firing pin has to hit the primer with: 0.15 J a rifle's, 0.06 to 0.08 J a pistol's); with the two-phase grain bed, the primer flash's `duration` and the `grain_ignition_temperature` |
-| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"`, `"gas_delayed"`, `"chain"`, `"sliding_wedge"` or `"revolver"`); short recoil's `locking` (`"block"` or `"tilt"`, 3D view only); a striker's `striker_mass`, `striker_spring_preload`, `striker_spring_rate`, `striker_travel` and `striker_precock`; a revolver's `cylinder_mass` and `cylinder_radius`; gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
+| `[action]` | `type` (`"bolt"`, `"gas"`, `"direct_impingement"`, `"blowback"`, `"short_recoil"`, `"roller_delayed"`, `"lever_delayed"`, `"gas_delayed"`, `"chain"`, `"sliding_wedge"`, `"revolver"` or `"rotary"`); a rotary gun's `rotary_layout`, `rotary_drive`, `barrels`, `chambers`, `rotary_rate`, `rotor_inertia`, `cluster_radius`, `dwell_angle`, `cam_lever`, `recoil_stroke`, `starter_energy`, `rotor_damping` and `valve_time` (see [Rotary guns](#rotary-guns-gun_simrotarypy)); short recoil's `locking` (`"block"` or `"tilt"`, 3D view only); a striker's `striker_mass`, `striker_spring_preload`, `striker_spring_rate`, `striker_travel` and `striker_precock`; a revolver's `cylinder_mass` and `cylinder_radius`; gun mass and the mass that cycles (bolt and carrier, or slide); bolt stroke, return spring rate and preload, unlock travel, barrel mass (short recoil), `delay_ratio` and `bolt_head_mass` (roller/lever delayed), feeding drag, `friction` on the bolt group, restitution at the rear stop and in battery; `hammer` (on/off) with its `hammer_inertia`, `hammer_spring_torque` and `hammer_spring_rate`, `hammer_angle` (swing to the sear), `hammer_cock_travel`, `hammer_trip_travel` and `hammer_friction`, and a rate reducer's `rate_reducer_inertia` and `rate_reducer_angle`; gas port position and diameter, piston diameter, cylinder volume and piston stroke before it vents (gas, direct impingement and gas-delayed; for
 direct impingement the "piston" is the bolt's tail in the carrier); `gas_tube_length` and `gas_tube_diameter` (direct impingement); chain gun: `chain_rate` (rounds/min with no load), `motor_power`, `drive_mass`, `chain_width`, `sprocket_radius`; sliding wedge: `cam_travel`, `extractor_ratio` (the block is `bolt_mass`, its drop `bolt_travel`, its closing spring `spring_rate` and `spring_preload`); bore height above the shoulder (or trunnions), butt to centre of mass, radius of gyration (muzzle rise) |
 | `[trigger]` | `type` (`"single_action"`, `"double_action"`, `"double_action_only"` or `"striker"`), `mode` (`"auto"` for an automatic's burst, `"semi"` for a pull a shot), the single-action (or striker) `pull` and `travel`, the double-action `da_pull` and `da_travel`, `pull_time` (over a double-action pull, or to thumb-cock a hammer) and `split` (between shots fired as fast as the shooter can) |
-| `[feed]` | `type` (`"single_stack"`, `"double_stack"`, `"quad_stack"`, `"drum"`, `"belt"`, `"dual_belt"`, `"hand"` for a loader's rack, `"cylinder"` for a revolver's, or a tank gun's autoloader: `"az"`, `"mz"`, `"bustle"`, `"oscillating"`), `capacity`, the magazine spring and follower, feed angle and ramp, `hold_open`; a belt's links, hang and feed cam; a dual feed's `select`; a cylinder's `loading` (`"swing_out"` or `"gate"`); an autoloader's `drive` (`"electric"`, `"electromechanical"`, `"hydraulic"`, `"spring"`), `ammunition` (`"two_piece"` or `"unitary"`), `load_angle`, `gun_elevation`, `elevation_rate`, `index_steps`, `drive_power`, `ram_speed` (see [Autoloaders](#autoloaders-gun_simautoloaderpy)) |
+| `[feed]` | `type` (`"single_stack"`, `"double_stack"`, `"quad_stack"`, `"drum"`, `"belt"`, `"dual_belt"`, `"hand"` for a loader's rack, `"cylinder"` for a revolver's, `"linkless"` for a rotary gun's chute of unlinked rounds, or a tank gun's autoloader: `"az"`, `"mz"`, `"bustle"`, `"oscillating"`), `capacity`, the magazine spring and follower, feed angle and ramp, `hold_open`; a belt's links, hang and feed cam; a dual feed's `select`; a cylinder's `loading` (`"swing_out"` or `"gate"`); an autoloader's `drive` (`"electric"`, `"electromechanical"`, `"hydraulic"`, `"spring"`), `ammunition` (`"two_piece"` or `"unitary"`), `load_angle`, `gun_elevation`, `elevation_rate`, `index_steps`, `drive_power`, `ram_speed` (see [Autoloaders](#autoloaders-gun_simautoloaderpy)) |
 | `[shooter]` | `stance` (`"shoulder"`, `"hands"` for a handgun, `"free"` for free recoil, or `"mount"` for a mount's recoil system); body mass moving with the gun, shoulder (or arms') stiffness and damping, how hard the hold resists muzzle rise (stiffness and damping) |
 | `[muzzle_device]` | `type` (`"none"`, `"brake"`, `"suppressor"` or `"flash_hider"`); length, outer diameter, number of baffles (prongs for a flash hider), baffle hole clearance over the bore, wall thickness, blast chamber length (suppressor), baffle cone angle, vent opening round the circumference (brake, flash hider), `flare_angle` (flash hider bore), mass. Missing sizes are scaled from the bore |
 | `[mount]` | a mount's recoil system: `stroke` to the recoil stop, a spring (`spring_rate`, `spring_preload`), linear `damping`, `friction`, a hydropneumatic recuperator (`recuperator_pressure`, `recuperator_volume`, `recuperator_area`), a hydraulic buffer (`buffer_area`, `buffer_orifice` closing to `buffer_orifice_end` along the stroke, `counter_orifice` for the run-out, `oil_density`), the `counter_buffer` length, `stop_restitution`, and the elevation gear's `elevation_stiffness` and `elevation_damping` |
-| `[appearance]` | `style` (`"rifle"`, `"ar15"`, `"ak"`, `"autocannon"`, `"tank"`, or the handguns' `"1911"`, `"beretta"`, `"polymer"`, `"revolver"` and `"single_action"`): how the 3D view dresses the gun; the solvers ignore it |
+| `[appearance]` | `style` (`"rifle"`, `"ar15"`, `"ak"`, `"autocannon"`, `"tank"`, or the handguns' `"1911"`, `"beretta"`, `"polymer"`, `"revolver"` and `"single_action"`, or the rotary guns' `"rotary"`, `"m134"`, `"m61"`, `"gau8"`, `"gsh623"`, `"slostin"` and `"bk27"`): how the 3D view dresses the gun; the solvers ignore it |
 | `[solver]` | cell count, CFL number, time limits; `wall_losses` (friction and heat loss in the bore); `two_phase` (a moving grain bed lit by the primer's flame); `device_resolution` (2D cells across the bore), `device_time` (how long the muzzle device is solved in 2D), `gas_port_2d` (find the gas port's discharge coefficient in 2D) |
 
 You can leave out any geometry value (the barrel's outside diameters, twist
@@ -900,6 +901,62 @@ In 3D the rounds wait lined up behind the breech, clear of the recoil, so the ra
 further to push them than the simulation's stroke: its head is drawn faster, so each piece
 seats exactly when the simulation (and the sound) has it seat. The bustle's and the drums'
 housings are drawn as open frames, and a restocked autoloader fills at once.
+
+### Rotary guns (`gun_sim/rotary.py`)
+
+`action.type = "rotary"`: a Gatling's cluster of barrels (`rotary_layout = "gatling"`), or a
+revolver cannon's drum of chambers behind one barrel (`"revolver"`). Every barrel (chamber) is a
+station on one rotor and fires as it reaches the top.
+
+- **The rotor.** Each station's bolt (a revolver's rammer) rides a fixed cam in the housing: locked
+  for `dwell_angle` after the shot, drawn back on a cycloidal stroke to the bottom, open while the
+  feeder drops the next round in, rammed home on another, and locked again before the top. The rotor,
+  the bolts and the drive are solved together from their kinetic energy, so the bolts' strokes pull
+  on the rotor as the cam drives them. A round is caught from rest by its station (its share of the
+  rotor's momentum, and the energy that costs), rides round as part of the rotor, and its case leaves
+  at the ejection port; the belt's (or a `linkless` chute's) pull is a torque while it feeds.
+- **Drives** (`rotary_drive`).
+  - *electric*: a DC motor whose torque falls with speed to its free speed at `rotary_rate`. It runs
+    on to clear the last cases, then brakes.
+  - *hydraulic*: a hydraulic motor behind a valve that opens over `valve_time`, full torque until the
+    supply's flow runs out at `rotary_rate`; closing the valve brakes it.
+  - *gas*: the gun drives itself. A starter cartridge (`starter_energy`) turns it up to its first
+    shot; then each barrel that has fired bleeds gas into its own cylinder (as the gas action does),
+    whose piston turns the rotor through a helical cam (`cam_lever` m per radian) until it has moved
+    `gas_stroke` and vents. Below some speed the piston hardly moves while the port has pressure, so
+    the gun cannot keep itself going (hence the starter); the rate settles where the piston vents
+    within the gas pulse and its work matches the rotor's losses (`friction`, `rotor_damping`).
+  - *recoil*: the barrels recoil `recoil_stroke` in the receiver against their spring and turn the
+    rotor through a helical cam and an overrunning clutch while they move back faster than it turns.
+- **Trigger.** The feeder runs from the pull until the burst (Shots, up to 400) is fed or the belt
+  runs out; the gun turns on until every station is clear, then brakes. Times are from the first
+  ignition, so the spin-up comes before 0. The gun recoils on its mount under every shot.
+- **Reported:** the steady rate, the time from the trigger to the first shot and to full speed, the
+  drive's peak power, the chamber pressure as each bolt unlocks (a warning if the dwell is too short
+  for the rate), a drive too weak to turn the gun, a starter too weak to reach the first shot, and a
+  self-driven gun running away past its rated rate.
+- **Sound.** The drive (an electric motor's whine, gears and brushes; a hydraulic motor's pistons, the
+  supply's pump and the oil through the valve; a starter cartridge's bang), the rotor's barrels
+  sweeping round, the bolts' rollers in the cam and the feeder taking each round are one sound over
+  the whole burst, from the spin-up to the spin-down, with a fader of its own (*Drive & rotor*). Each
+  shot adds its bolt locking and its case landing.
+- **3D.** The rotor turns as the simulation has it, every bolt on its cam, the rounds coming in from
+  the feed path and the cases thrown out (or, M61 and GAU-8, carried back down the return chute).
+
+| Preset | Layout, drive | Published | Simulated |
+| --- | --- | --- | --- |
+| M134 Minigun (`m134_minigun`) | 6 barrels, electric | 7.62×51 mm, 2,000–6,000 rounds/min (3,000 typical) | 838 m/s; about 3,050 rounds/min, firing 0.1 s after the trigger |
+| M61A1 Vulcan (`m61_vulcan`) | 6 barrels, hydraulic, linkless | 20×102 mm, 6,000 rounds/min | 1,030 m/s at 380 MPa; about 6,070 rounds/min |
+| GAU-8/A Avenger (`gau8_avenger`) | 7 barrels, two hydraulic motors, linkless | 30×173 mm, 3,900 rounds/min, about 0.5 s to rate | 1,050 m/s; about 3,970 rounds/min, up to rate in 0.46 s |
+| GSh-6-23 (`gsh623`) | 6 barrels, gas, pyrotechnic starter | 23×115 mm, 9,000–10,000 rounds/min | 715 m/s; 8,800 to 9,400 rounds/min, still climbing through a long burst |
+| Slostin (1946) (`slostin`) | 8 barrels, gas, on a tripod | 7.62×54 mmR, 1,760–2,100 rounds/min | 824 m/s; about 1,940 rounds/min |
+| Mauser BK-27 (`mauser_bk27`) | 5-chamber revolver, gas, cocking charge | 27×145 mm, 1,700 rounds/min | 1,025 m/s; about 1,700 rounds/min |
+
+The loads are tuned to their published velocities; the drives, rotors, gas engines and mounts are
+illustrative, tuned to the published rates. Not modelled: the cam's exact profile (a fixed dwell and
+cycloidal strokes), a lock's rotation, a revolver drum's indexing from chamber to chamber (it turns
+steadily, its speed swinging with each gas kick), the drive's reaction torque on the gun, and the
+starter's own gas.
 
 ### Handguns: triggers, strikers and revolvers (`gun_sim/action.py`, `gun_sim/revolver.py`)
 

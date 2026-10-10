@@ -182,7 +182,9 @@ def _physics(gun: Gun, s: SoundSettings) -> _Physics:
     return phys
 
 
-def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
+def synthesize(gun: Gun, settings: SoundSettings | None = None, burst: int = 1) -> Sound:
+    """The shot as heard. burst: a rotary gun's shots, for its drive's sound over the whole burst
+    (each shot's own sounds are the same, and are played at each shot's time)."""
     s = (settings or SoundSettings()).resolved(gun.barrel.travel)
     phys = _physics(gun, s)
     shot, blast, t_u, probes = phys.shot, phys.blast, phys.t, phys.probes
@@ -315,7 +317,7 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
 
     # ---- the action: hammer, bolt and the case landing ----
     if s.action_sounds:
-        cycle = action.simulate(gun, shot)
+        cycle = action.simulate(gun, shot, shots=burst if gun.action.type == "rotary" else 1)
         receiver = np.array([-(gun.barrel.travel + gun.case.length + 0.05), 0.0, 0.0])
         ground = np.array([receiver[0], -1.5, -h_s])  # cases land about 1.5 m to the right
         for k, imp in enumerate(mechanical.impacts(cycle, gun)):
@@ -333,6 +335,13 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
             wave = mechanical.motor(fs_int, cycle.time, cycle.drive, gun, track) / r
             arrivals.append(dict(name="action: chain drive", t0=float(cycle.time[0]) + r / c0, wave=wave, r=r,
                                  grazing=None, direction=vec / r))
+        drive = mechanical.rotary(fs_int, cycle.rotary, cycle.events, gun) if cycle.rotary is not None else None
+        if drive is not None:
+            # A rotary gun's drive and rotor, from the trigger to the spin-down: one sound for the burst.
+            vec = listener - receiver
+            r = max(float(np.linalg.norm(vec)), 0.05)
+            arrivals.append(dict(name="drive: rotary", t0=drive[0] + r / c0, wave=drive[1] / r, r=r,
+                                 grazing=None, direction=vec / r))
         loader = mechanical.autoloader(fs_int, cycle.autoloader)
         if loader is not None:
             # A tank gun's autoloader, in the turret behind the breech, all through its cycle.
@@ -343,7 +352,8 @@ def synthesize(gun: Gun, settings: SoundSettings | None = None) -> Sound:
 
     # ---- render every arrival on one timeline, at the internal rate ----
     first = min(a["t0"] + _onset(a["wave"]) / fs_int for a in arrivals)
-    start = max(0.0, first - 0.02)
+    # A rotary gun's drive starts before the first shot, with its spin-up.
+    start = first - 0.02 if first < 0 else max(0.0, first - 0.02)
     end = max(a["t0"] + len(a["wave"]) / fs_int for a in arrivals) + 0.02
     n_out = int(math.ceil((end - start) * fs_int))
     nfft = 1 << int(math.ceil(math.log2(n_out + 4096)))
@@ -544,7 +554,7 @@ def _stems(groups: dict, out, references: dict, rate: int, start: float) -> list
         i1 = min(len(env), int(idx[-1]) + 1 + int(0.020 * rate))
         kind = ("blast" if name.startswith("muzzle blast") else "crack" if name.startswith("supersonic")
                 else "device" if name == "suppressor ring" else "gap" if name.startswith("cylinder gap")
-                else "action")
+                else "drive" if name.startswith("drive") else "action")
         refs = None
         if kind == "blast":
             # The feeds carry the jet's roar too, which outlasts the blast: cut them where
