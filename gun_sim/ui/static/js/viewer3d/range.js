@@ -11,7 +11,8 @@
 //   3. Muzzle exit: flash and smoke, as the 2D plume solution (gun_sim/plume.py)
 //      has them: the gas glows where it is hot and carries the smoke. A couple
 //      of milliseconds later the clock ramps up to real time, so the smoke
-//      drifts and thins at its real pace.
+//      drifts and thins at its real pace. A supersonic projectile trails its
+//      Mach cones (bow and tail shocks) out from the muzzle as it flies.
 //   4. The bolt cycles. A manual bolt turns up, draws back extracting the
 //      case, which is flung out of the port, then pushes a new round from the
 //      magazine into the chamber and turns down again. An automatic action
@@ -67,7 +68,7 @@ import { chain, invert, lookAt, perspective, rotationX, rotationY, rotationZ, tr
 import { feedCheck } from "./feed.js";
 import { rotaryBarrel, rotaryCamera, rotaryDraw, rotaryParts, rotaryPhase, rotaryRows, startRotary, stepRotary } from "./rotary.js";
 import { CORE_MATERIALS, ROUND_MATERIALS, Renderer, srgbToLinear } from "./renderer.js";
-import { VolumeEffects } from "./volume.js";
+import { MAX_SHOCK, VolumeEffects } from "./volume.js";
 
 const MATERIALS = {
   steel: { color: srgbToLinear([0.2, 0.2, 0.22]), metallic: 1, roughness: 0.36, section: srgbToLinear([0.27, 0.28, 0.3]) },
@@ -135,6 +136,8 @@ const LUG_TURN = Math.PI / 8;   // a gas action's bolt turns this much to unlock
 const SETTLE = 0.6;             // s (sim) to ease the gun home after the recoil data ends
 const ATM = 101325;
 const T_AIR = 288;              // K
+const SOUND_SPEED = Math.sqrt(1.4 * 287.05 * T_AIR);   // m/s, in the range's air
+const SHOCK_REACH = 60;         // calibres behind the nose a Mach cone is drawn to (it fades out over the last half)
 const WIEN = 23980;             // K, as volume.js: glow ~ exp(-WIEN / T)
 const FLASH_LIGHT = 2e4;        // light from the flash per unit of the plume's glow
 const SEEP_DILUTION = 20;       // air taken in per volume of gas seeping out of the exit
@@ -1605,7 +1608,7 @@ export class FiringRange {
   _effects() {
     const L = this.layout, s = this.shot;
     const bore = L.bore;
-    const state = { smoke: [], fields: [], gas: null, plume: null, light: null, time: 0 };
+    const state = { smoke: [], fields: [], gas: null, plume: null, light: null, time: 0, shocks: [] };
     let light = null;
     // The rifle's model matrix at a sim time (recoil, then pitch about the pivot), and its action on points.
     const gunAtT = (t) => {
@@ -1704,6 +1707,19 @@ export class FiringRange {
         extinction: 0.55 * Math.exp(-w.age / 1.3) * smooth(w.age / 0.15) / r, rise: 0,
         age: w.age, group: 1, seed: 12.4, trail: 0.8,
       });
+    }
+    // The Mach cones of the latest supersonic projectiles in flight. A cone is the envelope of the sound
+    // shed since the muzzle, so it only reaches (distance flown) cos^2 of the Mach angle behind the nose.
+    const v = s?.result.muzzle_velocity ?? 0;
+    if (s && v > SOUND_SPEED) {
+      const tanMach = SOUND_SPEED / Math.sqrt(v * v - SOUND_SPEED * SOUND_SPEED), cos2 = 1 - (SOUND_SPEED / v) ** 2;
+      for (const p of this._projectiles().filter((q) => !q.inBore).slice(-MAX_SHOCK)) {
+        const tip = p.x + L.projectileLength;
+        const reach = Math.min(SHOCK_REACH * bore, (tip - L.flashX) * cos2);
+        if (reach > 0) {
+          state.shocks.push({ tip: [tip, p.y ?? 0, p.z ?? 0], tanMach, length: L.projectileLength, calibre: bore, reach, strength: 1 });
+        }
+      }
     }
     return { state, light };
   }

@@ -12,6 +12,12 @@
 // - Hot propellant gas in the bore behind the projectile, glowing as hot as
 //   the fluid model says it is. It's a thin cylinder, so instead of marching
 //   it the ray's chord through it is found exactly and sampled along.
+// - The Mach cones of a supersonic projectile in flight: the bow shock off its
+//   nose and the weaker tail shock off its base, each a thin conical sheet at
+//   the Mach angle. The air's density jumps across the sheet, so it shows as
+//   a faint pale line, brightest where it is seen edge on, as in a schlieren
+//   photograph; it weakens away from the projectile as a shock does. The ray
+//   meets a cone at most twice, found exactly.
 //
 // The marched effects are split into two groups (around the muzzle, and
 // around the breech), each with a bounding sphere, so every ray only marches
@@ -25,6 +31,7 @@ import { link } from "./renderer.js";
 export const MAX_SMOKE = 4;
 export const MAX_FIELD = 2;
 export const BORE_POINTS = 24;   // temperatures along the gas column (fluid.BORE_GAS_POINTS)
+export const MAX_SHOCK = 4;      // projectiles whose Mach cones are drawn
 const LUT = 1024;                // samples of the grid's mm -> cell maps
 
 const VS = `#version 300 es
@@ -37,6 +44,7 @@ precision highp sampler3D;
 #define MAX_SMOKE ${MAX_SMOKE}
 #define MAX_FIELD ${MAX_FIELD}
 #define BORE_POINTS ${BORE_POINTS}
+#define MAX_SHOCK ${MAX_SHOCK}
 #define LUT ${LUT}
 // Brightness of glowing gas per mm of path and kg/m^3 of propellant gas at 2500 K; smoke's
 // extinction per mm and kg/m^3 (some tenths of a percent of the gas is particles and condensate,
@@ -71,6 +79,10 @@ uniform vec4 u_gas;                      // start x, end x, on (0/1), bore radiu
 uniform vec2 u_gasCase;                  // case cavity radius, x where the case necks down
 uniform float u_boreT[BORE_POINTS];      // K, evenly along the gas column from start to end
 uniform mat4 u_gunInv;                   // world -> the rifle's frame (it recoils and pitches); the bore gas lives there
+
+uniform int u_shockCount;                // Mach cones, flying along +x
+uniform vec4 u_shockA[MAX_SHOCK];        // nose tip (xyz, world mm), tan of the Mach angle
+uniform vec4 u_shockB[MAX_SHOCK];        // projectile length, calibre, length of the cone drawn, strength
 
 uniform vec3 u_lightPos;                 // the flash's light, which lights the smoke
 uniform vec3 u_lightColor;
@@ -243,6 +255,47 @@ vec3 gasGlow(vec3 roW, vec3 rdW, float tScene) {
        + boreChord(ro, rd, chord(ro, rd, u_gas.w, neck, u_gas.y, tScene));
 }
 
+// ---- Mach cones ----
+// How much of a conical shock sheet the ray crosses before tScene: the cone has its apex at `apex`
+// and opens back along -x with tan k, out to `len` behind the apex. Each crossing counts the more
+// the more nearly edge on it is (the ray runs further through the sheet), and less the further
+// behind the projectile it is (a shock weakens as r^-3/4 as it spreads).
+float shockSheet(vec3 ro, vec3 rd, vec3 apex, float k, float len, float cal, float tScene) {
+  vec3 q = ro - apex;
+  float k2 = k * k;
+  float a = dot(rd.yz, rd.yz) - k2 * rd.x * rd.x;
+  float b = dot(q.yz, rd.yz) - k2 * q.x * rd.x;
+  float c = dot(q.yz, q.yz) - k2 * q.x * q.x;
+  float disc = b * b - a * c;
+  if (disc <= 0.0 || abs(a) < 1e-9) return 0.0;
+  float sq = sqrt(disc), sum = 0.0;
+  for (int s = 0; s < 2; s++) {
+    float t = (-b + (s == 0 ? -sq : sq)) / a;
+    if (t <= 0.0 || t >= tScene) continue;
+    vec3 p = q + rd * t;
+    float along = -p.x;
+    if (along <= 0.0 || along >= len) continue;
+    vec3 n = normalize(vec3(-k2 * p.x, p.y, p.z));
+    float edge = 1.0 / max(abs(dot(n, rd)), 0.06);
+    sum += edge * pow(1.0 + along / cal, -0.75) * (1.0 - smoothstep(0.5 * len, len, along));
+  }
+  return sum;
+}
+
+// The cones' pale lines (premultiplied colour, alpha).
+vec4 shocks(vec3 ro, vec3 rd, float tScene) {
+  float sum = 0.0;
+  for (int i = 0; i < MAX_SHOCK; i++) {
+    if (i >= u_shockCount) break;
+    vec4 A = u_shockA[i], B = u_shockB[i];
+    // The bow shock stands a little off the nose; the tail shock comes off the base, weaker.
+    sum += B.w * shockSheet(ro, rd, A.xyz + vec3(0.1 * B.y, 0.0, 0.0), A.w, B.z, B.y, tScene);
+    sum += 0.55 * B.w * shockSheet(ro, rd, A.xyz - vec3(B.x, 0.0, 0.0), A.w, max(B.z - B.x, 0.0), B.y, tScene);
+  }
+  float alpha = 1.0 - exp(-0.035 * sum);
+  return vec4(vec3(0.72, 0.78, 0.86) * alpha, alpha);
+}
+
 // Density, emission and lit colour of one sample.
 void sampleAt(int group, vec3 p, out float sigma, out vec3 emit, out vec3 lit) {
   sigma = 0.0;
@@ -313,6 +366,17 @@ void main() {
   vec4 front = da < db ? a : b, back = da < db ? b : a;
   vec3 col = front.rgb + (1.0 - front.a) * back.rgb;
   float alpha = 1.0 - (1.0 - front.a) * (1.0 - back.a);
+  // The Mach cones, in front of the plume and smoke or behind them as the projectile is.
+  if (u_shockCount > 0) {
+    vec4 sh = shocks(u_eye, rd, tScene);
+    float nearest = min(u_bound[0].w > 0.0 ? da : 1e9, u_bound[1].w > 0.0 ? db : 1e9);
+    if (dot(u_shockA[0].xyz - u_eye, rd) < nearest) {
+      col = sh.rgb + (1.0 - sh.a) * col;
+    } else {
+      col += (1.0 - alpha) * sh.rgb;
+    }
+    alpha = 1.0 - (1.0 - alpha) * (1.0 - sh.a);
+  }
   if (alpha <= 0.0 && dot(col, col) <= 0.0) discard;
   // Same tone curve as the meshes, then gamma. Colour stays premultiplied by alpha.
   col = col * (2.51 * col + 0.03) / (col * (2.43 * col + 0.59) + 0.14);
@@ -322,7 +386,7 @@ void main() {
 const UNIFORMS = ["u_invViewProj", "u_eye", "u_resolution", "u_depth", "u_bound", "u_clipPlane", "u_time",
   "u_field", "u_lut", "u_fieldGrid", "u_fieldCells", "u_fieldCount", "u_fieldInv", "u_fieldA", "u_fieldB",
   "u_smokeCount", "u_smokeOrigin", "u_smokeDir", "u_smokeShape", "u_smokeMisc",
-  "u_gas", "u_gasCase", "u_boreT", "u_gunInv", "u_lightPos", "u_lightColor", "u_lightRange"];
+  "u_gas", "u_gasCase", "u_boreT", "u_gunInv", "u_shockCount", "u_shockA", "u_shockB", "u_lightPos", "u_lightColor", "u_lightRange"];
 
 /** Bounding sphere of a set of spheres [cx, cy, cz, r] (r = 0 entries ignored). */
 function enclose(spheres) {
@@ -387,6 +451,8 @@ export class VolumeEffects {
    *   smoke: [{origin, dir, reach, radius, extinction, rise, age, group, seed, trail}]
    *   gas: {x0, x1, temps, boreR, caseR, neckX}      (in the rifle's frame; temps along x0..x1, K)
    *   gunModel: the rifle's model matrix (recoil and pitch)
+   *   shocks: [{tip, tanMach, length, calibre, reach, strength}] Mach cones of projectiles flying along +x
+   *     (tip: world mm; length: the projectile's; reach: how far behind the tip the cone is drawn)
    *   light: {position, color, range} of the flash, which lights the smoke; time: s since the latest exit
    * Returns true if there is anything to draw.
    */
@@ -401,7 +467,8 @@ export class VolumeEffects {
     }
     this.fields = fields;
     this.bounds = groups.map(enclose);
-    return this.bounds.some((b) => b[3] > 0) || !!state.gas;
+    this.shocks = (state.shocks || []).slice(0, MAX_SHOCK);
+    return this.bounds.some((b) => b[3] > 0) || !!state.gas || this.shocks.length > 0;
   }
 
   /** Overlay callback for Renderer.render. */
@@ -454,7 +521,12 @@ export class VolumeEffects {
     gl.uniform1fv(u.u_boreT, g ? g.temps : new Float32Array(BORE_POINTS).fill(300));
     gl.uniformMatrix4fv(u.u_gunInv, false, s.gunModel ? invert(s.gunModel) : identity());
 
-    const light = s.light || { position: [0, 0, 0], color: [0, 0, 0], range: 1 };
+    const shocks = this.shocks, padS = (arr) => arr.concat(new Array(MAX_SHOCK * 4 - arr.length).fill(0));
+    gl.uniform1i(u.u_shockCount, shocks.length);
+    gl.uniform4fv(u.u_shockA, padS(shocks.flatMap((c) => [...c.tip, c.tanMach])));
+    gl.uniform4fv(u.u_shockB, padS(shocks.flatMap((c) => [c.length, c.calibre, c.reach, c.strength])));
+
+    const light = s.light ||{ position: [0, 0, 0], color: [0, 0, 0], range: 1 };
     gl.uniform3fv(u.u_lightPos, light.position);
     gl.uniform3fv(u.u_lightColor, light.color);
     gl.uniform1f(u.u_lightRange, light.range);
