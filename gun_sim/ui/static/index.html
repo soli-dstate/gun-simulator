@@ -217,6 +217,15 @@
   .events span:nth-child(3n+1) { color: var(--muted); }
   .events span:nth-child(3n+2), .events span:nth-child(3n) { font-variant-numeric: tabular-nums; text-align: right; }
   #burst { width: 52px; }
+  #mixer { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--grid); }
+  #mixer .mix-title { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+  .mix-part { display: inline-flex; gap: 4px; align-items: center; }
+  .mix-part[hidden] { display: none; }
+  .mix-part .mix-mute { padding: 2px 8px; font-size: 12.5px; border-radius: 6px; }
+  .mix-part .mix-mute[aria-pressed=true] { text-decoration: line-through; color: var(--muted); }
+  .mix-part.muted input { opacity: 0.4; }
+  .mix-part .mix-val { color: var(--muted); font-size: 12px; min-width: 38px; font-variant-numeric: tabular-nums; }
+  #mixer input[type=range] { width: 70px; }
 
   /* ---------- target ---------- */
   #target-tab { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); gap: 16px; padding: 16px; align-items: start; }
@@ -413,6 +422,7 @@
       <label><input type="number" id="rpm" value="700" min="1" step="any"> rpm</label>
       <span id="sound-status"></span>
     </div>
+    <div class="bar" id="mixer"></div>
     <div id="sound-out"></div>
   </div>
 </main>

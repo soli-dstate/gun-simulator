@@ -529,7 +529,8 @@ def _stems(groups: dict, out, references: dict, rate: int, start: float) -> list
     """One trimmed left/right track per sound event (direct + ground paths summed).
 
     `time` is seconds after ignition of the stem's first sample. The blast stem also
-    carries the reference feeds cut to the same window (`reference` is the side one).
+    carries the reference feeds from the same start, running on until they die away
+    (`reference` is the side one).
     """
     stems = []
     for name, (sl, sr) in groups.items():
@@ -544,7 +545,14 @@ def _stems(groups: dict, out, references: dict, rate: int, start: float) -> list
         kind = ("blast" if name.startswith("muzzle blast") else "crack" if name.startswith("supersonic")
                 else "device" if name == "suppressor ring" else "gap" if name.startswith("cylinder gap")
                 else "action")
-        refs = {k: v[i0:i1] for k, v in references.items()} if kind == "blast" else None
+        refs = None
+        if kind == "blast":
+            # The feeds carry the jet's roar too, which outlasts the blast: cut them where
+            # they themselves die away, or the echoes stop short with them.
+            ref_env = np.max([np.abs(v) for v in references.values()], axis=0)
+            ref_idx = np.nonzero(ref_env > 1e-5 * float(ref_env.max()))[0] if ref_env.max() > 0 else idx
+            r1 = min(len(ref_env), max(i1, int(ref_idx[-1]) + 1 + int(0.020 * rate)))
+            refs = {k: v[i0:r1] for k, v in references.items()}
         stems.append(dict(name=name, kind=kind, time=start + i0 / rate, left=left[i0:i1], right=right[i0:i1],
                           peak=peak, reference=refs["side"] if refs else None, references=refs))
     return stems

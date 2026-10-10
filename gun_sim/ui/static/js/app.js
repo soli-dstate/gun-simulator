@@ -1,4 +1,4 @@
-import { ENVIRONMENTS, PROTECTION, ShotPlayer } from "./audio.js";
+import { ENVIRONMENTS, PROTECTION, SOUND_PARTS, ShotPlayer } from "./audio.js";
 import { connect } from "./backend.js";
 import { cssVar, drawChart } from "./charts.js";
 import { EasyMode } from "./easy.js";
@@ -312,6 +312,50 @@ function playOptions() {
   };
 }
 
+// The mixer: a mute button and a fader (0-200 %) for each part of the shot, remembered between visits.
+let mixer = {};
+function initMixer() {
+  try { mixer = JSON.parse(recall("gun-sim-mixer")) ?? {}; } catch (e) { mixer = {}; }
+  $("mixer").innerHTML = `<span class="mix-title">Mix</span>` + Object.entries(SOUND_PARTS).map(([k, name]) =>
+    `<span class="mix-part" data-part="${k}"><button class="mix-mute" aria-pressed="false" title="Mute ${name.toLowerCase()}">${name}</button>
+      <input type="range" min="0" max="2" step="0.01" value="1" aria-label="${name} volume" title="${name}: double-click for 100 %">
+      <span class="mix-val"></span></span>`).join("") +
+    `<button id="mix-reset" class="ghost" title="Every part back to 100 %, none muted">Reset</button>`;
+  for (const el of $("mixer").querySelectorAll(".mix-part")) {
+    const k = el.dataset.part, slider = el.querySelector("input"), mute = el.querySelector("button");
+    const apply = () => {
+      const m = mixer[k] ?? { gain: 1, muted: false };
+      slider.value = m.gain;
+      mute.setAttribute("aria-pressed", m.muted);
+      el.classList.toggle("muted", m.muted);
+      el.querySelector(".mix-val").textContent = `${Math.round(m.gain * 100)} %`;
+      player.setPartLevel(k, m.muted ? 0 : m.gain);
+    };
+    const set = (change) => {
+      mixer[k] = { gain: 1, muted: false, ...mixer[k], ...change };
+      store("gun-sim-mixer", JSON.stringify(mixer));
+      apply();
+    };
+    slider.oninput = () => set({ gain: Number(slider.value) });
+    slider.ondblclick = () => set({ gain: 1 });
+    mute.onclick = () => set({ muted: !(mixer[k]?.muted) });
+    el.apply = apply;
+    apply();
+  }
+  $("mix-reset").onclick = () => {
+    mixer = {};
+    store("gun-sim-mixer", "{}");
+    for (const el of $("mixer").querySelectorAll(".mix-part")) el.apply();
+  };
+  showMixerParts();
+}
+
+/** Show only the parts the current shot has, in its surroundings. */
+function showMixerParts() {
+  const have = new Set(player.parts);
+  for (const el of $("mixer").querySelectorAll(".mix-part")) el.hidden = player.shot ? !have.has(el.dataset.part) : false;
+}
+
 function play() {
   try {
     player.unlock();
@@ -334,6 +378,7 @@ async function synthesizeSound(gun, shot) {
     lastSound = data;
     soundForShot = shot;
     player.load(data);
+    showMixerParts();
     $("play").disabled = false;
     status.textContent = `${(player.shot.left.length / data.sample_rate).toFixed(2)} s at ${data.sample_rate / 1000} kHz`;
     showSoundStats(data);
@@ -1085,6 +1130,7 @@ async function init() {
   for (const [key, p] of Object.entries(PROTECTION)) $("protection").add(new Option(p.label, key));
   $("environment").value = player.environment;
   $("protection").value = player.protection;
+  initMixer();
   setSound({ ...schema.sound.defaults, ...schema.sound.presets.shooter });
   $("listener").value = "shooter";
   initPreviews();
@@ -1163,7 +1209,7 @@ async function init() {
   $("run").onclick = () => fire(true);
   $("play").onclick = play;
   $("sound-on").onchange = (e) => { if (e.target.checked) resynthesize(); };
-  $("environment").onchange = (e) => player.setEnvironment(e.target.value);
+  $("environment").onchange = (e) => { player.setEnvironment(e.target.value); showMixerParts(); };
   $("protection").onchange = (e) => player.setProtection(e.target.value);
   $("level-mode").onchange = (e) => {
     $("full-scale-wrap").hidden = e.target.value !== "calibrated";

@@ -14,13 +14,16 @@
 //   │ reference rear ──▶ convolver (rear IR) ───────────────────────┤ │
 //   │ crack echoes (L/R) ───────────────────────────────────────────┘ │
 //   └─────────────────────────────────────────────────────────────────┘
-//      mix + the action's clacks ─▶ protection ─┬─▶ clean ─────────────┬─▶ volume ─▶ limiter ─▶ speakers
-//                                               └─▶ drive (tanh) ─▶ ───┘
+//      mix parts + the action's clacks ─▶ part faders ─▶ protection ─┬─▶ clean ─────────────┬─▶ volume ─▶ limiter ─▶ speakers
+//                                                                    └─▶ drive (tanh) ─▶ ───┘
+//
+// The mix is rendered as one buffer per part (SOUND_PARTS: blast, crack, echoes...),
+// all from the same instant, so each part has a fader of its own.
 //
 // The shot comes in stems, one per event (muzzle blast, supersonic crack,
 // each clack of the action), each with its time after ignition. Everything
 // acoustic about the shot (the blast and crack with all their echoes and
-// reverb) is mixed into one buffer, so it always plays together, echoes in
+// reverb) is mixed together, one buffer per part, so it always plays together, echoes in
 // time with the blast. On the range the mix and the action's clacks follow the
 // animation's clock: each starts when the slowed-down clock reaches it, and,
 // if the sound is stretched, plays slowed down with it (down to MIN_RATE,
@@ -30,7 +33,23 @@ const P_REF = 20e-6;
 export const MIN_RATE = 0.25;   // slowest a stem plays at when it follows the slow motion
 const LOOKAHEAD = 0.1;          // s (real) of the animation's clock scheduled ahead
 const SIDES = ["front", "side", "rear"];
-const MAX_ECHO = 7;             // s, echoes arriving later than this are dropped
+const MAX_ECHO = 10;            // s, echoes arriving later than this are dropped
+// Every echo and the reverb run on until this far down (dB), so that none stops
+// audibly short even with the recorder's drive bringing the tail up by 36 dB or more.
+const DECAY_DB = 100;
+const DECAY_E = DECAY_DB / 8.686;  // the same, in time constants of an exponential decay
+
+// The parts of a shot that can each be turned up, down or off, in mix order.
+export const SOUND_PARTS = {
+  blast: "Muzzle blast & jet",
+  crack: "Supersonic crack",
+  gap: "Cylinder gap",
+  device: "Suppressor ring",
+  action: "Action",
+  echoes: "Echoes & reverb",
+  crackEchoes: "Crack echoes",
+};
+const partOf = (stem) => (stem.kind in SOUND_PARTS ? stem.kind : "blast");
 const FRESNEL_HZ = 500;         // frequency whose Fresnel zone sets how much of a surface reflects as one
 const MAX_PATCHES = 600;        // per surface
 
@@ -229,9 +248,10 @@ function crackEchoes(env, geom, src) {
  * whose total energy equals that of a single reflection of `amp`.
  */
 function addBurst(h, n0, amp, smear, lp, fs) {
-  const nLen = Math.max(1, Math.floor(smear * fs * 3));
   const tau = Math.max(smear * fs, 1);
   const a = Math.exp(-2 * Math.PI * lp / fs);
+  // The noise decays over DECAY_E time constants, then the filter rings out.
+  const nLen = Math.ceil(tau * DECAY_E + DECAY_E / (1 - a));
   const tmp = new Float32Array(nLen);
   let y = 0, energy = 0;
   for (let k = 0; k < nLen; k++) {
@@ -262,8 +282,9 @@ function buildIRs(ctx, env, geom) {
   for (const side of SIDES) {
     const tail = side === "side" ? env.tail : null;
     if (!tail && !taps[side].length) { irs[side] = null; continue; }
-    const echoEnd = Math.max(0, ...taps[side].map(([d, , , smear]) => d + smear * 3));
-    const len = Math.ceil(fs * Math.max(tail ? tail.start + tail.rt60 * 1.2 : 0, echoEnd) + fs * 0.05);
+    const echoEnd = Math.max(0, ...taps[side].map(([d, , , smear, lp]) => d + (smear + 1 / (2 * Math.PI * lp)) * DECAY_E));
+    // rt60 is the time to fall 60 dB: run the tail on until DECAY_DB down.
+    const len = Math.ceil(fs * Math.max(tail ? tail.start + tail.rt60 * DECAY_DB / 60 : 0, echoEnd) + fs * 0.05);
     const ir = ctx.createBuffer(2, len, fs);
     for (let ch = 0; ch < 2; ch++) {
       const h = ir.getChannelData(ch);
@@ -299,13 +320,13 @@ function renderCrackEchoes(env, geom, src, fs) {
   const echoes = crackEchoes(env, geom, src);
   if (!echoes.length) return null;
   const t0 = Math.min(...echoes.map((e) => e.time)) - 0.002;
-  const t1 = Math.max(...echoes.map((e) => e.time + e.smear + e.duration)) + 0.05;
+  const t1 = Math.max(...echoes.map((e) => e.time + e.smear + e.duration + DECAY_E / (2 * Math.PI * e.lp))) + 0.05;
   const len = Math.ceil((t1 - t0) * fs);
   const left = new Float32Array(len), right = new Float32Array(len);
   for (const e of echoes) {
     const a = Math.exp(-2 * Math.PI * e.lp / fs);
     const nN = Math.max(2, Math.round(e.duration * fs));
-    const nTail = Math.ceil(5 / (1 - a));
+    const nTail = Math.ceil(DECAY_E / (1 - a));
     for (const [h, g] of [[left, e.gl], [right, e.gr]]) {
       // Rough surfaces spread the return a little, differently for each ear.
       const n0 = Math.floor((e.time - t0 + Math.random() * e.smear) * fs);
@@ -346,6 +367,26 @@ export class ShotPlayer {
     this.irCache = {};
     this.sync = null;        // events following the range's clock
     this.stretch = true;     // slow the sound down with the clock (else it plays at real speed)
+    this.partLevels = Object.fromEntries(Object.keys(SOUND_PARTS).map((k) => [k, 1]));  // gain of each part, 0 = muted
+  }
+
+  /** Turn one part of the shot (see SOUND_PARTS) up or down; takes effect at once, even mid-shot. */
+  setPartLevel(part, gain) {
+    this.partLevels[part] = gain;
+    const node = this.partNodes?.[part];
+    if (node) node.gain.setTargetAtTime(gain, this.ctx.currentTime, 0.01);
+  }
+
+  /** The parts the current shot has, in mix order. */
+  get parts() {
+    if (!this.shot) return [];
+    const have = new Set(this.shot.acoustic.map(partOf));
+    if (this.shot.actions.length) have.add("action");
+    if (this.environment !== "none") {
+      have.add("echoes");
+      if (this.shot.crackSource && ENVIRONMENTS[this.environment].surfaces) have.add("crackEchoes");
+    }
+    return Object.keys(SOUND_PARTS).filter((k) => have.has(k));
   }
 
   /** Create or wake the audio context. Call from a click handler (autoplay rules). */
@@ -383,6 +424,14 @@ export class ShotPlayer {
     this.limiter.attack.value = 0;
     this.limiter.release.value = 0.15;
     this.volume.connect(this.limiter).connect(ctx.destination);
+    // One fader per part of the shot, ahead of the protection.
+    this.partNodes = {};
+    for (const [part, gain] of Object.entries(this.partLevels)) {
+      const node = ctx.createGain();
+      node.gain.value = gain;
+      node.connect(this.protIn);
+      this.partNodes[part] = node;
+    }
     this.protFilters = [];
     this._wireProtection();
   }
@@ -473,27 +522,45 @@ export class ShotPlayer {
     let end = 0;
     for (const st of s.acoustic) end = Math.max(end, st.time - t0 + st.left.length / s.fs + (st.refs ? irLength : 0));
     if (echo) end = Math.max(end, echo.time - t0 + echo.left.length / s.fs);
-    const off = new OfflineAudioContext(2, Math.ceil((end + 0.05) * fs), fs);
-    const add = (buffer, at, dest) => {
+    for (const st of s.acoustic) {
+      if (st.refs) for (const side of SIDES) end = Math.max(end, st.time - t0 + st.refs[side].length / s.fs + (irs[side]?.duration ?? 0));
+    }
+    // Each part is rendered on its own, all from the same instant, so each can be turned up or down when played.
+    const len = Math.ceil((end + 0.05) * fs);
+    const parts = {};
+    const part = (key) => (parts[key] ??= new OfflineAudioContext(2, len, fs));
+    const add = (off, buffer, at, dest = off.destination) => {
       const src = off.createBufferSource();
       src.buffer = buffer;
       src.connect(dest);
       src.start(Math.max(at, 0), Math.max(-at, 0));
     };
     for (const st of s.acoustic) {
-      add(toBuffer(off, [st.left, st.right], s.fs), st.time - t0, off.destination);
+      const off = part(partOf(st));
+      add(off, toBuffer(off, [st.left, st.right], s.fs), st.time - t0);
       if (!st.refs) continue;
       for (const side of SIDES) {
         if (!irs[side]) continue;
-        const conv = off.createConvolver();
+        const eo = part("echoes");
+        const conv = eo.createConvolver();
         conv.normalize = false;
         conv.buffer = irs[side];
-        conv.connect(off.destination);
-        add(toBuffer(off, [st.refs[side]], s.fs), st.time - t0, conv);
+        conv.connect(eo.destination);
+        add(eo, toBuffer(eo, [st.refs[side]], s.fs), st.time - t0, conv);
       }
     }
-    if (echo) add(toBuffer(off, [echo.left, echo.right], s.fs), echo.time - t0, off.destination);
-    return { time: t0, buffer: await off.startRendering() };
+    if (echo) {
+      const off = part("crackEchoes");
+      add(off, toBuffer(off, [echo.left, echo.right], s.fs), echo.time - t0);
+    }
+    const keys = Object.keys(parts);
+    const rendered = await Promise.all(keys.map((k) => parts[k].startRendering()));
+    return { time: t0, duration: len / fs, buffers: Object.fromEntries(keys.map((k, i) => [k, rendered[i]])) };
+  }
+
+  /** Sources for every part of a rendered mix, each through its own fader. */
+  _mixSources(mix, rate = 1) {
+    return Object.entries(mix.buffers).map(([part, buffer]) => this._source(buffer, rate, part));
   }
 
   /**
@@ -526,11 +593,11 @@ export class ShotPlayer {
     return stem.buffer.buffer;
   }
 
-  _source(buffer, rate = 1) {
+  _source(buffer, rate = 1, part = "action") {
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
     src.playbackRate.value = rate;
-    src.connect(this.protIn);
+    src.connect(this.partNodes[part]);
     return src;
   }
 
@@ -575,22 +642,23 @@ export class ShotPlayer {
     const horizon = tSim + LOOKAHEAD * rate;
     while (sync.next < sync.events.length && sync.events[sync.next].at <= horizon) {
       const ev = sync.events[sync.next];
-      let buffer;
+      let sources;
       if (ev.mix) {
         const m = sync.shot.mixed[sync.environment];
         if (!m) break;  // still rendering (a few tens of ms): it starts late, part-way through
-        buffer = m.buffer;
+        sources = this._mixSources(m, play);
       } else {
-        buffer = this._stemBuffer(ev.stem);
+        sources = [this._source(this._stemBuffer(ev.stem), play)];
       }
       sync.next++;
       // Late (the sound loaded after the clock passed it): start part-way through.
       const late = Math.max(0, tSim - ev.at);
-      if (late >= buffer.duration) continue;
-      const src = this._source(buffer, play);
-      src.start(ctx.currentTime + Math.max(0, ev.at - tSim) / Math.max(rate, 1e-9), late);
-      src.onended = () => { if (this.sync === sync) sync.sources = sync.sources.filter((x) => x !== src); };
-      sync.sources.push(src);
+      for (const src of sources) {
+        if (late >= src.buffer.duration) continue;
+        src.start(ctx.currentTime + Math.max(0, ev.at - tSim) / Math.max(rate, 1e-9), late);
+        src.onended = () => { if (this.sync === sync) sync.sources = sync.sources.filter((x) => x !== src); };
+        sync.sources.push(src);
+      }
     }
   }
 
@@ -610,7 +678,7 @@ export class ShotPlayer {
       ? times.map((t) => t - times[0])
       : [...Array(Math.max(1, Math.min(shots, 100))).keys()].map((i) => i * period);
     for (const at of starts) {
-      this._source(mix.buffer).start(t0 + at + mix.time - s.start);
+      for (const src of this._mixSources(mix)) src.start(t0 + at + mix.time - s.start);
       for (const stem of s.actions) this._source(this._stemBuffer(stem)).start(t0 + at + stem.time - s.start);
     }
   }
