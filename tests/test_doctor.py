@@ -75,6 +75,19 @@ def test_valid_config_has_no_errors():
     assert out == {"errors": [], "fixed": preset("m4a1"), "complete": True}
 
 
+def test_fixed_gun_has_its_derived_fields_filled_in():
+    """The editor leaves out a grain's form functions; the fixed gun must bring them back for the form."""
+    gun = preset("example_7perf")
+    assert gun["propellant"]["grain"]
+    for key in ("form_chi", "form_lambda", "form_mu", "form_chi_s", "form_lambda_s", "form_z_k"):
+        del gun["propellant"][key]
+    gun["barrel"]["leade_angle"] = 90.0
+    out = doctor.check(gun)
+    assert out["complete"]
+    for key in ("form_chi", "form_lambda", "form_mu"):
+        assert isinstance(out["fixed"]["propellant"][key], float)
+
+
 def test_errors_are_counted_one_by_one():
     gun = preset("m4a1")
     gun["barrel"]["leade_angle"] = 90.0

@@ -23,7 +23,7 @@ import json
 import math
 import re
 import time
-from dataclasses import MISSING, fields
+from dataclasses import MISSING, asdict, fields
 
 from .config import (ACTION_TYPES, CASE_MATERIALS, CYLINDER_LOADING, DEVICE_TYPES, FEED_TYPES, FIRE_MODES, LOCKINGS,
                      PROJECTILE_TYPES, STANCES, STYLES, TRIGGER_TYPES, Action, Appearance, Barrel, Case, Feed, Gun,
@@ -296,7 +296,8 @@ def check(data: dict, reference: dict | None = None) -> dict:
     for _ in range(STEP_BUDGET):
         msg = error_of(data)
         if msg is None:
-            return {"errors": errors, "fixed": data, "complete": True}
+            # As the gun works it out, so fields derived from others (a grain's form functions) come back filled in.
+            return {"errors": errors, "fixed": {**data, **asdict(Gun.from_dict(data))}, "complete": True}
         state = json.dumps(data, sort_keys=True, default=str)
         fix = None if state in seen_states else find_fix(data, msg, reference, seen_msgs, deadline)
         seen_states.add(state)
@@ -313,4 +314,5 @@ def check(data: dict, reference: dict | None = None) -> dict:
         errors.append({"message": msg, "fix": record})
         if time.monotonic() > deadline:
             break
-    return {"errors": errors, "fixed": data, "complete": error_of(data) is None}
+    complete = error_of(data) is None
+    return {"errors": errors, "fixed": {**data, **asdict(Gun.from_dict(data))} if complete else data, "complete": complete}

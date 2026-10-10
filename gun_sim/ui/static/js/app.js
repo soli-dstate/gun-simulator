@@ -179,6 +179,9 @@ function readField(section, [key, label, unit, scale]) {
 // Form functions a named grain works out for itself; sent only without one.
 const GRAIN_FORM = ["form_chi", "form_lambda", "form_mu", "form_chi_s", "form_lambda_s", "form_z_k"];
 
+/** Fields not read from the form: with a grain chosen, its form functions (shown greyed out). */
+const derivedField = (section, key) => section === "propellant" && GRAIN_FORM.includes(key) && !!$("f-propellant-grain").value;
+
 /** With a grain chosen, its chi, lambda and mu come from the geometry and can't be typed. */
 function syncGrainFields() {
   const fromGrain = !!$("f-propellant-grain").value;
@@ -216,7 +219,7 @@ function getGun() {
   gun.name = $("f-name").value || "unnamed";
   for (const [section, fields] of Object.entries(schema.fields)) {
     gun[section] = { ...(gun[section] ?? {}) };
-    for (const f of fields) gun[section][f[0]] = readField(section, f);
+    for (const f of fields) if (!derivedField(section, f[0])) gun[section][f[0]] = readField(section, f);
   }
   if (gun.propellant.grain) for (const key of GRAIN_FORM) delete gun.propellant[key];
   return gun;
@@ -433,6 +436,7 @@ function lenientGun() {
   for (const [section, fields] of Object.entries(schema.fields)) {
     gun[section] = { ...(gun[section] ?? {}) };
     for (const f of fields) {
+      if (derivedField(section, f[0])) continue;
       try {
         gun[section][f[0]] = readField(section, f);
       } catch (e) {
